@@ -1,0 +1,16 @@
+# Local credentials and application excluded from this data repository.
+secrets/
+search-web/
+.venv/
+__pycache__/
+*.pyc
+
+# Only compressed data and its README are versioned.
+data/*
+!data/*.gz
+!data/README.md
+!data/ste-search-dataset/
+data/ste-search-dataset/*
+!data/ste-search-dataset/*.jsonl.gz
+
+*.part
