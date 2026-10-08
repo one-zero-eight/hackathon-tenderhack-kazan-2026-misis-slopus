@@ -1,15 +1,13 @@
 #!/usr/bin/env python3
-"""Package local JSON exports and the STE search workspace as gzip snapshots."""
+"""Package local catalog and STE search JSON exports as gzip snapshots."""
 from __future__ import annotations
 
 import argparse
 import gzip
 import hashlib
-import io
 import json
 import shutil
 import subprocess
-import tarfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -18,7 +16,6 @@ import ijson
 ROOT = Path(__file__).resolve().parents[1]
 DATA = ROOT / "data"
 EXCLUDED = {"ste-anonymous-network.json"}
-PRIVATE_HEADERS = {"authorization", "proxy-authorization", "cookie", "set-cookie", "x-api-key"}
 
 
 def compress(source: Path) -> Path:
@@ -43,35 +40,9 @@ def count_records(path: Path) -> int | None:
     return None
 
 
-def archive_search_workspace() -> Path:
-    source = DATA / "ste-search-dataset"
-    target = DATA / "ste-search-dataset.tar.gz"
-    partial = Path(str(target) + ".part")
-    with partial.open("wb") as output:
-        with gzip.GzipFile(filename="", mode="wb", fileobj=output, mtime=0) as compressed:
-            with tarfile.open(fileobj=compressed, mode="w|") as archive:
-                for path in sorted(source.rglob("*")):
-                    if not path.is_file() or (path.name.endswith((".part", ".sqlite", ".sqlite-wal", ".sqlite-shm", ".gz")) and not path.name.endswith(".body.gz")):
-                        continue
-                    name = str(path.relative_to(DATA))
-                    if path.name.endswith(".meta.json"):
-                        metadata = json.loads(path.read_text())
-                        for key in ("response_headers", "request_headers", "headers"):
-                            if isinstance(metadata.get(key), dict):
-                                metadata[key] = {k: v for k, v in metadata[key].items() if k.lower() not in PRIVATE_HEADERS}
-                        content = (json.dumps(metadata, ensure_ascii=False, indent=2) + "\n").encode()
-                        info = archive.gettarinfo(str(path), arcname=name)
-                        info.size = len(content)
-                        archive.addfile(info, io.BytesIO(content))
-                    else:
-                        archive.add(path, arcname=name, recursive=False)
-    partial.replace(target)
-    return target
-
-
 def staged_manifest() -> None:
     """Describe and validate immutable LFS objects in the Git index."""
-    names = subprocess.check_output(["git", "diff", "--cached", "--name-only", "-z"], cwd=ROOT).decode().split("\0")
+    names = subprocess.check_output(["git", "ls-files", "-z", "data"], cwd=ROOT).decode().split("\0")
     files = []
     for name in names:
         if not name.startswith("data/") or not name.endswith(".gz") or name == "data/publish-manifest.json.gz":
@@ -130,11 +101,10 @@ def main() -> None:
     if workspace.exists():
         for source in sorted(workspace.glob("*.jsonl")):
             print(f"PACKED {compress(source).relative_to(ROOT)}", flush=True)
-        print(f"PACKED {archive_search_workspace().relative_to(ROOT)}", flush=True)
     files = []
     paths = sorted(DATA.glob("*.gz")) + sorted(workspace.glob("*.jsonl.gz"))
     for path in paths:
-        if path.name == "publish-manifest.json.gz":
+        if path.name in {"publish-manifest.json.gz", "ste-search-dataset.tar.gz"}:
             continue
         digest = hashlib.sha256()
         # One file descriptor pins a completed export even if its producer replaces the path.
@@ -150,8 +120,7 @@ def main() -> None:
         files.append(item)
         print(json.dumps(item), flush=True)
     manifest = {"created_at": datetime.now(timezone.utc).isoformat(), "format": "gzip", "files": files,
-                "excluded": ["SQLite databases", "web app", "secrets", "browser diagnostics"],
-                "archive_note": "HTTP authentication and Set-Cookie headers are excluded from archived metadata; response body bytes are unchanged."}
+                "excluded": ["SQLite databases", "web app", "secrets", "browser diagnostics", "search workspace archive"]}
     target = DATA / "publish-manifest.json.gz"
     partial = Path(str(target) + ".part")
     with gzip.open(partial, "wt", encoding="utf-8") as stream:

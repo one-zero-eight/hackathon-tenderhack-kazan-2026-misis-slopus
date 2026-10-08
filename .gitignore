@@ -8,6 +8,7 @@ __pycache__/
 # Only compressed data and its README are versioned.
 data/*
 !data/*.gz
+data/ste-search-dataset.tar.gz
 !data/README.md
 !data/ste-search-dataset/
 data/ste-search-dataset/*
