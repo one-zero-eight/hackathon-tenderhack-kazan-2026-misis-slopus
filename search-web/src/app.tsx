@@ -1,7 +1,7 @@
 import { MetaProvider, Title } from "@solidjs/meta";
 import { A, Router } from "@solidjs/router";
 import { FileRoutes } from "@solidjs/start/router";
-import { ArrowUpRight, Boxes, Network, Plus } from "lucide-solid";
+import { ArrowUpRight, BookOpen, Boxes, Plus } from "lucide-solid";
 import { Suspense } from "solid-js";
 import "./app.css";
 
@@ -14,10 +14,10 @@ export default function App() {
       <nav aria-label="Основная навигация">
         <A href="/" end activeClass="nav-active"><Plus size={15} />Создать товар</A>
         <A href="/catalog" activeClass="nav-active">Каталог товаров</A>
-        <A href="/ktru" activeClass="nav-active"><Network size={15} />КТРУ</A>
+        <A href="/directories" activeClass="nav-active"><BookOpen size={15} />Справочники</A>
       </nav>
       <a class="source-link" href="https://zakupki.mos.ru/" target="_blank" rel="noopener noreferrer">Портал поставщиков<ArrowUpRight size={16} /></a>
     </div></header>
-    <Suspense fallback={<main id="main-content" class="page-width route-loading" role="status">Загружаем страницу…</main>}>{props.children}</Suspense>
+    <Suspense fallback={<main id="main-content" class="page-width route-loading" role="status" aria-live="polite">Загружаем…</main>}>{props.children}</Suspense>
   </MetaProvider>}><FileRoutes /></Router>;
 }

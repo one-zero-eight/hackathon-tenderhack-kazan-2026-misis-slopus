@@ -3,6 +3,7 @@ import type { CatalogStats, Product, ProductHit, SearchInput, SearchResult } fro
 import { DIMENSIONS, MODEL_ID, PAGE_SIZE, RETRIEVAL_LIMIT } from "./config";
 import { getDatabase, type CatalogDatabase } from "./database";
 import { embedQuery, embedTexts } from "./embeddings";
+import { steClassification } from "./classifiers";
 import { getKtruNodeByCode } from "./ktru-tree";
 import { embeddingDocument } from "./normalize";
 import { products } from "./schema";
@@ -20,8 +21,29 @@ const productColumns = {
 
 function withResolvedKtru(product: Product): Product {
   if (product.ktruCode) return product;
-  const characteristic = product.characteristics.find((item) => item.name.toLocaleLowerCase("ru") === "ктру");
-  return characteristic?.value ? { ...product, ktruCode: characteristic.value } : product;
+  const characteristic = product.characteristics.find((item) => {
+    const name = item.name.toLocaleLowerCase("ru");
+    return name === "ктру" || name.startsWith("ктру ");
+  });
+  return characteristic?.value ? { ...product, ktruCode: characteristic.value.trim() } : product;
+}
+
+function withSteClassification(product: Product): Product {
+  if (product.okpd2 && product.kpgzCode) return product;
+  const ste = steClassification(product.id);
+  if (!ste) return product;
+  return {
+    ...product,
+    okpd2: product.okpd2 || ste.okpd2,
+    kpgzCode: product.kpgzCode || ste.kpgzCode,
+    kpgzName: product.kpgzName || ste.kpgzName,
+  };
+}
+
+function resolveProduct(product: Product): Product {
+  const resolved = withResolvedKtru(withSteClassification(product));
+  if (!resolved.ktruCode || resolved.ktruName) return resolved;
+  return { ...resolved, ktruName: getKtruNodeByCode(resolved.ktruCode)?.name ?? "" };
 }
 
 export function validateSearch(input: SearchInput): Required<Omit<SearchInput, "categoryId">> & { categoryId?: number } {
@@ -53,7 +75,7 @@ export function fuseRanks(semantic: VectorRow[], textual: { id: number }[]): Ran
 function hydrate(catalog: CatalogDatabase, ranked: RankedRow[]): ProductHit[] {
   if (!ranked.length) return [];
   const rows = catalog.db.select(productColumns).from(products).where(inArray(products.id, ranked.map((row) => row.id))).all();
-  const lookup = new Map(rows.map((row) => [row.id, withResolvedKtru(row)]));
+  const lookup = new Map(rows.map((row) => [row.id, resolveProduct(row)]));
   return ranked.flatMap((row) => {
     const product = lookup.get(row.id);
     return product ? [{ ...product, score: row.score, match: row.match }] : [];
@@ -102,10 +124,7 @@ export async function runSearch(input: SearchInput, catalog = getDatabase(), emb
 export function findProduct(id: number, catalog = getDatabase()): Product | null {
   if (!Number.isSafeInteger(id) || id <= 0) return null;
   const product = catalog.db.select(productColumns).from(products).where(eq(products.id, id)).get();
-  if (!product) return null;
-  const resolved = withResolvedKtru(product);
-  if (!resolved.ktruCode || resolved.ktruName) return resolved;
-  return { ...resolved, ktruName: getKtruNodeByCode(resolved.ktruCode)?.name ?? "" };
+  return product ? resolveProduct(product) : null;
 }
 
 export async function findSimilarProducts(id: number, catalog = getDatabase(), embed = embedTexts): Promise<ProductHit[]> {

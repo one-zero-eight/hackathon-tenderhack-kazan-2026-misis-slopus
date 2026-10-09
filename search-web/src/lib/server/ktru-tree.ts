@@ -5,7 +5,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
 import type { KtruChildrenPage, KtruTreeNode } from "../types";
-import { ktruParquetPath, ktruSqlitePath } from "./config";
+import { classifiersSqlitePath, ktruParquetPath, ktruSqlitePath } from "./config";
 
 interface LightRow {
   code: string;
@@ -20,6 +20,7 @@ interface LightRow {
 interface Catalog {
   db: Database.Database;
   okpdNames: Map<string, string>;
+  okpdParentOf: Map<string, string | null>;
   okpdChildCodes: Map<string, string[]>;
   okpdKtruRoots: Map<string, string[]>;
   ktruChildren: Map<string, string[]>;
@@ -81,14 +82,43 @@ function compareCodes(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0;
 }
 
-function loadOkpdNames(rows: LightRow[]): Map<string, string> {
+function loadOkpdMeta(rows: LightRow[]): { names: Map<string, string>; parentOf: Map<string, string | null> } {
   const names = new Map<string, string>();
+  const parentOf = new Map<string, string | null>();
+  const classifiersPath = classifiersSqlitePath();
+  if (existsSync(classifiersPath)) {
+    const classifiers = new Database(classifiersPath, { readonly: true, fileMustExist: true });
+    classifiers.pragma("query_only = ON");
+    const okpdRows = classifiers.prepare("SELECT id, code, name, parent_id AS parentId FROM okpd").all() as {
+      id: number; code: string; name: string; parentId: number | null;
+    }[];
+    const idToCode = new Map(okpdRows.map(row => [row.id, row.code]));
+    for (const row of okpdRows) {
+      if (!row.code) continue;
+      if (row.name) names.set(row.code, row.name);
+      parentOf.set(row.code, row.parentId == null ? null : idToCode.get(row.parentId) ?? null);
+    }
+    classifiers.close();
+  }
   for (const row of rows) {
     if (row.okpd2 && row.okpd2Name && !names.has(row.okpd2)) names.set(row.okpd2, row.okpd2Name);
   }
-  // Optional OKPD2 name enrichment used to live in a JSON.gz next to the parquet catalogs.
-  // Names already present on KTRU rows are enough for the tree.
-  return names;
+  return { names, parentOf };
+}
+
+function okpdChain(okpd: string, parentOf: Map<string, string | null>): string[] {
+  if (!parentOf.size || !parentOf.has(okpd)) return prefixes(okpd);
+  const chain: string[] = [];
+  const seen = new Set<string>();
+  let current: string | null = okpd;
+  while (current && !seen.has(current)) {
+    seen.add(current);
+    chain.push(current);
+    if (!parentOf.has(current)) break;
+    current = parentOf.get(current) ?? null;
+  }
+  chain.reverse();
+  return chain;
 }
 
 function getCatalog(): Catalog {
@@ -98,7 +128,7 @@ function getCatalog(): Catalog {
   db.pragma("query_only = ON");
   const rows = db.prepare("SELECT code, name, status, okpd2, okpd2_name AS okpd2Name, parent_code AS parentCode, is_template AS isTemplate FROM ktru").all() as LightRow[];
   const byCode = new Map(rows.map(row => [row.code, row]));
-  const okpdNames = loadOkpdNames(rows);
+  const { names: okpdNames, parentOf: okpdParentOf } = loadOkpdMeta(rows);
   const okpdChildSet = new Map<string, Set<string>>();
   const addChild = (parent: string, child: string) => {
     let set = okpdChildSet.get(parent);
@@ -111,7 +141,7 @@ function getCatalog(): Catalog {
   for (const row of rows) {
     const okpd = row.okpd2 || row.code.split("-", 1)[0];
     if (!okpd) continue;
-    const chain = prefixes(okpd);
+    const chain = okpdChain(okpd, okpdParentOf);
     addChild("", chain[0]!);
     for (let i = 1; i < chain.length; i++) addChild(chain[i - 1]!, chain[i]!);
   }
@@ -149,7 +179,7 @@ function getCatalog(): Catalog {
     }).sort(compareCodes);
     okpdKtruRoots.set(okpd, roots);
   }
-  catalog = { db, okpdNames, okpdChildCodes, okpdKtruRoots, ktruChildren, byCode, total: rows.length };
+  catalog = { db, okpdNames, okpdParentOf, okpdChildCodes, okpdKtruRoots, ktruChildren, byCode, total: rows.length };
   return catalog;
 }
 
@@ -207,7 +237,7 @@ function buildFilterSets(filter: string): FilterSets | null {
   let truncated = false;
 
   const markOkpdAncestors = (code: string) => {
-    for (const prefix of prefixes(code)) visible.add(`okpd:${prefix}`);
+    for (const part of okpdChain(code, data.okpdParentOf)) visible.add(`okpd:${part}`);
   };
 
   for (const codes of data.okpdChildCodes.values()) {
@@ -299,12 +329,116 @@ export function listKtruChildren(parentId: string | null = null, offset = 0, fil
   };
 }
 
-export function getKtruRecord(code: string): Record<string, unknown> | null {
+export type KtruCharacteristic = {
+  name: string;
+  required: boolean;
+  values: string;
+};
+
+export type KtruRecordSummary = {
+  code: string;
+  name: string;
+  status: string;
+  version: string;
+  isTemplate: boolean;
+  okpd2: { code: string; name: string } | null;
+  characteristics: KtruCharacteristic[];
+};
+
+function parseKtruPayload(payload: Buffer): Record<string, unknown> {
+  return JSON.parse(gunzipSync(payload).toString("utf8")) as Record<string, unknown>;
+}
+
+function formatRangeOperator(value: string | null | undefined): string {
+  switch (value) {
+    case "greaterOrEqual": return "≥";
+    case "lessOrEqual": return "≤";
+    case "greater": return ">";
+    case "less": return "<";
+    case "equal": return "=";
+    default: return value ? String(value) : "";
+  }
+}
+
+function formatKtruValue(value: {
+  unit?: { name?: string } | null;
+  text?: string | null;
+  concrete_values?: string[] | null;
+  ranges?: { min_operator?: string; min?: string; max_operator?: string; max?: string }[] | null;
+}): string {
+  const parts: string[] = [];
+  if (Array.isArray(value.concrete_values) && value.concrete_values.length) {
+    parts.push(value.concrete_values.map(String).join(", "));
+  }
+  if (value.text) parts.push(String(value.text));
+  if (Array.isArray(value.ranges)) {
+    for (const range of value.ranges) {
+      const left = range.min != null && range.min !== "" ? `${formatRangeOperator(range.min_operator)}${range.min}` : "";
+      const right = range.max != null && range.max !== "" ? `${formatRangeOperator(range.max_operator)}${range.max}` : "";
+      const span = left && right ? `${left} … ${right}` : left || right;
+      if (span) parts.push(span);
+    }
+  }
+  const unit = value.unit?.name ? String(value.unit.name) : "";
+  const body = parts.join("; ");
+  return unit ? (body ? `${body} ${unit}` : unit) : body;
+}
+
+function parseKtruCharacteristics(raw: Record<string, unknown>): KtruCharacteristic[] {
+  const list = Array.isArray(raw.characteristics) ? raw.characteristics : [];
+  return list.flatMap(item => {
+    if (!item || typeof item !== "object") return [];
+    const row = item as {
+      name?: string;
+      required?: boolean;
+      actual?: boolean;
+      values?: {
+        unit?: { name?: string } | null;
+        text?: string | null;
+        concrete_values?: string[] | null;
+        ranges?: { min_operator?: string; min?: string; max_operator?: string; max?: string }[] | null;
+      }[];
+    };
+    if (row.actual === false) return [];
+    const name = String(row.name ?? "").trim();
+    if (!name) return [];
+    const values = (row.values ?? []).map(formatKtruValue).filter(Boolean).join(" · ") || "—";
+    return [{ name, required: !!row.required, values }];
+  });
+}
+
+export function getKtruRecord(code: string): KtruRecordSummary | null {
   if (!code || code.length > 64) return null;
   const data = getCatalog();
   const row = data.db.prepare("SELECT payload FROM ktru WHERE code=?").get(code) as { payload: Buffer } | undefined;
   if (!row) return null;
-  return JSON.parse(gunzipSync(row.payload).toString("utf8")) as Record<string, unknown>;
+  const raw = parseKtruPayload(row.payload);
+  const okpd = raw.okpd2 && typeof raw.okpd2 === "object" ? raw.okpd2 as { code?: string; name?: string } : null;
+  return {
+    code: String(raw.code ?? code),
+    name: String(raw.name ?? ""),
+    status: String(raw.status ?? ""),
+    version: String(raw.version ?? raw.version_code ?? ""),
+    isTemplate: !!raw.is_template,
+    okpd2: okpd?.code ? { code: String(okpd.code), name: String(okpd.name ?? "") } : null,
+    characteristics: parseKtruCharacteristics(raw),
+  };
+}
+
+export function getKtruRaw(code: string): Record<string, unknown> | null {
+  if (!code || code.length > 64) return null;
+  const data = getCatalog();
+  const row = data.db.prepare("SELECT payload FROM ktru WHERE code=?").get(code) as { payload: Buffer } | undefined;
+  if (!row) return null;
+  return parseKtruPayload(row.payload);
+}
+
+export function listKtruByOkpd(okpd: string, limit = 12): { total: number; items: { code: string; name: string }[] } {
+  if (!okpd) return { total: 0, items: [] };
+  const data = getCatalog();
+  const total = (data.db.prepare("SELECT count(*) AS n FROM ktru WHERE okpd2=?").get(okpd) as { n: number }).n;
+  const items = data.db.prepare("SELECT code, name FROM ktru WHERE okpd2=? ORDER BY code LIMIT ?").all(okpd, limit) as { code: string; name: string }[];
+  return { total, items };
 }
 
 export function getKtruNodeByCode(code: string): KtruTreeNode | null {
@@ -315,6 +449,35 @@ export function getKtruNodeByCode(code: string): KtruTreeNode | null {
     return okpdNode(code, data);
   }
   return null;
+}
+
+/** Ancestor+self node ids for expanding the KTRU tree to `code`. */
+export function getKtruRevealPath(code: string): { node: KtruTreeNode | null; pathIds: string[] } {
+  const node = getKtruNodeByCode(code);
+  if (!node) return { node: null, pathIds: [] };
+  const data = getCatalog();
+  const pathIds: string[] = [];
+  if (node.kind === "okpd") {
+    for (const part of okpdChain(code, data.okpdParentOf)) pathIds.push(`okpd:${part}`);
+    return { node, pathIds };
+  }
+  const row = data.byCode.get(code)!;
+  const okpd = row.okpd2 || code.split("-", 1)[0];
+  if (okpd) {
+    for (const part of okpdChain(okpd, data.okpdParentOf)) pathIds.push(`okpd:${part}`);
+  }
+  const ktruChain: string[] = [];
+  const seen = new Set<string>();
+  let current: string | null = code;
+  while (current && data.byCode.has(current) && !seen.has(current)) {
+    seen.add(current);
+    ktruChain.push(current);
+    const parentCode: string | null = data.byCode.get(current)?.parentCode ?? null;
+    current = parentCode && data.byCode.has(parentCode) ? parentCode : null;
+  }
+  ktruChain.reverse();
+  for (const item of ktruChain) pathIds.push(`ktru:${item}`);
+  return { node, pathIds };
 }
 
 export function ktruFilterMeta(filter: string) {

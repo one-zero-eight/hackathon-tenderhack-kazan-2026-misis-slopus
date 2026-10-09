@@ -1,21 +1,53 @@
 import { A } from "@solidjs/router";
 import { AlertCircle, ArrowRight, ImageOff, Network, Package, RotateCcw, Search, Sparkles } from "lucide-solid";
 import { createEffect, createSignal, ErrorBoundary, For, on, Show, type JSX } from "solid-js";
-import type { Product, ProductHit } from "~/lib/types";
+import type { DirectoryTab, Product, ProductHit } from "~/lib/types";
 import { Badge, Button, Card, Skeleton, StatePanel } from "~/ui-kit";
 
-export function ktruTreeHref(code: string) {
-  return `/ktru?code=${encodeURIComponent(code)}`;
+export function directoryHref(tab: DirectoryTab, code: string) {
+  return `/directories?tab=${tab}&code=${encodeURIComponent(code)}`;
 }
 
-export function ProductKtruLink(props: { product: Pick<Product, "ktruCode" | "ktruName">; class?: string }) {
-  return <Show when={props.product.ktruCode}>{code =>
-    <A class={props.class ?? "ktru-link"} href={ktruTreeHref(code())} title="Открыть в дереве КТРУ">
-      <Network size={13} />
-      <span>КТРУ {code()}</span>
-      <Show when={props.product.ktruName}><span class="ktru-link-name">{props.product.ktruName}</span></Show>
-    </A>
-  }</Show>;
+export function ktruTreeHref(code: string) {
+  return directoryHref("ktru", code);
+}
+
+export function ProductClassifierLinks(props: { product: Pick<Product, "ktruCode" | "ktruName" | "okpd2" | "okpd2Name" | "kpgzCode" | "kpgzName" | "spgzId">; class?: string }) {
+  return <div class={props.class ?? "classifier-links"}>
+    <Show when={props.product.ktruCode} fallback={
+      <Show when={props.product.okpd2}>{code =>
+        <A class="ktru-link" href={directoryHref("ktru", code())} title="Открыть позиции КТРУ по ОКПД2 товара">
+          <Network size={13} /><span>КТРУ</span>
+          <span class="ktru-link-name">по ОКПД2 {code()}</span>
+        </A>
+      }</Show>
+    }>{code =>
+      <A class="ktru-link" href={directoryHref("ktru", code())} title="Открыть в справочнике КТРУ">
+        <Network size={13} /><span>КТРУ {code()}</span>
+        <Show when={props.product.ktruName}><span class="ktru-link-name">{props.product.ktruName}</span></Show>
+      </A>
+    }</Show>
+    <Show when={props.product.okpd2}>{code =>
+      <A href={directoryHref("okpd", code())} title="Открыть в справочнике ОКПД2">
+        ОКПД2 {code()}
+        <Show when={props.product.okpd2Name}><span class="ktru-link-name">— {props.product.okpd2Name}</span></Show>
+      </A>
+    }</Show>
+    <Show when={props.product.kpgzCode}>{code =>
+      <A href={directoryHref("kpgz", code())} title="Открыть в справочнике КПГЗ">
+        КПГЗ {code()}
+        <Show when={props.product.kpgzName}><span class="ktru-link-name">— {props.product.kpgzName}</span></Show>
+      </A>
+    }</Show>
+    <Show when={props.product.spgzId}>{id =>
+      <A href={directoryHref("spgz", String(id()))} title="Открыть в справочнике СПГЗ">СПГЗ {id()}</A>
+    }</Show>
+  </div>;
+}
+
+/** @deprecated use ProductClassifierLinks */
+export function ProductKtruLink(props: { product: Pick<Product, "ktruCode" | "ktruName" | "okpd2" | "okpd2Name" | "kpgzCode" | "kpgzName" | "spgzId">; class?: string }) {
+  return <ProductClassifierLinks product={props.product} class={props.class} />;
 }
 
 export function DataBoundary(props: { children: JSX.Element; retry: () => Promise<unknown>; resetKey?: string }) {
@@ -60,7 +92,7 @@ export function ProductCard(props: { product: ProductHit; returnTo: string }) {
       <div class="product-category">{product().category || "Категория не указана"}</div>
       <h3><A href={href()}>{product().name}</A></h3>
       <p class="product-brand">{product().manufacturer || "Производитель не указан"}</p>
-      <ProductKtruLink product={product()} class="ktru-link card-ktru-link" />
+      <ProductClassifierLinks product={product()} class="classifier-links card-classifier-links" />
       <Show when={product().characteristics.length}><dl class="card-characteristics"><For each={product().characteristics.slice(0, 2)}>{item => <div><dt>{item.name}</dt><dd>{item.value}{item.unit ? ` ${item.unit}` : ""}</dd></div>}</For></dl></Show>
       <A href={href()} class="product-bottom" aria-label={`Подробнее: ${product().name}`}><span class="card-arrow" aria-hidden="true"><ArrowRight size={18} /></span></A>
       <Show when={product().score !== null && product().match !== "text" && product().match !== "catalog"}><div class="similarity" title="Косинусная близость векторов, не вероятность совпадения"><Sparkles size={12} />Семантическая близость {product().score!.toFixed(3)}<Show when={product().match === "both"}><Badge variant="secondary">+ текст</Badge></Show></div></Show>

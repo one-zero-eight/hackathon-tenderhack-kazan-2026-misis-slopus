@@ -1,0 +1,560 @@
+import { spawnSync } from "node:child_process";
+import { existsSync, statSync } from "node:fs";
+import { gunzipSync } from "node:zlib";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import Database from "better-sqlite3";
+import type { DirChildrenPage, DirectoryTab, DirTreeNode } from "../types";
+import { classifiersSqlitePath } from "./config";
+import { getDatabase } from "./database";
+import { listKtruByOkpd } from "./ktru-tree";
+
+export type { DirChildrenPage, DirectoryTab, DirTreeNode };
+
+export interface DirCrossLink {
+  tab: DirectoryTab;
+  code: string;
+  label: string;
+}
+
+export interface DirRecord {
+  tab: DirectoryTab;
+  code: string;
+  name: string;
+  fields: { key: string; label: string; value: string }[];
+  links: DirCrossLink[];
+  backlinks: DirCrossLink[];
+  backlinksMore: number;
+}
+
+export interface DirProductHit {
+  id: number;
+  name: string;
+  okpd2: string;
+  kpgzCode: string;
+  kpgzName: string;
+}
+
+const PAGE = 200;
+const FILTER_LIMIT = 800;
+const LINK_LIMIT = 12;
+let db: Database.Database | undefined;
+const filterCache = new Map<string, { visible: Set<string>; matches: Set<string>; matchCount: number; truncated: boolean }>();
+
+function repoRoot(): string {
+  return resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
+}
+
+function ensureDb(): Database.Database {
+  if (db) return db;
+  const sqlite = classifiersSqlitePath();
+  const sources = ["okpd2-moy-zakupki.parquet", "pp-kpgz.parquet", "spgz.parquet", "ste.parquet"].map(name => resolve(repoRoot(), "data", name));
+  const mtime = String(Math.trunc(Math.max(...sources.filter(existsSync).map(path => statSync(path).mtimeMs))));
+  const needsBuild = !existsSync(sqlite) || (() => {
+    try {
+      const probe = new Database(sqlite, { readonly: true, fileMustExist: true });
+      const stored = probe.prepare("SELECT value FROM meta WHERE key='source_mtime_ms'").get() as { value: string } | undefined;
+      probe.close();
+      return stored?.value !== mtime;
+    } catch {
+      return true;
+    }
+  })();
+  if (needsBuild) {
+    const script = resolve(repoRoot(), "scripts/build_classifiers_sqlite.py");
+    const result = spawnSync("uv", ["run", "--with", "pyarrow", "python", script, "--output", sqlite], { cwd: repoRoot(), encoding: "utf8" });
+    if (result.status !== 0) throw new Error(`Не удалось построить кэш справочников: ${result.stderr || result.stdout || "unknown error"}`);
+  }
+  db = new Database(sqlite, { readonly: true, fileMustExist: true });
+  db.pragma("query_only = ON");
+  return db;
+}
+
+function pageSlice<T>(items: T[], offset: number) {
+  const total = items.length;
+  const start = Math.max(0, offset);
+  const slice = items.slice(start, start + PAGE);
+  return { items: slice, total, offset: start, hasMore: start + slice.length < total };
+}
+
+function decode(payload: Buffer): Record<string, unknown> {
+  return JSON.parse(gunzipSync(payload).toString("utf8")) as Record<string, unknown>;
+}
+
+export function classifierStats() {
+  const database = ensureDb();
+  const get = (key: string) => Number((database.prepare("SELECT value FROM meta WHERE key=?").get(key) as { value: string } | undefined)?.value ?? 0);
+  return { okpd: get("okpd_count"), kpgz: get("kpgz_count"), spgz: get("spgz_count"), ste: get("ste_count") };
+}
+
+function okpdChildren(parentId: number | null): DirTreeNode[] {
+  const database = ensureDb();
+  const rows = parentId == null
+    ? database.prepare("SELECT id, code, name, children_count AS childCount FROM okpd WHERE parent_id IS NULL ORDER BY code").all()
+    : database.prepare("SELECT id, code, name, children_count AS childCount FROM okpd WHERE parent_id=? ORDER BY code").all(parentId);
+  return (rows as { id: number; code: string; name: string; childCount: number }[]).map(row => ({
+    id: `okpd:${row.id}`,
+    code: row.code,
+    name: row.name,
+    kind: "okpd",
+    childCount: row.childCount,
+    hasChildren: row.childCount > 0,
+  }));
+}
+
+function kpgzChildren(parentId: number | null): DirTreeNode[] {
+  const database = ensureDb();
+  const rows = (parentId == null
+    ? database.prepare(`
+        SELECT k.id, k.code, k.name, k.is_last AS isLast, k.external_id AS externalId,
+          (SELECT count(*) FROM kpgz c WHERE c.parent_id = k.id) AS kids,
+          CASE WHEN k.is_last = 1 THEN (SELECT count(*) FROM spgz s WHERE s.kpgz_external_id = k.external_id) ELSE 0 END AS spgz
+        FROM kpgz k WHERE k.parent_id IS NULL ORDER BY k.code
+      `).all()
+    : database.prepare(`
+        SELECT k.id, k.code, k.name, k.is_last AS isLast, k.external_id AS externalId,
+          (SELECT count(*) FROM kpgz c WHERE c.parent_id = k.id) AS kids,
+          CASE WHEN k.is_last = 1 THEN (SELECT count(*) FROM spgz s WHERE s.kpgz_external_id = k.external_id) ELSE 0 END AS spgz
+        FROM kpgz k WHERE k.parent_id = ? ORDER BY k.code
+      `).all(parentId)) as { id: number; code: string; name: string; isLast: number; kids: number; spgz: number }[];
+  return rows.map(row => {
+    const count = row.kids || row.spgz;
+    return {
+      id: `kpgz:${row.id}`,
+      code: row.code,
+      name: row.name,
+      kind: "kpgz",
+      childCount: count,
+      hasChildren: count > 0,
+      meta: { isLast: !!row.isLast },
+    };
+  });
+}
+
+function spgzUnderKpgz(kpgzId: number): DirTreeNode[] {
+  const database = ensureDb();
+  const external = database.prepare("SELECT external_id AS externalId FROM kpgz WHERE id=?").get(kpgzId) as { externalId: number } | undefined;
+  if (!external?.externalId) return [];
+  const rows = database.prepare("SELECT id, name, okpd2_code AS okpd2, is_excluded AS excluded FROM spgz WHERE kpgz_external_id=? ORDER BY name").all(external.externalId) as {
+    id: number; name: string; okpd2: string | null; excluded: number;
+  }[];
+  return rows.map(row => ({
+    id: `spgz:${row.id}`,
+    code: String(row.id),
+    name: row.name,
+    kind: "spgz",
+    childCount: 0,
+    hasChildren: false,
+    meta: { okpd2: row.okpd2, excluded: !!row.excluded },
+  }));
+}
+
+export function listDirectoryChildren(tab: DirectoryTab, parentId: string | null = null, offset = 0, filter = ""): DirChildrenPage {
+  if (tab === "ktru") throw new Error("КТРУ обслуживается отдельным модулем");
+  const sets = buildFilter(tab, filter);
+  let nodes: DirTreeNode[] = [];
+  if (tab === "okpd") {
+    const parent = parentId?.startsWith("okpd:") ? Number(parentId.slice(5)) : null;
+    nodes = okpdChildren(Number.isFinite(parent) ? parent : null);
+  } else if (tab === "kpgz") {
+    if (parentId?.startsWith("kpgz:")) {
+      const id = Number(parentId.slice(5));
+      const kids = kpgzChildren(id);
+      nodes = kids.length ? kids : spgzUnderKpgz(id).map(node => ({ ...node, kind: "spgz" }));
+    } else {
+      nodes = kpgzChildren(null);
+    }
+  } else if (tab === "spgz") {
+    if (!parentId) {
+      nodes = kpgzChildren(null);
+    } else if (parentId.startsWith("kpgz:")) {
+      const id = Number(parentId.slice(5));
+      const kids = kpgzChildren(id);
+      nodes = kids.length ? kids : spgzUnderKpgz(id);
+    } else {
+      nodes = [];
+    }
+  }
+  if (sets) {
+    nodes = nodes.filter(node => sets.visible.has(node.id)).map(node => {
+      if (!node.hasChildren) return { ...node, childCount: 0, hasChildren: false };
+      const preview = listDirectoryChildrenRaw(tab, node.id);
+      const count = preview.filter(child => sets.visible.has(child.id)).length;
+      return { ...node, childCount: count, hasChildren: count > 0 };
+    });
+  }
+  const page = pageSlice(nodes, offset);
+  return { parentId, nodes: page.items, total: page.total, offset: page.offset, hasMore: page.hasMore, filterMatches: sets?.matchCount ?? null };
+}
+
+function listDirectoryChildrenRaw(tab: DirectoryTab, parentId: string): DirTreeNode[] {
+  if (tab === "okpd" && parentId.startsWith("okpd:")) return okpdChildren(Number(parentId.slice(5)));
+  if ((tab === "kpgz" || tab === "spgz") && parentId.startsWith("kpgz:")) {
+    const id = Number(parentId.slice(5));
+    const kids = kpgzChildren(id);
+    return kids.length ? kids : spgzUnderKpgz(id);
+  }
+  return [];
+}
+
+function buildFilter(tab: DirectoryTab, filter: string) {
+  const q = filter.trim().toLocaleLowerCase("ru-RU");
+  if (q.length < 2) return null;
+  const key = `${tab}:${q}`;
+  const cached = filterCache.get(key);
+  if (cached) return cached;
+  const database = ensureDb();
+  const matches = new Set<string>();
+  const visible = new Set<string>();
+  let matchCount = 0;
+  let truncated = false;
+
+  const addOkpdAncestors = (id: number) => {
+    let current: number | null = id;
+    const seen = new Set<number>();
+    while (current && !seen.has(current)) {
+      seen.add(current);
+      visible.add(`okpd:${current}`);
+      const row = database.prepare("SELECT parent_id AS parentId FROM okpd WHERE id=?").get(current) as { parentId: number | null } | undefined;
+      current = row?.parentId ?? null;
+    }
+  };
+  const addKpgzAncestors = (id: number) => {
+    let current: number | null = id;
+    const seen = new Set<number>();
+    while (current && !seen.has(current)) {
+      seen.add(current);
+      visible.add(`kpgz:${current}`);
+      const row = database.prepare("SELECT parent_id AS parentId FROM kpgz WHERE id=?").get(current) as { parentId: number | null } | undefined;
+      current = row?.parentId ?? null;
+    }
+  };
+
+  const like = `%${q.replace(/[%_]/g, "")}%`;
+  if (tab === "okpd") {
+    const rows = database.prepare("SELECT id FROM okpd WHERE lower(code) LIKE ? OR lower(name) LIKE ? LIMIT ?").all(like, like, FILTER_LIMIT + 1) as { id: number }[];
+    truncated = rows.length > FILTER_LIMIT;
+    matchCount = truncated ? FILTER_LIMIT : rows.length;
+    for (const row of rows.slice(0, FILTER_LIMIT)) {
+      matches.add(`okpd:${row.id}`);
+      addOkpdAncestors(row.id);
+    }
+  } else {
+    const kpgzRows = database.prepare("SELECT id FROM kpgz WHERE lower(code) LIKE ? OR lower(name) LIKE ? LIMIT ?").all(like, like, FILTER_LIMIT + 1) as { id: number }[];
+    truncated = kpgzRows.length > FILTER_LIMIT;
+    matchCount = Math.min(kpgzRows.length, FILTER_LIMIT);
+    for (const row of kpgzRows.slice(0, FILTER_LIMIT)) {
+      matches.add(`kpgz:${row.id}`);
+      addKpgzAncestors(row.id);
+    }
+    if (tab === "spgz" || tab === "kpgz") {
+      const remaining = FILTER_LIMIT - matches.size;
+      if (remaining > 0) {
+        const spgzRows = database.prepare("SELECT id, kpgz_external_id AS kpgzExternalId FROM spgz WHERE cast(id AS TEXT) LIKE ? OR lower(name) LIKE ? LIMIT ?").all(like, like, remaining + 1) as { id: number; kpgzExternalId: number | null }[];
+        if (spgzRows.length > remaining) truncated = true;
+        matchCount += Math.min(spgzRows.length, remaining);
+        const kpgzByExternal = database.prepare("SELECT id FROM kpgz WHERE external_id=?");
+        for (const row of spgzRows.slice(0, remaining)) {
+          matches.add(`spgz:${row.id}`);
+          visible.add(`spgz:${row.id}`);
+          if (row.kpgzExternalId) {
+            const kpgz = kpgzByExternal.get(row.kpgzExternalId) as { id: number } | undefined;
+            if (kpgz) addKpgzAncestors(kpgz.id);
+          }
+        }
+      }
+    }
+  }
+  for (const id of matches) visible.add(id);
+  const sets = { visible, matches, matchCount, truncated };
+  if (filterCache.size > 48) filterCache.clear();
+  filterCache.set(key, sets);
+  return sets;
+}
+
+export function directoryFilterMeta(tab: DirectoryTab, filter: string) {
+  const sets = buildFilter(tab, filter);
+  if (!sets) return { active: false, matchCount: 0, truncated: false, matchIds: [] as string[] };
+  return { active: true, matchCount: sets.matchCount, truncated: sets.truncated, matchIds: [...sets.matches] };
+}
+
+export function getDirectoryNode(tab: DirectoryTab, code: string): DirTreeNode | null {
+  const database = ensureDb();
+  if (tab === "okpd") {
+    const row = database.prepare("SELECT id, code, name, children_count AS childCount FROM okpd WHERE code=? LIMIT 1").get(code) as { id: number; code: string; name: string; childCount: number } | undefined;
+    if (!row) return null;
+    return { id: `okpd:${row.id}`, code: row.code, name: row.name, kind: "okpd", childCount: row.childCount, hasChildren: row.childCount > 0 };
+  }
+  if (tab === "kpgz") {
+    const row = database.prepare("SELECT id, code, name FROM kpgz WHERE code=? LIMIT 1").get(code) as { id: number; code: string; name: string } | undefined;
+    if (!row) return null;
+    return { id: `kpgz:${row.id}`, code: row.code, name: row.name, kind: "kpgz", childCount: 1, hasChildren: true };
+  }
+  if (tab === "spgz") {
+    const id = Number(code);
+    if (!Number.isSafeInteger(id)) return null;
+    const row = database.prepare("SELECT id, name FROM spgz WHERE id=?").get(id) as { id: number; name: string } | undefined;
+    if (!row) return null;
+    return { id: `spgz:${row.id}`, code: String(row.id), name: row.name, kind: "spgz", childCount: 0, hasChildren: false };
+  }
+  return null;
+}
+
+/** Ancestor+self node ids for expanding the directory tree to `code`. */
+export function getDirectoryRevealPath(tab: DirectoryTab, code: string): { node: DirTreeNode | null; pathIds: string[] } {
+  const node = getDirectoryNode(tab, code);
+  if (!node) return { node: null, pathIds: [] };
+  const database = ensureDb();
+  if (tab === "okpd") {
+    const pathIds: string[] = [];
+    let current = database.prepare("SELECT id, parent_id AS parentId FROM okpd WHERE code=? LIMIT 1").get(code) as { id: number; parentId: number | null } | undefined;
+    const seen = new Set<number>();
+    while (current && !seen.has(current.id)) {
+      seen.add(current.id);
+      pathIds.push(`okpd:${current.id}`);
+      current = current.parentId == null
+        ? undefined
+        : database.prepare("SELECT id, parent_id AS parentId FROM okpd WHERE id=?").get(current.parentId) as { id: number; parentId: number | null } | undefined;
+    }
+    pathIds.reverse();
+    return { node, pathIds };
+  }
+  if (tab === "kpgz") {
+    const pathIds: string[] = [];
+    let current = database.prepare("SELECT id, parent_id AS parentId FROM kpgz WHERE code=? LIMIT 1").get(code) as { id: number; parentId: number | null } | undefined;
+    const seen = new Set<number>();
+    while (current && !seen.has(current.id)) {
+      seen.add(current.id);
+      pathIds.push(`kpgz:${current.id}`);
+      current = current.parentId == null
+        ? undefined
+        : database.prepare("SELECT id, parent_id AS parentId FROM kpgz WHERE id=?").get(current.parentId) as { id: number; parentId: number | null } | undefined;
+    }
+    pathIds.reverse();
+    return { node, pathIds };
+  }
+  if (tab === "spgz") {
+    const id = Number(code);
+    if (!Number.isSafeInteger(id)) return { node: null, pathIds: [] };
+    const row = database.prepare("SELECT id, kpgz_external_id AS kpgzExternalId FROM spgz WHERE id=?").get(id) as {
+      id: number; kpgzExternalId: number | null;
+    } | undefined;
+    if (!row) return { node: null, pathIds: [] };
+    const pathIds: string[] = [];
+    if (row.kpgzExternalId) {
+      let current = database.prepare("SELECT id, parent_id AS parentId FROM kpgz WHERE external_id=? LIMIT 1").get(row.kpgzExternalId) as {
+        id: number; parentId: number | null;
+      } | undefined;
+      const seen = new Set<number>();
+      while (current && !seen.has(current.id)) {
+        seen.add(current.id);
+        pathIds.push(`kpgz:${current.id}`);
+        current = current.parentId == null
+          ? undefined
+          : database.prepare("SELECT id, parent_id AS parentId FROM kpgz WHERE id=?").get(current.parentId) as { id: number; parentId: number | null } | undefined;
+      }
+      pathIds.reverse();
+    }
+    pathIds.push(`spgz:${row.id}`);
+    return { node, pathIds };
+  }
+  return { node, pathIds: [node.id] };
+}
+
+function pushSlice(target: DirCrossLink[], more: { n: number }, total: number, items: DirCrossLink[]) {
+  target.push(...items);
+  more.n += Math.max(0, total - items.length);
+}
+
+export function reverseLinksFor(tab: DirectoryTab, code: string, okpdCode = ""): { backlinks: DirCrossLink[]; backlinksMore: number } {
+  const database = ensureDb();
+  const backlinks: DirCrossLink[] = [];
+  const more = { n: 0 };
+  const okpd = okpdCode || (tab === "okpd" ? code : "");
+
+  if (tab === "okpd" || (okpd && (tab === "ktru" || tab === "kpgz" || tab === "spgz"))) {
+    if (tab === "okpd" || tab === "ktru") {
+      const total = (database.prepare("SELECT count(*) AS n FROM kpgz WHERE okpd_code=?").get(okpd) as { n: number }).n;
+      const rows = database.prepare("SELECT code, name FROM kpgz WHERE okpd_code=? ORDER BY code LIMIT ?").all(okpd, LINK_LIMIT) as { code: string; name: string }[];
+      pushSlice(backlinks, more, total, rows.map(row => ({ tab: "kpgz", code: row.code, label: `КПГЗ ${row.code} — ${row.name}` })));
+    }
+    if (tab === "okpd" || tab === "ktru") {
+      const total = (database.prepare("SELECT count(*) AS n FROM spgz WHERE okpd2_code=?").get(okpd) as { n: number }).n;
+      const rows = database.prepare("SELECT id, name FROM spgz WHERE okpd2_code=? ORDER BY name LIMIT ?").all(okpd, LINK_LIMIT) as { id: number; name: string }[];
+      pushSlice(backlinks, more, total, rows.map(row => ({ tab: "spgz", code: String(row.id), label: `СПГЗ ${row.id} — ${row.name}` })));
+    }
+    if (tab === "okpd" || tab === "kpgz" || tab === "spgz") {
+      const { total, items } = listKtruByOkpd(okpd, LINK_LIMIT);
+      pushSlice(backlinks, more, total, items.map(row => ({ tab: "ktru", code: row.code, label: `КТРУ ${row.code} — ${row.name}` })));
+    }
+  }
+
+  if (tab === "kpgz") {
+    const row = database.prepare("SELECT external_id AS externalId FROM kpgz WHERE code=? LIMIT 1").get(code) as { externalId: number | null } | undefined;
+    if (row?.externalId) {
+      const total = (database.prepare("SELECT count(*) AS n FROM spgz WHERE kpgz_external_id=?").get(row.externalId) as { n: number }).n;
+      const rows = database.prepare("SELECT id, name FROM spgz WHERE kpgz_external_id=? ORDER BY name LIMIT ?").all(row.externalId, LINK_LIMIT) as { id: number; name: string }[];
+      pushSlice(backlinks, more, total, rows.map(item => ({ tab: "spgz", code: String(item.id), label: `СПГЗ ${item.id} — ${item.name}` })));
+    }
+  }
+
+  return { backlinks, backlinksMore: more.n };
+}
+
+export function getDirectoryRecord(tab: DirectoryTab, code: string): DirRecord | null {
+  const database = ensureDb();
+  if (tab === "okpd") {
+    const row = database.prepare("SELECT code, name, payload FROM okpd WHERE code=? LIMIT 1").get(code) as { code: string; name: string; payload: Buffer } | undefined;
+    if (!row) return null;
+    const raw = decode(row.payload);
+    const reverse = reverseLinksFor("okpd", row.code);
+    return {
+      tab, code: row.code, name: row.name,
+      fields: [
+        { key: "code", label: "Код", value: row.code },
+        { key: "name", label: "Название", value: row.name },
+        { key: "level", label: "Уровень", value: String(raw.level ?? "") },
+        { key: "actual", label: "Актуальность", value: raw.is_actual ? "да" : "нет" },
+      ],
+      links: [],
+      ...reverse,
+    };
+  }
+  if (tab === "kpgz") {
+    const row = database.prepare("SELECT code, name, okpd_code AS okpdCode, okpd_name AS okpdName, payload FROM kpgz WHERE code=? LIMIT 1").get(code) as {
+      code: string; name: string; okpdCode: string | null; okpdName: string | null; payload: Buffer;
+    } | undefined;
+    if (!row) return null;
+    const raw = decode(row.payload);
+    const links: DirCrossLink[] = [];
+    if (row.okpdCode) links.push({ tab: "okpd", code: row.okpdCode, label: `ОКПД2 ${row.okpdCode}${row.okpdName ? ` — ${row.okpdName}` : ""}` });
+    const reverse = reverseLinksFor("kpgz", row.code, row.okpdCode || "");
+    return {
+      tab, code: row.code, name: row.name,
+      fields: [
+        { key: "code", label: "Код КПГЗ", value: row.code },
+        { key: "name", label: "Название", value: row.name },
+        { key: "level", label: "Уровень", value: String(raw.treeLevel ?? "") },
+        { key: "last", label: "Последний уровень", value: raw.isLastLevel ? "да" : "нет" },
+      ],
+      links,
+      ...reverse,
+    };
+  }
+  if (tab === "spgz") {
+    const id = Number(code);
+    if (!Number.isSafeInteger(id)) return null;
+    const row = database.prepare("SELECT id, name, kpgz_external_id AS kpgzExternalId, okpd2_code AS okpd2, payload FROM spgz WHERE id=?").get(id) as {
+      id: number; name: string; kpgzExternalId: number | null; okpd2: string | null; payload: Buffer;
+    } | undefined;
+    if (!row) return null;
+    const raw = decode(row.payload);
+    const links: DirCrossLink[] = [];
+    if (row.okpd2) links.push({ tab: "okpd", code: row.okpd2, label: `ОКПД2 ${row.okpd2}` });
+    if (row.kpgzExternalId) {
+      const kpgz = database.prepare("SELECT code, name FROM kpgz WHERE external_id=?").get(row.kpgzExternalId) as { code: string; name: string } | undefined;
+      if (kpgz) links.push({ tab: "kpgz", code: kpgz.code, label: `КПГЗ ${kpgz.code} — ${kpgz.name}` });
+    }
+    const chars = Array.isArray(raw.spgzCharacteristics) ? raw.spgzCharacteristics as { characteristicName?: string; value1?: string; value2?: string; characteristicSpgzEnums?: { value?: string }[] }[] : [];
+    const reverse = reverseLinksFor("spgz", String(row.id), row.okpd2 || "");
+    return {
+      tab, code: String(row.id), name: row.name,
+      fields: [
+        { key: "id", label: "ID СПГЗ", value: String(row.id) },
+        { key: "name", label: "Название", value: row.name },
+        { key: "okpd2", label: "ОКПД2", value: row.okpd2 || "—" },
+        { key: "excluded", label: "Исключён", value: raw.isExcluded ? "да" : "нет" },
+        ...chars.slice(0, 12).map((item, index) => ({
+          key: `char-${index}`,
+          label: item.characteristicName || `Характеристика ${index + 1}`,
+          value: [item.value1, item.value2, ...(item.characteristicSpgzEnums ?? []).map(entry => entry.value).filter(Boolean)].filter(Boolean).join("; ") || "—",
+        })),
+      ],
+      links,
+      ...reverse,
+    };
+  }
+  return null;
+}
+
+export function getDirectoryRaw(tab: DirectoryTab, code: string): Record<string, unknown> | null {
+  const database = ensureDb();
+  if (tab === "okpd") {
+    const row = database.prepare("SELECT payload FROM okpd WHERE code=? LIMIT 1").get(code) as { payload: Buffer } | undefined;
+    return row ? decode(row.payload) : null;
+  }
+  if (tab === "kpgz") {
+    const row = database.prepare("SELECT payload FROM kpgz WHERE code=? LIMIT 1").get(code) as { payload: Buffer } | undefined;
+    return row ? decode(row.payload) : null;
+  }
+  if (tab === "spgz") {
+    const id = Number(code);
+    if (!Number.isSafeInteger(id)) return null;
+    const row = database.prepare("SELECT payload FROM spgz WHERE id=?").get(id) as { payload: Buffer } | undefined;
+    return row ? decode(row.payload) : null;
+  }
+  return null;
+}
+
+function catalogWithSte() {
+  ensureDb();
+  const { sqlite } = getDatabase();
+  const attached = sqlite.prepare("SELECT 1 AS ok FROM pragma_database_list WHERE name = 'classifiers'").get();
+  if (!attached) sqlite.prepare("ATTACH DATABASE ? AS classifiers").run(classifiersSqlitePath());
+  return sqlite;
+}
+
+export function listDirectoryProducts(tab: DirectoryTab, code: string, limit = 24): { total: number; items: DirProductHit[] } {
+  // Only products present in the search catalog — ste.parquet alone has many IDs without local cards.
+  const database = catalogWithSte();
+  if (tab === "okpd") {
+    const total = (database.prepare(`
+      SELECT count(*) AS n FROM classifiers.ste_product sp
+      INNER JOIN products p ON p.id = sp.id WHERE sp.okpd2 = ?
+    `).get(code) as { n: number }).n;
+    const items = database.prepare(`
+      SELECT sp.id, p.name AS name, sp.okpd2, sp.kpgz_code AS kpgzCode, sp.kpgz_name AS kpgzName
+      FROM classifiers.ste_product sp
+      INNER JOIN products p ON p.id = sp.id
+      WHERE sp.okpd2 = ? ORDER BY p.name LIMIT ?
+    `).all(code, limit) as DirProductHit[];
+    return { total, items };
+  }
+  if (tab === "kpgz") {
+    const total = (database.prepare(`
+      SELECT count(*) AS n FROM classifiers.ste_product sp
+      INNER JOIN products p ON p.id = sp.id WHERE sp.kpgz_code = ?
+    `).get(code) as { n: number }).n;
+    const items = database.prepare(`
+      SELECT sp.id, p.name AS name, sp.okpd2, sp.kpgz_code AS kpgzCode, sp.kpgz_name AS kpgzName
+      FROM classifiers.ste_product sp
+      INNER JOIN products p ON p.id = sp.id
+      WHERE sp.kpgz_code = ? ORDER BY p.name LIMIT ?
+    `).all(code, limit) as DirProductHit[];
+    return { total, items };
+  }
+  if (tab === "spgz") {
+    const record = getDirectoryRecord("spgz", code);
+    const okpd2 = record?.fields.find(field => field.key === "okpd2")?.value;
+    if (!okpd2 || okpd2 === "—") return { total: 0, items: [] };
+    return listDirectoryProducts("okpd", okpd2, limit);
+  }
+  if (tab === "ktru") {
+    return { total: 0, items: [] };
+  }
+  return { total: 0, items: [] };
+}
+
+const steCache = new Map<number, { okpd2: string; kpgzCode: string; kpgzName: string } | null>();
+
+export function steClassification(productId: number): { okpd2: string; kpgzCode: string; kpgzName: string } | null {
+  if (steCache.has(productId)) return steCache.get(productId)!;
+  const database = ensureDb();
+  const row = database.prepare("SELECT okpd2, kpgz_code AS kpgzCode, kpgz_name AS kpgzName FROM ste_product WHERE id=?").get(productId) as {
+    okpd2: string; kpgzCode: string; kpgzName: string;
+  } | undefined;
+  const value = row ?? null;
+  if (steCache.size > 20000) steCache.clear();
+  steCache.set(productId, value);
+  return value;
+}

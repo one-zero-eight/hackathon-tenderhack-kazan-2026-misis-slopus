@@ -60,6 +60,27 @@ export interface CatalogStats {
   lastImportedAt: string | null;
 }
 
+export type DirectoryTab = "ktru" | "kpgz" | "spgz" | "okpd";
+
+export interface DirTreeNode {
+  id: string;
+  code: string;
+  name: string;
+  kind: string;
+  childCount: number;
+  hasChildren: boolean;
+  meta?: Record<string, string | number | boolean | null>;
+}
+
+export interface DirChildrenPage {
+  parentId: string | null;
+  nodes: DirTreeNode[];
+  total: number;
+  offset: number;
+  hasMore: boolean;
+  filterMatches: number | null;
+}
+
 export type KtruNodeKind = "okpd" | "ktru";
 
 export interface KtruTreeNode {
