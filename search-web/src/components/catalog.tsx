@@ -2,9 +2,7 @@ import { A } from "@solidjs/router";
 import { AlertCircle, ArrowRight, ImageOff, Package, RotateCcw, Search, Sparkles } from "lucide-solid";
 import { createEffect, createSignal, ErrorBoundary, For, on, Show, type JSX } from "solid-js";
 import type { ProductHit } from "~/lib/types";
-import { Badge } from "./ui/badge";
-import { Button } from "./ui/button";
-import { Card } from "./ui/card";
+import { Badge, Button, Card, Skeleton, StatePanel } from "~/ui-kit";
 
 export function DataBoundary(props: { children: JSX.Element; retry: () => Promise<unknown>; resetKey?: string }) {
   return <ErrorBoundary fallback={(error, reset) => {
@@ -15,22 +13,13 @@ export function DataBoundary(props: { children: JSX.Element; retry: () => Promis
 
 export function ErrorState(props: { error: unknown; retry: () => void }) {
   const message = () => props.error instanceof Error ? props.error.message : String(props.error);
-  return <div class="state-panel error-panel" role="alert">
-    <div class="state-icon"><AlertCircle size={25} /></div>
-    <h3>Не удалось загрузить данные</h3>
-    <p>Проверьте соединение и попробуйте ещё раз.</p>
+  return <StatePanel variant="error" title="Не удалось загрузить данные" description="Проверьте соединение и попробуйте ещё раз." icon={<AlertCircle size={25} />} action={<Button variant="outline" onClick={props.retry}><RotateCcw />Повторить</Button>}>
     <p class="error-message">{message()}</p>
-    <Button variant="outline" onClick={props.retry}><RotateCcw />Повторить</Button>
-  </div>;
+  </StatePanel>;
 }
 
 export function EmptyState(props: { query?: string; reset?: () => void }) {
-  return <div class="state-panel">
-    <div class="state-icon"><Search size={27} /></div>
-    <h3>{props.query ? "Пока ничего не нашлось" : "В этой категории пока нет товаров"}</h3>
-    <p>{props.query ? "Попробуйте другие слова, более общий запрос или другой режим поиска." : "Выберите другую категорию или откройте весь каталог."}</p>
-    <Show when={props.reset}><Button variant="outline" onClick={props.reset}>Сбросить фильтры<ArrowRight /></Button></Show>
-  </div>;
+  return <StatePanel title={props.query ? "Пока ничего не нашлось" : "В этой категории пока нет товаров"} description={props.query ? "Попробуйте другие слова, более общий запрос или другой режим поиска." : "Выберите другую категорию или откройте весь каталог."} icon={<Search size={27} />} action={<Show when={props.reset}><Button variant="outline" onClick={props.reset}>Сбросить фильтры<ArrowRight /></Button></Show>} />;
 }
 
 export function ProductImage(props: { id: number; name: string; eager?: boolean }) {
@@ -65,5 +54,5 @@ export function ProductCard(props: { product: ProductHit; returnTo: string }) {
 }
 
 export function ResultsSkeleton() {
-  return <div role="status" aria-label="Загружаем товары"><div class="loading-label"><span class="loading-dot" />Загружаем каталог…</div><div class="product-grid" aria-hidden="true"><For each={[1, 2, 3, 4, 5, 6]}>{() => <div class="skeleton-card"><div class="skeleton-image shimmer" /><div class="skeleton-content"><div class="skeleton-line shimmer" /><div class="skeleton-line wide shimmer" /><div class="skeleton-line short shimmer" /></div></div>}</For></div></div>;
+  return <div role="status" aria-label="Загружаем товары"><div class="loading-label"><span class="loading-dot" />Загружаем каталог…</div><div class="product-grid" aria-hidden="true"><For each={[1, 2, 3, 4, 5, 6]}>{() => <div class="skeleton-card"><Skeleton class="skeleton-image" /><div class="skeleton-content"><Skeleton class="skeleton-line" /><Skeleton class="skeleton-line wide" /><Skeleton class="skeleton-line short" /></div></div>}</For></div></div>;
 }

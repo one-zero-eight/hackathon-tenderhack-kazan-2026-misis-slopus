@@ -4,7 +4,7 @@ import { HttpStatusCode } from "@solidjs/start";
 import { ArrowLeft, ArrowUpRight, ChevronRight, FileText, Globe2, Info, Package, Sparkles, Tags } from "lucide-solid";
 import { createSignal, For, Show, Suspense } from "solid-js";
 import { DataBoundary, ImagePlaceholder, ProductCard, ProductImage, ResultsSkeleton } from "~/components/catalog";
-import { buttonVariants } from "~/components/ui/button";
+import { buttonVariants, Skeleton } from "~/ui-kit";
 import type { Product } from "~/lib/types";
 import { getProduct, getSimilarProducts } from "~/lib/rpc";
 import { formatDate, formatNumber } from "~/lib/utils";
@@ -43,5 +43,5 @@ export default function ProductPage() {
     const from = Array.isArray(searchParams.from) ? searchParams.from[0] : searchParams.from;
     return from === "/" || from?.startsWith("/?") ? from : "/";
   };
-  return <main id="main-content" class="page-width detail-main"><A href={back()} class="back-link"><ArrowLeft size={16} />К результатам поиска</A><DataBoundary resetKey={params.id} retry={() => revalidate(getProduct.key)}><Suspense fallback={<div class="detail-loading" role="status"><div class="skeleton-image shimmer" /><div><div class="skeleton-line wide shimmer" /><div class="skeleton-line shimmer" /><p>Загружаем карточку товара…</p></div></div>}><Details id={Number(params.id)} back={back()} /></Suspense></DataBoundary></main>;
+  return <main id="main-content" class="page-width detail-main"><A href={back()} class="back-link"><ArrowLeft size={16} />К результатам поиска</A><DataBoundary resetKey={params.id} retry={() => revalidate(getProduct.key)}><Suspense fallback={<div class="detail-loading" role="status"><Skeleton class="skeleton-image" /><div><Skeleton class="skeleton-line wide" /><Skeleton class="skeleton-line" /><p>Загружаем карточку товара…</p></div></div>}><Details id={Number(params.id)} back={back()} /></Suspense></DataBoundary></main>;
 }

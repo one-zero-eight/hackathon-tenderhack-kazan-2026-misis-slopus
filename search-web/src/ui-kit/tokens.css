@@ -1,0 +1,56 @@
+/* Override these custom properties after importing styles.css to theme the kit. */
+:root {
+  --ui-background: #faf9f6;
+  --ui-foreground: #282e29;
+  --ui-card: #fff;
+  --ui-card-foreground: #282e29;
+  --ui-primary: #285a40;
+  --ui-primary-foreground: #fff;
+  --ui-secondary: #edf2e9;
+  --ui-secondary-foreground: #456345;
+  --ui-muted-foreground: #81867c;
+  --ui-border: #e4e4dc;
+  --ui-input: #dfdfd6;
+  --ui-accent: #eeeee7;
+  --ui-ring: #285a40;
+  --ui-selection: #dce9d2;
+  --ui-destructive: #976f49;
+  --ui-state-background: #f5f5ef;
+  --ui-state-border: #d9ddcd;
+  --ui-state-icon-background: #e9eddf;
+  --ui-state-icon: #7b8a67;
+  --ui-state-description: #8a9380;
+  --ui-error-background: #faf6ed;
+  --ui-error-border: #ded0bd;
+  --ui-error-icon-background: #f0e7d6;
+  --ui-error-icon: #987444;
+  --ui-skeleton: #e9ece2;
+  --ui-skeleton-highlight: #f3f4ed;
+  --ui-font-sans: "Inter", "Segoe UI", -apple-system, BlinkMacSystemFont, Arial, sans-serif;
+  --ui-font-heading: Georgia, "Times New Roman", serif;
+  --ui-radius-sm: .25rem;
+  --ui-radius-md: .375rem;
+  --ui-radius-lg: .5rem;
+}
+
+@theme inline {
+  --color-background: var(--ui-background);
+  --color-foreground: var(--ui-foreground);
+  --color-card: var(--ui-card);
+  --color-card-foreground: var(--ui-card-foreground);
+  --color-primary: var(--ui-primary);
+  --color-primary-foreground: var(--ui-primary-foreground);
+  --color-secondary: var(--ui-secondary);
+  --color-secondary-foreground: var(--ui-secondary-foreground);
+  --color-muted-foreground: var(--ui-muted-foreground);
+  --color-border: var(--ui-border);
+  --color-input: var(--ui-input);
+  --color-accent: var(--ui-accent);
+  --color-ring: var(--ui-ring);
+  --color-destructive: var(--ui-destructive);
+  --font-sans: var(--ui-font-sans);
+  --font-heading: var(--ui-font-heading);
+  --radius-sm: var(--ui-radius-sm);
+  --radius-md: var(--ui-radius-md);
+  --radius-lg: var(--ui-radius-lg);
+}

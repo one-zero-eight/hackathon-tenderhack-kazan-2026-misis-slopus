@@ -1,10 +1,10 @@
 // Adapted from stefan-karger/solid-ui (MIT), apps/docs/src/registry/ui/card.tsx.
 // https://github.com/stefan-karger/solid-ui/blob/main/apps/docs/src/registry/ui/card.tsx
 import { splitProps, type Component, type ComponentProps } from "solid-js";
-import { cn } from "~/lib/utils";
+import { cn } from "./utils";
 const Card: Component<ComponentProps<"div">> = props => {
   const [local, others] = splitProps(props, ["class"]);
-  return <div class={cn("rounded-lg border bg-card text-card-foreground shadow-sm", local.class)} {...others} />;
+  return <div class={cn("rounded-lg border border-border bg-card text-card-foreground shadow-sm", local.class)} {...others} />;
 };
 const CardHeader: Component<ComponentProps<"div">> = props => {
   const [local, others] = splitProps(props, ["class"]);

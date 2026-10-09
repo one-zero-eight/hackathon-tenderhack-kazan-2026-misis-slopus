@@ -13,6 +13,9 @@
 
 Стек: TypeScript, SolidStart 2 / SolidJS, Vite 8, Nitro, Tailwind CSS 4, Kobalte, Drizzle ORM, better-sqlite3 и sqlite-vec. Сервер эмбеддингов запускается отдельно через `meow-embed`.
 
+Переиспользуемые компоненты и тема выделены в [UI-kit](src/ui-kit/README.md).
+Импорт компонентов — из `~/ui-kit`, интерактивные примеры — на `/ui-kit`.
+
 ## Требования
 
 - Node.js **24+** и pnpm **11.18.0** (версия закреплена в `packageManager`).
