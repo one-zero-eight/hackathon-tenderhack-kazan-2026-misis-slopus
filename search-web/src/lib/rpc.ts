@@ -48,3 +48,9 @@ export const getKtruFilterMeta = query(async (filter: string) => {
   const { ktruFilterMeta } = await import("./server/ktru-tree");
   return ktruFilterMeta(filter);
 }, "ktru-filter-meta");
+
+export const getKtruNode = query(async (code: string) => {
+  "use server";
+  const { getKtruNodeByCode } = await import("./server/ktru-tree");
+  return getKtruNodeByCode(code);
+}, "ktru-node");

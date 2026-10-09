@@ -3,6 +3,7 @@ import type { CatalogStats, Product, ProductHit, SearchInput, SearchResult } fro
 import { DIMENSIONS, MODEL_ID, PAGE_SIZE, RETRIEVAL_LIMIT } from "./config";
 import { getDatabase, type CatalogDatabase } from "./database";
 import { embedQuery, embedTexts } from "./embeddings";
+import { getKtruNodeByCode } from "./ktru-tree";
 import { embeddingDocument } from "./normalize";
 import { products } from "./schema";
 
@@ -11,10 +12,17 @@ const productColumns = {
   category: products.category, categoryId: products.categoryId, manufacturer: products.manufacturer,
   country: products.country, unit: products.unit, partNumber: products.partNumber,
   modelName: products.modelName, okpd2: products.okpd2, okpd2Name: products.okpd2Name,
+  ktruCode: products.ktruCode, ktruName: products.ktruName,
   kpgzCode: products.kpgzCode, kpgzName: products.kpgzName, spgzId: products.spgzId,
   price: products.price, imageIds: products.imageIds,
   characteristics: products.characteristics, sourceUpdatedAt: products.sourceUpdatedAt,
 };
+
+function withResolvedKtru(product: Product): Product {
+  if (product.ktruCode) return product;
+  const characteristic = product.characteristics.find((item) => item.name.toLocaleLowerCase("ru") === "ктру");
+  return characteristic?.value ? { ...product, ktruCode: characteristic.value } : product;
+}
 
 export function validateSearch(input: SearchInput): Required<Omit<SearchInput, "categoryId">> & { categoryId?: number } {
   if (!input || typeof input.query !== "string" || input.query.length > 500) throw new Error("Запрос должен содержать не более 500 символов");
@@ -45,7 +53,7 @@ export function fuseRanks(semantic: VectorRow[], textual: { id: number }[]): Ran
 function hydrate(catalog: CatalogDatabase, ranked: RankedRow[]): ProductHit[] {
   if (!ranked.length) return [];
   const rows = catalog.db.select(productColumns).from(products).where(inArray(products.id, ranked.map((row) => row.id))).all();
-  const lookup = new Map(rows.map((row) => [row.id, row]));
+  const lookup = new Map(rows.map((row) => [row.id, withResolvedKtru(row)]));
   return ranked.flatMap((row) => {
     const product = lookup.get(row.id);
     return product ? [{ ...product, score: row.score, match: row.match }] : [];
@@ -61,11 +69,11 @@ export async function runSearch(input: SearchInput, catalog = getDatabase(), emb
   if (!query) {
     const total = catalog.db.select({ count: count() }).from(products).where(category).get()!.count;
     const items = catalog.db.select(productColumns).from(products).where(category).orderBy(products.id).limit(PAGE_SIZE).offset(offset).all();
-    return finish(items.map((product) => ({ ...product, score: null, match: "catalog" })), total);
+    return finish(items.map((product) => ({ ...withResolvedKtru(product), score: null, match: "catalog" })), total);
   }
   if (/^\d+$/.test(query)) {
     const item = catalog.db.select(productColumns).from(products).where(and(eq(products.id, Number(query)), category)).get();
-    if (item) return finish(page === 1 ? [{ ...item, score: null, match: "text" }] : [], 1);
+    if (item) return finish(page === 1 ? [{ ...withResolvedKtru(item), score: null, match: "text" }] : [], 1);
   }
   const tokens = ftsQuery(query);
   const categorySql = categoryId === undefined ? "" : " AND p.category_id = ?";
@@ -93,7 +101,11 @@ export async function runSearch(input: SearchInput, catalog = getDatabase(), emb
 
 export function findProduct(id: number, catalog = getDatabase()): Product | null {
   if (!Number.isSafeInteger(id) || id <= 0) return null;
-  return catalog.db.select(productColumns).from(products).where(eq(products.id, id)).get() ?? null;
+  const product = catalog.db.select(productColumns).from(products).where(eq(products.id, id)).get();
+  if (!product) return null;
+  const resolved = withResolvedKtru(product);
+  if (!resolved.ktruCode || resolved.ktruName) return resolved;
+  return { ...resolved, ktruName: getKtruNodeByCode(resolved.ktruCode)?.name ?? "" };
 }
 
 export async function findSimilarProducts(id: number, catalog = getDatabase(), embed = embedTexts): Promise<ProductHit[]> {

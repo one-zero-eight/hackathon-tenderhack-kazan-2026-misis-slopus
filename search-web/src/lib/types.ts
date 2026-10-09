@@ -19,6 +19,8 @@ export interface Product {
   modelName: string;
   okpd2: string;
   okpd2Name: string;
+  ktruCode: string;
+  ktruName: string;
   kpgzCode: string;
   kpgzName: string;
   spgzId: number | null;

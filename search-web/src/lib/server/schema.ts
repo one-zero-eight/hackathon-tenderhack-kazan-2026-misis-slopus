@@ -14,6 +14,8 @@ export const products = sqliteTable("products", {
   modelName: text("model_name").notNull().default(""),
   okpd2: text("okpd2").notNull(),
   okpd2Name: text("okpd2_name").notNull().default(""),
+  ktruCode: text("ktru_code").notNull().default(""),
+  ktruName: text("ktru_name").notNull().default(""),
   kpgzCode: text("kpgz_code").notNull().default(""),
   kpgzName: text("kpgz_name").notNull().default(""),
   spgzId: integer("spgz_id"),

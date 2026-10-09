@@ -75,6 +75,13 @@ html { scroll-behavior: smooth; scroll-padding-top: 100px; }
 .product-content h3 { margin: 0; font-size: 15px; line-height: 1.5; font-weight: 600; letter-spacing: -.2px; }
 .product-content h3 a:hover { color: var(--green); }
 .product-brand { font-size: 11px; color: #989e91; margin: 7px 0 14px; }
+.ktru-link { display: inline-flex; align-items: center; gap: 6px; color: var(--green); font-size: 11px; line-height: 1.4; max-width: 100%; }
+.ktru-link:hover { text-decoration: underline; }
+.ktru-link-name { color: #7d8970; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.card-ktru-link { margin: -6px 0 12px; font-size: 10px; }
+.card-ktru-link .ktru-link-name { display: none; }
+.detail-ktru-link { font-size: 12px; }
+.detail-ktru-link .ktru-link-name::before { content: "— "; }
 .card-characteristics { margin: 0 0 17px; font-size: 10px; line-height: 1.6; color: #8c9382; }
 .card-characteristics > div { display: flex; justify-content: space-between; gap: 12px; padding: 2px 0; }
 .card-characteristics dt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 55%; }

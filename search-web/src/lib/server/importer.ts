@@ -35,6 +35,7 @@ export function importProducts(catalog: CatalogDatabase, sourcePath: string, onP
             categoryId: sql`excluded.category_id`, manufacturer: sql`excluded.manufacturer`, country: sql`excluded.country`,
             unit: sql`excluded.unit`, partNumber: sql`excluded.part_number`, modelName: sql`excluded.model_name`,
             okpd2: sql`excluded.okpd2`, okpd2Name: sql`excluded.okpd2_name`,
+            ktruCode: sql`excluded.ktru_code`, ktruName: sql`excluded.ktru_name`,
             kpgzCode: sql`excluded.kpgz_code`, kpgzName: sql`excluded.kpgz_name`, spgzId: sql`excluded.spgz_id`,
             price: sql`excluded.price`, imageIds: sql`excluded.image_ids`, characteristics: sql`excluded.characteristics`,
             sourceUpdatedAt: sql`excluded.source_updated_at`, sourceFetchedAt: sql`excluded.source_fetched_at`,
@@ -43,6 +44,7 @@ export function importProducts(catalog: CatalogDatabase, sourcePath: string, onP
           },
           setWhere: sql`${products.sourceFetchedAt} <> excluded.source_fetched_at OR ${products.contentHash} <> excluded.content_hash
             OR ${products.modelName} IS NOT excluded.model_name OR ${products.okpd2Name} IS NOT excluded.okpd2_name
+            OR ${products.ktruCode} IS NOT excluded.ktru_code OR ${products.ktruName} IS NOT excluded.ktru_name
             OR ${products.kpgzCode} IS NOT excluded.kpgz_code OR ${products.kpgzName} IS NOT excluded.kpgz_name
             OR ${products.spgzId} IS NOT excluded.spgz_id`,
         }).run();

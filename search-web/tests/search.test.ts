@@ -47,16 +47,23 @@ test("normalize preserves zero/false characteristics and missing prices", () => 
 
 test("normalize preserves model and classification data without inventing missing values", () => {
   const base = normalizeProduct(raw(101, "Пылесос"));
-  assert.deepEqual([base.modelName, base.okpd2Name, base.kpgzCode, base.kpgzName, base.spgzId], ["", "", "", "", null]);
-  const product = normalizeProduct({ ...raw(101, "Пылесос"), modelName: " <b>Model 15</b> ", partNumber: "A-42", production: { code: "01.19.09.01", name: " СУМКИ ПОВСЕДНЕВНЫЕ ", okpd: { code: "15.12.12.190", name: "Изделия из кожи" } }, spgzId: 1383539 });
+  assert.deepEqual([base.modelName, base.okpd2Name, base.ktruCode, base.ktruName, base.kpgzCode, base.kpgzName, base.spgzId], ["", "", "", "", "", "", null]);
+  const product = normalizeProduct({ ...raw(101, "Пылесос"), modelName: " <b>Model 15</b> ", partNumber: "A-42", production: { code: "01.19.09.01", name: " СУМКИ ПОВСЕДНЕВНЫЕ ", okpd: { code: "15.12.12.190", name: "Изделия из кожи" } }, ktru: { code: "15.12.12.190-00000001", name: " Сумка " }, spgzId: 1383539 });
   assert.equal(product.modelName, "Model 15");
   assert.equal(product.partNumber, "A-42");
   assert.equal(product.okpd2, "15.12.12.190");
   assert.equal(product.okpd2Name, "Изделия из кожи");
+  assert.equal(product.ktruCode, "15.12.12.190-00000001");
+  assert.equal(product.ktruName, "Сумка");
   assert.equal(product.kpgzCode, "01.19.09.01");
   assert.equal(product.kpgzName, "СУМКИ ПОВСЕДНЕВНЫЕ");
   assert.equal(product.spgzId, 1383539);
   assert.equal(normalizeProduct({ ...raw(101, "Пылесос"), production: null, spgzId: 0 }).spgzId, null);
+  const fromCharacteristic = normalizeProduct({
+    ...raw(101, "Пылесос"),
+    skuCharacteristics: [{ productCharacteristicValue: { productCharacteristicName: "Ктру" }, characteristicValueStringValue: "31.01.12.160-00000005" }],
+  });
+  assert.equal(fromCharacteristic.ktruCode, "31.01.12.160-00000005");
 });
 
 test("FTS escapes punctuation and accepts Russian and part numbers", () => {

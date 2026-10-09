@@ -27,6 +27,7 @@ export interface SourceCard {
   partNumber?: string | null;
   modelName?: string | null;
   production?: { code?: string | null; name?: string | null; okpd?: { code?: string | null; name?: string | null } | null } | null;
+  ktru?: { code?: string | null; name?: string | null; id?: number | null } | string | null;
   spgzId?: number | null;
   referencePrice?: number | null;
   medianPrice?: number | null;
@@ -35,6 +36,21 @@ export interface SourceCard {
   images?: { fileStorageId: number }[];
   skuCharacteristics?: RawCharacteristic[];
   updatedDate?: string;
+}
+
+function extractKtru(raw: SourceCard, characteristics: Characteristic[]): { ktruCode: string; ktruName: string } {
+  let ktruCode = "";
+  let ktruName = "";
+  if (typeof raw.ktru === "string") ktruCode = cleanText(raw.ktru);
+  else if (raw.ktru && typeof raw.ktru === "object") {
+    ktruCode = cleanText(raw.ktru.code);
+    ktruName = cleanText(raw.ktru.name);
+  }
+  if (!ktruCode) {
+    const characteristic = characteristics.find((item) => item.name.toLocaleLowerCase("ru") === "ктру");
+    if (characteristic?.value) ktruCode = cleanText(characteristic.value);
+  }
+  return { ktruCode, ktruName };
 }
 
 export function cleanText(value: string | null | undefined): string {
@@ -52,6 +68,7 @@ export function normalizeProduct(raw: SourceCard): Product {
     return [{ name, value: typeof value === "boolean" ? (value ? "Да" : "Нет") : cleanText(String(value)), unit: cleanText(item.productCharacteristicValue?.productCharacteristicUnitDesignationNational) }];
   });
   const price = [raw.referencePrice, raw.medianPrice, raw.avgPrice, raw.minPrice].find((p) => typeof p === "number" && Number.isFinite(p) && p > 0) ?? null;
+  const { ktruCode, ktruName } = extractKtru(raw, characteristics);
   return {
     id: raw.id, name: cleanText(raw.name), description: cleanText(raw.description),
     category: cleanText(raw.productionDirectoryName) || "Без категории", categoryId: raw.productionDirectoryId ?? 0,
@@ -59,6 +76,7 @@ export function normalizeProduct(raw: SourceCard): Product {
     unit: cleanText(raw.okeiShortName ?? raw.okeiName), partNumber: cleanText(raw.partNumber),
     modelName: cleanText(raw.modelName),
     okpd2: cleanText(raw.production?.okpd?.code), okpd2Name: cleanText(raw.production?.okpd?.name),
+    ktruCode, ktruName,
     kpgzCode: cleanText(raw.production?.code), kpgzName: cleanText(raw.production?.name),
     spgzId: Number.isSafeInteger(raw.spgzId) && raw.spgzId! > 0 ? raw.spgzId! : null, price,
     imageIds: [...new Set((raw.images ?? []).map((image) => image.fileStorageId).filter((id) => Number.isSafeInteger(id) && id > 0))],
@@ -72,6 +90,7 @@ export function embeddingDocument(product: Product): string {
     product.manufacturer && `Производитель: ${product.manufacturer}`,
     product.partNumber && `Артикул: ${product.partNumber}`,
     product.okpd2 && `ОКПД2: ${product.okpd2}`,
+    product.ktruCode && `КТРУ: ${product.ktruCode}${product.ktruName ? ` ${product.ktruName}` : ""}`,
     ...product.characteristics.map((c) => `${c.name}: ${c.value}${c.unit ? ` ${c.unit}` : ""}`),
     product.description.slice(0, 2000),
   ].filter(Boolean).join("\n");

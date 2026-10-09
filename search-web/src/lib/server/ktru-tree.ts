@@ -307,6 +307,16 @@ export function getKtruRecord(code: string): Record<string, unknown> | null {
   return JSON.parse(gunzipSync(row.payload).toString("utf8")) as Record<string, unknown>;
 }
 
+export function getKtruNodeByCode(code: string): KtruTreeNode | null {
+  if (!code || code.length > 64) return null;
+  const data = getCatalog();
+  if (data.byCode.has(code)) return ktruNode(code, data);
+  if (data.okpdNames.has(code) || data.okpdChildCodes.has(code) || data.okpdKtruRoots.has(code)) {
+    return okpdNode(code, data);
+  }
+  return null;
+}
+
 export function ktruFilterMeta(filter: string) {
   const sets = buildFilterSets(filter);
   if (!sets) return { active: false, matchCount: 0, truncated: false, matchIds: [] as string[] };

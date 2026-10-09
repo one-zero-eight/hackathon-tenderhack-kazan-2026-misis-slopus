@@ -1,8 +1,22 @@
 import { A } from "@solidjs/router";
-import { AlertCircle, ArrowRight, ImageOff, Package, RotateCcw, Search, Sparkles } from "lucide-solid";
+import { AlertCircle, ArrowRight, ImageOff, Network, Package, RotateCcw, Search, Sparkles } from "lucide-solid";
 import { createEffect, createSignal, ErrorBoundary, For, on, Show, type JSX } from "solid-js";
-import type { ProductHit } from "~/lib/types";
+import type { Product, ProductHit } from "~/lib/types";
 import { Badge, Button, Card, Skeleton, StatePanel } from "~/ui-kit";
+
+export function ktruTreeHref(code: string) {
+  return `/ktru?code=${encodeURIComponent(code)}`;
+}
+
+export function ProductKtruLink(props: { product: Pick<Product, "ktruCode" | "ktruName">; class?: string }) {
+  return <Show when={props.product.ktruCode}>{code =>
+    <A class={props.class ?? "ktru-link"} href={ktruTreeHref(code())} title="Открыть в дереве КТРУ">
+      <Network size={13} />
+      <span>КТРУ {code()}</span>
+      <Show when={props.product.ktruName}><span class="ktru-link-name">{props.product.ktruName}</span></Show>
+    </A>
+  }</Show>;
+}
 
 export function DataBoundary(props: { children: JSX.Element; retry: () => Promise<unknown>; resetKey?: string }) {
   return <ErrorBoundary fallback={(error, reset) => {
@@ -46,6 +60,7 @@ export function ProductCard(props: { product: ProductHit; returnTo: string }) {
       <div class="product-category">{product().category || "Категория не указана"}</div>
       <h3><A href={href()}>{product().name}</A></h3>
       <p class="product-brand">{product().manufacturer || "Производитель не указан"}</p>
+      <ProductKtruLink product={product()} class="ktru-link card-ktru-link" />
       <Show when={product().characteristics.length}><dl class="card-characteristics"><For each={product().characteristics.slice(0, 2)}>{item => <div><dt>{item.name}</dt><dd>{item.value}{item.unit ? ` ${item.unit}` : ""}</dd></div>}</For></dl></Show>
       <A href={href()} class="product-bottom" aria-label={`Подробнее: ${product().name}`}><span class="card-arrow" aria-hidden="true"><ArrowRight size={18} /></span></A>
       <Show when={product().score !== null && product().match !== "text" && product().match !== "catalog"}><div class="similarity" title="Косинусная близость векторов, не вероятность совпадения"><Sparkles size={12} />Семантическая близость {product().score!.toFixed(3)}<Show when={product().match === "both"}><Badge variant="secondary">+ текст</Badge></Show></div></Show>

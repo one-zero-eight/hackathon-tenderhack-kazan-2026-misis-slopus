@@ -1,9 +1,9 @@
 import { Meta, Title } from "@solidjs/meta";
-import { createAsync, revalidate } from "@solidjs/router";
+import { createAsync, revalidate, useSearchParams } from "@solidjs/router";
 import { ChevronRight, Network, Search } from "lucide-solid";
 import { createEffect, createMemo, createSignal, For, on, onCleanup, Show, Suspense } from "solid-js";
 import { DataBoundary } from "~/components/catalog";
-import { getKtruChildren, getKtruFilterMeta, getKtruRecord, getKtruStats } from "~/lib/rpc";
+import { getKtruChildren, getKtruFilterMeta, getKtruNode, getKtruRecord, getKtruStats } from "~/lib/rpc";
 import type { KtruChildrenPage, KtruTreeNode } from "~/lib/types";
 import { formatNumber } from "~/lib/utils";
 import "./ktru.css";
@@ -112,13 +112,27 @@ function StatsLine() {
 }
 
 export default function KtruPage() {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const codeParam = () => {
+    const value = searchParams.code;
+    const code = Array.isArray(value) ? value[0] : value;
+    return code?.trim() || "";
+  };
   const [selected, setSelected] = createSignal<KtruTreeNode | null>(null);
-  const [draft, setDraft] = createSignal("");
-  const [filter, setFilter] = createSignal("");
+  const [draft, setDraft] = createSignal(codeParam());
+  const [filter, setFilter] = createSignal(codeParam());
   const [matchIds, setMatchIds] = createSignal(new Set<string>());
   const [matchCount, setMatchCount] = createSignal<number | null>(null);
   const [matchTruncated, setMatchTruncated] = createSignal(false);
   let timer: ReturnType<typeof setTimeout> | undefined;
+  createEffect(on(codeParam, code => {
+    if (!code) return;
+    setDraft(code);
+    setFilter(code);
+    let alive = true;
+    void getKtruNode(code).then(node => { if (alive && node) setSelected(node); });
+    onCleanup(() => { alive = false; });
+  }));
   createEffect(on(() => filter(), value => {
     let alive = true;
     if (value.length < 2) {
@@ -135,6 +149,10 @@ export default function KtruPage() {
     });
     onCleanup(() => { alive = false; });
   }));
+  const selectNode = (node: KtruTreeNode) => {
+    setSelected(node);
+    setSearchParams({ code: node.code });
+  };
   const onFilterInput = (value: string) => {
     setDraft(value);
     clearTimeout(timer);
@@ -158,7 +176,7 @@ export default function KtruPage() {
         </div>
         <label class="ktru-filter"><Search size={15} /><input type="search" value={draft()} placeholder="Фильтр по коду или названию…" autocomplete="off" onInput={event => onFilterInput(event.currentTarget.value)} /></label>
         <div class="ktru-tree" role="tree">
-          <TreeBranch parentId={null} selectedId={selected()?.id ?? null} filter={filter()} matchIds={matchIds()} onSelect={setSelected} />
+          <TreeBranch parentId={null} selectedId={selected()?.id ?? null} filter={filter()} matchIds={matchIds()} onSelect={selectNode} />
         </div>
       </section>
       <section class="ktru-panel" aria-label="Параметры выбранной позиции">
