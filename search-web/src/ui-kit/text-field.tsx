@@ -14,6 +14,11 @@ const TextFieldInput = <T extends ValidComponent = "input">(props: PolymorphicPr
   const [local, others] = splitProps(props as TextFieldInputProps, ["class", "type"]);
   return <TextFieldPrimitive.Input type={local.type ?? "text"} class={cn("flex h-10 w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm placeholder:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-50 data-[invalid]:border-destructive", local.class)} {...others} />;
 };
+type TextFieldTextareaProps<T extends ValidComponent = "textarea"> = TextFieldPrimitive.TextFieldTextAreaProps<T> & { class?: string };
+const TextFieldTextarea = <T extends ValidComponent = "textarea">(props: PolymorphicProps<T, TextFieldTextareaProps<T>>) => {
+  const [local, others] = splitProps(props as TextFieldTextareaProps, ["class"]);
+  return <TextFieldPrimitive.TextArea class={cn("flex min-h-28 w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm placeholder:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-50 data-[invalid]:border-destructive", local.class)} {...others} />;
+};
 type TextFieldLabelProps<T extends ValidComponent = "label"> = TextFieldPrimitive.TextFieldLabelProps<T> & { class?: string };
 const TextFieldLabel = <T extends ValidComponent = "label">(props: PolymorphicProps<T, TextFieldLabelProps<T>>) => {
   const [local, others] = splitProps(props as TextFieldLabelProps, ["class"]);
@@ -29,5 +34,5 @@ const TextFieldErrorMessage = <T extends ValidComponent = "div">(props: Polymorp
   const [local, others] = splitProps(props as TextFieldErrorMessageProps, ["class"]);
   return <TextFieldPrimitive.ErrorMessage class={cn("text-xs text-destructive", local.class)} {...others} />;
 };
-export { TextField, TextFieldInput, TextFieldLabel, TextFieldDescription, TextFieldErrorMessage };
-export type { TextFieldProps, TextFieldInputProps, TextFieldLabelProps, TextFieldDescriptionProps, TextFieldErrorMessageProps };
+export { TextField, TextFieldInput, TextFieldTextarea, TextFieldLabel, TextFieldDescription, TextFieldErrorMessage };
+export type { TextFieldProps, TextFieldInputProps, TextFieldTextareaProps, TextFieldLabelProps, TextFieldDescriptionProps, TextFieldErrorMessageProps };

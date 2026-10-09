@@ -23,7 +23,7 @@ function Details(props: { id: number; back: string }) {
   const product = createAsync(() => Number.isSafeInteger(props.id) && props.id > 0 ? getProduct(props.id) : Promise.resolve(null));
   return <Show when={product() !== undefined}><Show when={product()} keyed fallback={<section class="state-panel detail-not-found"><HttpStatusCode code={404} /><Package size={38} strokeWidth={1.3} /><h1>Товар не найден</h1><p>Карточки с таким идентификатором нет в загруженном каталоге.</p><A class={buttonVariants({ variant: "outline" })} href={props.back}>Вернуться к поиску<ArrowLeft size={16} /></A></section>}>{item => <>
     <Title>{item.name} — Каталог</Title><Meta name="description" content={`${item.name}. Характеристики и сведения из Портала поставщиков Москвы.`} />
-    <nav class="breadcrumbs" aria-label="Хлебные крошки"><A href={props.back}>Каталог</A><Show when={item.category}><ChevronRight size={14} /><A href={`/?category=${item.categoryId}`}>{item.category}</A></Show></nav>
+    <nav class="breadcrumbs" aria-label="Хлебные крошки"><A href={props.back}>Каталог</A><Show when={item.category}><ChevronRight size={14} /><A href={`/catalog?category=${item.categoryId}`}>{item.category}</A></Show></nav>
     <section class="product-detail"><Gallery product={item} /><div class="detail-summary"><div class="detail-category">{item.category || "Категория не указана"}</div><h1>{item.name}</h1><p class="detail-manufacturer">{item.manufacturer || "Производитель не указан"}<Show when={item.country}><span class="detail-country"><Globe2 size={14} />{item.country}</span></Show></p>
       <dl class="detail-facts"><div><dt>ID товарной единицы</dt><dd>{item.id}</dd></div><Show when={item.modelName}><div><dt>Модель</dt><dd>{item.modelName}</dd></div></Show><Show when={item.partNumber}><div><dt>Артикул</dt><dd>{item.partNumber}</dd></div></Show><Show when={item.unit}><div><dt>Единица измерения</dt><dd>{item.unit}</dd></div></Show><Show when={item.sourceUpdatedAt}><div><dt>Обновление в источнике</dt><dd>{formatDate(item.sourceUpdatedAt)}</dd></div></Show></dl>
       <a class={`${buttonVariants({ size: "lg" })} original-link`} href={`https://zakupki.mos.ru/sku/view/${item.id}`} target="_blank" rel="noopener noreferrer">Открыть на Портале поставщиков<ArrowUpRight size={18} /></a>
@@ -41,7 +41,7 @@ export default function ProductPage() {
   const [searchParams] = useSearchParams();
   const back = () => {
     const from = Array.isArray(searchParams.from) ? searchParams.from[0] : searchParams.from;
-    return from === "/" || from?.startsWith("/?") ? from : "/";
+    return from === "/catalog" || from?.startsWith("/catalog?") ? from : "/catalog";
   };
   return <main id="main-content" class="page-width detail-main"><A href={back()} class="back-link"><ArrowLeft size={16} />К результатам поиска</A><DataBoundary resetKey={params.id} retry={() => revalidate(getProduct.key)}><Suspense fallback={<div class="detail-loading" role="status"><Skeleton class="skeleton-image" /><div><Skeleton class="skeleton-line wide" /><Skeleton class="skeleton-line" /><p>Загружаем карточку товара…</p></div></div>}><Details id={Number(params.id)} back={back()} /></Suspense></DataBoundary></main>;
 }
