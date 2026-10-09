@@ -58,6 +58,16 @@
 .autofill-copy span { font-size: 10px; line-height: 1.45; color: #879686; }
 .autofill-panel .ui-button { flex-shrink: 0; color: var(--green); }
 .autofill-hint { color: #96a092; font-size: 11px; line-height: 1.5; margin: -9px 0 0; }
+.autofill-result:empty { display: none; }
+.autofill-result { display: flex; flex-direction: column; gap: 16px; }
+.autofill-result .autofill-hint { margin: 0; }
+.ktru-suggestion { border: 1px solid #dae8d7; border-radius: 9px; padding: 16px; background: #f3f8ef; }
+.ktru-suggestion-heading { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 12px; color: var(--green); }
+.ktru-suggestion-heading svg { flex-shrink: 0; }
+.ktru-suggestion-heading > div { margin-left: auto; font-size: 10px; }
+.create-form .ktru-suggestion-name { color: #33563d; font-size: 14px; font-weight: 650; margin: 12px 0 6px; line-height: 1.5; }
+.create-form .ktru-suggestion-code { color: #73846c; font-size: 11px; margin: 0; line-height: 1.5; }
+.ktru-suggestion-code span { font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 .characteristic-heading { display: flex; align-items: center; flex-wrap: wrap; justify-content: space-between; gap: 8px; color: #687d66; font-size: 11px; margin: 1px 0 -6px; }
 .characteristic-heading .ui-badge { font-size: 10px; }
 .characteristic-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 17px 18px; }
@@ -137,4 +147,7 @@
   .create-form-footer { align-items: stretch; flex-direction: column; }
   .create-form-footer .ui-button { width: 100%; }
   .footer-note { order: 2; }
+}
+@media (max-width: 360px) {
+  .create-asterisk { display: none; }
 }

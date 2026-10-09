@@ -1,6 +1,25 @@
 // Demonstration-only suggestions. No catalog or supplier-portal requests are made here.
 export type DraftCategory = { id: string; name: string; path: string; attributes: string[] };
 export type DraftCharacteristic = { name: string; value: string };
+export type KtruSuggestion = { categoryId: string; code: string; name: string };
+
+// Small frontend demo set, copied from data/ktru-actual.parquet (ACTIVE positions).
+// This is not a full catalog search or a certified classification result.
+const ktruExamples: (KtruSuggestion & { matches: RegExp })[] = [
+  { categoryId: "paper", code: "17.12.14.110-00000001", name: "Бумага для офисной техники", matches: /бумаг.{0,40}(?:офис|принтер|печати|[аa][345])|(?:офисн|принтер).{0,20}бумаг/i },
+  { categoryId: "furniture", code: "31.01.12.160-00000005", name: "Кресло офисное", matches: /кресл.{0,25}офис|офис.{0,25}кресл/i },
+  { categoryId: "furniture", code: "31.01.11.150-00000001", name: "Стул на металлическом каркасе", matches: /стул.{0,40}металл|металл.{0,25}стул/i },
+  { categoryId: "furniture", code: "31.01.12.160-00000001", name: "Стул на деревянном каркасе", matches: /стул.{0,40}дерев|дерев.{0,25}стул/i },
+  { categoryId: "furniture", code: "31.09.14.110-00000001", name: "Стул пластиковый", matches: /стул.{0,40}пластик|пластик.{0,25}стул/i },
+  { categoryId: "computers", code: "26.20.11.110-00000001", name: "Ноутбук", matches: /ноутбук/i },
+  { categoryId: "cleaning", code: "20.41.32.111-00000009", name: "Средство для мытья посуды", matches: /(?:средств|гель|жидкост|порошок).{0,40}(?:мытья\s+)?посуд/i },
+];
+
+export function suggestKtruCategory(description: string): KtruSuggestion | null {
+  const text = description.trim().replace(/\s+/g, " ");
+  const match = ktruExamples.find(item => item.matches.test(text));
+  return match ? { categoryId: match.categoryId, code: match.code, name: match.name } : null;
+}
 
 export const categories: DraftCategory[] = [
   { id: "paper", name: "Офисная бумага", path: "Канцелярские товары › Бумага › Офисная бумага", attributes: ["Формат", "Плотность", "Количество листов", "Цвет"] },
