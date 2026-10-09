@@ -1,5 +1,5 @@
 import { Meta, Title } from "@solidjs/meta";
-import { ArrowRight, BookOpen, Check, ChevronDown, ClipboardList, FileText, Info, Lightbulb, PackagePlus, RotateCcw, Sparkles, WandSparkles } from "lucide-solid";
+import { ArrowRight, BookOpen, Check, ChevronDown, ClipboardList, ExternalLink, FileText, Info, Lightbulb, PackagePlus, RotateCcw, Sparkles, WandSparkles } from "lucide-solid";
 import { batch, createMemo, createSignal, For, Index, Show } from "solid-js";
 import { categories, extractCharacteristics, guessCategory, suggestKtruCategory, type KtruSuggestion } from "~/lib/product-draft";
 import { Badge, Button, Card, TextField, TextFieldDescription, TextFieldInput, TextFieldLabel, TextFieldTextarea } from "~/ui-kit";
@@ -7,16 +7,16 @@ import "./create-product.css";
 
 type Characteristic = { name: string; value: string };
 const terms = [
-  { code: "КПГЗ", name: "Каталог предметов государственного заказа", description: "Помогает отнести товар к нужной группе закупок." },
-  { code: "КТРУ", name: "Каталог товаров, работ и услуг", description: "Содержит типовые позиции и обязательные характеристики для закупок." },
-  { code: "ОКПД 2", name: "Классификатор продукции", description: "Код вида продукции по экономической деятельности." },
-  { code: "ОКЕИ", name: "Классификатор единиц измерения", description: "Определяет единицу товара: штука, упаковка, килограмм и другие." },
+  { code: "КПГЗ", name: "Классификатор предметов государственного заказа города Москвы", description: "Иерархический перечень категорий товаров, работ и услуг, закупаемых для нужд Москвы.", sourceLabel: "Определение в регламенте · PDF, с. 3", sourceUrl: "https://zakupki.mos.ru/cms/Media/docs/%D0%A0%D0%B5%D0%B3%D0%BB%D0%B0%D0%BC%D0%B5%D0%BD%D1%82_%D0%B8%D0%BD%D1%84%D0%BE%D1%80%D0%BC%D0%B0%D1%86%D0%B8%D0%BE%D0%BD%D0%BD%D0%BE%D0%B3%D0%BE_%D0%B2%D0%B7%D0%B0%D0%B8%D0%BC%D0%BE%D0%B4%D0%B5%D0%B9%D1%81%D1%82%D0%B2%D0%B8%D1%8F.pdf#page=3" },
+  { code: "КТРУ", name: "Каталог товаров, работ, услуг", description: "Содержит позиции закупок с наименованиями, единицами измерения и характеристиками.", sourceLabel: "Каталог в ЕИС", sourceUrl: "https://zakupki.gov.ru/epz/ktru/start/startPage.html" },
+  { code: "ОКПД 2", name: "Общероссийский классификатор продукции по видам экономической деятельности", description: "Используется для кодирования продукции, работ и услуг по видам экономической деятельности.", sourceLabel: "Карточка Росстандарта · ОК 034-2014", sourceUrl: "https://protect.gost.ru/classificators/details/d62a528e-5761-40c2-a67b-2966a9d0911c" },
+  { code: "ОКЕИ", name: "Общероссийский классификатор единиц измерения", description: "Содержит коды и обозначения единиц измерения, например штуки и килограмма.", sourceLabel: "Карточка Росстандарта · ОК 015-94", sourceUrl: "https://protect.gost.ru/classificators/details/08242108-d2a4-4343-b89a-5d412e563643" },
 ];
 const questions = [
-  { question: "Как правильно назвать товар?", answer: "Начните с типа товара, затем добавьте отличительные признаки: материал, размер, назначение или объём. Избегайте рекламных слов и характеристик, которых нет в описании." },
-  { question: "Что писать в артикуле?", answer: "Укажите ваш внутренний код товара. Он должен отличаться от артикулов других товаров и помогать вам быстро находить нужную позицию." },
+  { question: "Как указать наименование товара?", answer: "Укажите вид товара и отличительные признаки: материал, размер или назначение. Исключите рекламные формулировки и неподтверждённые свойства." },
+  { question: "Что указывать в артикуле?", answer: "Укажите уникальный внутренний код товара. Не используйте один артикул для разных позиций." },
   { question: "Можно ли изменить категорию?", answer: "Да. После нажатия «Заполнить» мы предлагаем позицию КТРУ по описанию. Вы можете выбрать другую категорию из списка. Подбор работает на небольшом демонстрационном наборе позиций." },
-  { question: "Откуда берутся характеристики?", answer: "В этой версии мы ищем явные значения в описании по шаблонам выбранной категории. Проверьте их и при необходимости исправьте вручную. Данные никуда не отправляются." },
+  { question: "Как заполняются характеристики?", answer: "Значения извлекаются из описания с учётом выбранной категории. Проверьте их и при необходимости исправьте вручную." },
 ];
 
 export default function NewProduct() {
@@ -136,10 +136,10 @@ export default function NewProduct() {
         <div class="create-form-footer"><div class="footer-note"><Info size={15} />Предпросмотр не сохраняет и не отправляет данные.</div><Button type="submit" size="lg">Посмотреть карточку <ArrowRight size={17} /></Button></div>
         <Show when={preview()}><Card id="draft-preview" class="preview-card" aria-live="polite"><div class="preview-top"><div><span class="preview-eyebrow">ПРЕДПРОСМОТР · НЕ СОХРАНЕНО</span><h2>{name().trim()}</h2></div><Badge variant="secondary">Черновик</Badge></div><p class="preview-category">{category()?.path || "Категория не выбрана"}</p><dl class="preview-details"><div><dt>Артикул</dt><dd>{sku().trim()}</dd></div><Show when={model().trim()}><div><dt>Модель</dt><dd>{model().trim()}</dd></div></Show><Show when={brand().trim()}><div><dt>Бренд</dt><dd>{brand().trim()}</dd></div></Show><For each={characteristics().filter(item => item.value.trim())}>{item => <div><dt>{item.name}</dt><dd>{item.value.trim()}</dd></div>}</For></dl><Show when={description().trim()}><p class="preview-description">{description().trim()}</p></Show><p class="preview-disclaimer">Только локальный предпросмотр. Эта карточка не опубликована.</p></Card></Show>
       </form>
-      <aside class="create-aside" aria-label="Подсказки по заполнению"><Card class="help-card help-intro"><div class="help-icon"><BookOpen size={20} /></div><h2>Поможем разобраться</h2><p>Короткие подсказки о терминах и заполнении карточки — всегда под рукой.</p></Card>
-        <Card class="help-card"><div class="help-card-title"><ClipboardList size={19} /><h2>Словарь поставщика</h2></div><p class="help-card-subtitle">Необязательно знать всё наизусть</p><div class="term-list"><For each={terms}>{term => <details class="term-item"><summary><span class="term-code">{term.code}</span><span class="term-name">{term.name}</span><ChevronDown size={16} /></summary><p>{term.description}</p></details>}</For></div><div class="help-footnote"><Info size={14} />Коды классификаторов в демоверсии не назначаются автоматически.</div></Card>
+      <aside class="create-aside" aria-label="Справочная информация"><Card class="help-card help-intro"><div class="help-icon"><BookOpen size={20} /></div><h2>Справочная информация</h2><p>Термины классификации и порядок заполнения карточки товара.</p></Card>
+        <Card class="help-card"><div class="help-card-title"><ClipboardList size={19} /><h2>Классификаторы и каталог</h2></div><p class="help-card-subtitle">Официальные источники и обозначения</p><div class="term-list"><For each={terms}>{term => <details class="term-item"><summary><span class="term-code">{term.code}</span><span class="term-name">{term.name}</span><ChevronDown size={16} /></summary><div class="term-definition"><p>{term.description}</p><a class="term-source" href={term.sourceUrl} target="_blank" rel="noopener noreferrer" aria-label={`${term.sourceLabel}: ${term.code} (откроется в новой вкладке)`}>{term.sourceLabel} <ExternalLink size={13} aria-hidden="true" /></a></div></details>}</For></div><div class="help-footnote"><Info size={14} />В демонстрационной версии коды классификаторов не присваиваются.</div></Card>
         <Card class="help-card"><div class="help-card-title"><FileText size={19} /><h2>Вопросы и ответы</h2></div><div class="faq-list"><For each={questions}>{item => <details class="faq-item"><summary>{item.question}<ChevronDown size={16} /></summary><p>{item.answer}</p></details>}</For></div></Card>
-        <div class="help-bottom"><Sparkles size={16} /><span>От первого поля до готовой карточки — шаг за шагом.</span></div>
+        <div class="help-bottom"><Sparkles size={16} /><span>Проверьте сведения до использования карточки.</span></div>
       </aside>
     </div>
   </main>;

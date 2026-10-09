@@ -106,6 +106,11 @@
 .term-code { font-weight: 700; color: #366848; min-width: 49px; }
 .term-name { flex: 1; font-size: 11px; color: #8c988a; }
 .term-item p, .faq-item p { color: #788b77; font-size: 11px; line-height: 1.7; margin: -4px 0 15px; }
+.term-definition { margin: -4px 0 15px; }
+.term-definition p { margin: 0 0 8px; }
+.term-source { display: inline-flex; align-items: center; gap: 5px; color: #37674a; font-size: 11px; font-weight: 600; line-height: 1.5; text-decoration: underline; text-underline-offset: 3px; }
+.term-source:hover { color: #254c34; }
+.term-source:focus-visible { outline: 2px solid var(--green); outline-offset: 3px; border-radius: 2px; }
 .help-footnote { display: flex; align-items: flex-start; gap: 7px; color: #a0aa9c; font-size: 10px; line-height: 1.55; margin-top: 17px; }
 .help-footnote svg { flex: none; }
 .help-bottom { display: flex; gap: 8px; padding: 7px 14px; color: #8e9e88; font-size: 11px; line-height: 1.5; }
