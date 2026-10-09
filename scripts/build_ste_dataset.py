@@ -32,6 +32,7 @@ FILTER = {
 }
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "data" / "ste-search-dataset"
+TMP = ROOT / "data" / "tmp" / "ste-search-dataset"
 MODEL = "deepseek-flash"
 TYPES = ["typo", "abbreviation", "professional_slang", "word_order", "synonym", "incomplete_name", "alternative_units", "ambiguous", "natural_language", "mixed_noise"]
 # Semantic families are assigned as indivisible units BEFORE generating queries.
@@ -891,7 +892,8 @@ def export_partial():
                 issues.append({"kind": "near_duplicate", "ids": [first["query_id"], second["query_id"]]})
     # Partial output is deliberately unsplit until leakage issues are resolved.
     # Preserve provisional assignments separately, and exclude duplicate text.
-    path = OUT / "partial.jsonl"
+    TMP.mkdir(parents=True, exist_ok=True)
+    path = TMP / "partial.jsonl"
     exported_texts = set()
 
     def partial_records():
@@ -935,15 +937,18 @@ def export_partial():
         "raw_restore": "Gzip-decompress body_file from each raw/*.meta.json; verify body_sha256. Request parameters, status, timestamp and response headers are in metadata.",
         "created_at": now(),
     }
-    atomic(OUT / "partial-status.json", report)
+    atomic(TMP / "partial-status.json", report)
     print(dumps(report), flush=True)
 
 
 def main():
+    global OUT
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=["prepare", "run", "export", "audit", "repair-audit", "partial", "smoke"], default="run", nargs="?")
     parser.add_argument("--workers", type=int, default=6)
     args = parser.parse_args()
+    if args.command == "smoke":
+        OUT = TMP / "smoke"
     OUT.mkdir(parents=True, exist_ok=True)
     if args.command == "prepare":
         prepare(args.workers)

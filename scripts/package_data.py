@@ -51,7 +51,7 @@ def staged_manifest() -> None:
     names = subprocess.check_output(["git", "ls-files", "-z", "data"], cwd=ROOT).decode().split("\0")
     files = []
     for name in names:
-        if not name.startswith("data/") or not name.endswith((".gz", ".parquet")) or name == "data/publish-manifest.json.gz":
+        if not name.startswith("data/") or not name.endswith((".gz", ".parquet")) or name == "data/publish-manifest.json.gz" or name.endswith(".meta.json.gz"):
             continue
         pointer = subprocess.check_output(["git", "show", f":{name}"], cwd=ROOT).decode()
         fields = dict(line.split(" ", 1) for line in pointer.strip().splitlines())
@@ -105,18 +105,22 @@ def main() -> None:
     if args.staged_manifest:
         staged_manifest()
         return
-    for source in sorted(DATA.glob("*.json")):
-        if source.name not in EXCLUDED:
+    directories = [DATA, DATA / "deprecated", DATA / "tmp"]
+    sources = sorted(source for directory in directories for source in directory.glob("*.json"))
+    for source in sources:
+        if source.name not in EXCLUDED and not source.name.endswith(".meta.json"):
             target = compress(source)
             print(f"PACKED {target.relative_to(ROOT)}", flush=True)
-    workspace = DATA / "ste-search-dataset"
-    if workspace.exists():
+    workspaces = [DATA / "ste-search-dataset", DATA / "tmp/ste-search-dataset"]
+    for workspace in workspaces:
         for source in sorted(workspace.glob("*.jsonl")):
             print(f"PACKED {compress(source).relative_to(ROOT)}", flush=True)
     files = []
-    paths = sorted(DATA.glob("*.gz")) + sorted(DATA.glob("*.parquet")) + sorted(workspace.glob("*.jsonl.gz"))
+    paths = sorted(path for directory in directories for path in directory.glob("*.gz"))
+    paths += sorted(DATA.glob("*.parquet"))
+    paths += sorted(path for workspace in workspaces for path in workspace.glob("*.jsonl.gz"))
     for path in paths:
-        if path.name in {"publish-manifest.json.gz", "ste-search-dataset.tar.gz"}:
+        if path.name in {"publish-manifest.json.gz", "ste-search-dataset.tar.gz"} or path.name.endswith(".meta.json.gz"):
             continue
         digest = hashlib.sha256()
         # One file descriptor pins a completed export even if its producer replaces the path.

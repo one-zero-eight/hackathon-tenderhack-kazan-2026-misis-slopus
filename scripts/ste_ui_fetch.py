@@ -172,7 +172,9 @@ def make_client(args) -> Client:
 def cmd_get(args):
     client = make_client(args)
     card = client.get_sku(args.id)
-    Path(args.out).write_text(json.dumps(card, ensure_ascii=False, indent=2), encoding="utf-8")
+    out = Path(args.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(card, ensure_ascii=False, indent=2), encoding="utf-8")
     print(
         f"ok id={card.get('id')} name={(card.get('name') or '')[:80]} "
         f"chars={len(card.get('skuCharacteristics') or [])} desc={len(card.get('description') or [])}"
@@ -183,7 +185,9 @@ def cmd_query(args):
     client = make_client(args)
     ids = [int(x) for x in args.ids.split(",")]
     data = client.query_index_ids(ids)
-    Path(args.out).write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    out = Path(args.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"ok count={data.get('count')} items={len(data.get('items') or [])}")
 
 
@@ -391,12 +395,12 @@ def main():
 
     g = sub.add_parser("get")
     g.add_argument("--id", type=int, required=True)
-    g.add_argument("--out", default="/tmp/ste-getsku-one.json")
+    g.add_argument("--out", default=str(ROOT / "data/tmp/ste-getsku-one.json"))
     g.set_defaults(func=cmd_get)
 
     q = sub.add_parser("query")
     q.add_argument("--ids", required=True, help="comma-separated ids")
-    q.add_argument("--out", default="/tmp/ste-query-batch.json")
+    q.add_argument("--out", default=str(ROOT / "data/tmp/ste-query-batch.json"))
     q.set_defaults(func=cmd_query)
 
     r = sub.add_parser("resume-sample")

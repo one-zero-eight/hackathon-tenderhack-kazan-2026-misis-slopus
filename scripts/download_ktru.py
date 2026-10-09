@@ -6,6 +6,7 @@ import argparse
 import gzip
 import json
 import math
+import os
 import sqlite3
 import threading
 import time
@@ -118,7 +119,7 @@ def export(db: sqlite3.Connection, output: Path, total: int, started_at: str, co
 
 def export_okpd2_links(db: sqlite3.Connection, output: Path) -> None:
     """Resolve mirror-local KTRU references without modifying either catalog."""
-    old_codes = {item["code"]: item["name"] for item in iter_records(ROOT / "data/okpd2.json.gz") if item["code"]}
+    old_codes = {item["code"]: item["name"] for item in iter_records(ROOT / "data/deprecated/okpd2.json.gz") if item["code"]}
     mirror_codes = dict(db.execute("SELECT code,json_extract(payload,'$.name') FROM okpd2"))
     shared = old_codes.keys() & mirror_codes.keys()
     name_differences = [
@@ -126,7 +127,7 @@ def export_okpd2_links(db: sqlite3.Connection, output: Path) -> None:
         for code in sorted(shared) if old_codes[code] != mirror_codes[code]
     ]
     comparison = {
-        "originalSource": "data/okpd2.json.gz",
+        "originalSource": "data/deprecated/okpd2.json.gz",
         "originalCodeCount": len(old_codes),
         "mirrorCodeCount": len(mirror_codes),
         "sharedCodeCount": len(shared),
@@ -135,9 +136,11 @@ def export_okpd2_links(db: sqlite3.Connection, output: Path) -> None:
         "nameDifferences": name_differences,
         "note": "Differences are not automatically treated as corrections; mirror annotations remain separate.",
     }
-    comparison_path = output.parent / "okpd2-moy-zakupki-comparison.json"
+    temporary_directory = ROOT / "data/tmp"
+    temporary_directory.mkdir(parents=True, exist_ok=True)
+    comparison_path = temporary_directory / "okpd2-moy-zakupki-comparison.json"
     db.execute("ATTACH DATABASE ? AS ktru_source", (f"file:{ROOT / 'data/ktru.sqlite'}?mode=ro",))
-    link_path = output.parent / "ktru-okpd2-moy-zakupki.json.gz"
+    link_path = temporary_directory / "ktru-okpd2-moy-zakupki.json.gz"
     linked = 0
     total = 0
     missing_ids: set[int] = set()
@@ -169,21 +172,21 @@ def export_okpd2_links(db: sqlite3.Connection, output: Path) -> None:
     meta_path = Path(str(output) + ".meta.json")
     metadata = json.loads(meta_path.read_text(encoding="utf-8"))
     metadata["comparison"] = {
-        "file": comparison_path.name,
+        "file": os.path.relpath(comparison_path, output.parent),
         "sharedCodeCount": len(shared),
         "onlyOriginalCount": len(comparison["onlyOriginal"]),
         "onlyMirrorCount": len(comparison["onlyMirror"]),
         "nameDifferenceCount": len(name_differences),
     }
     metadata["ktruLinks"] = {
-        "file": link_path.name,
+        "file": os.path.relpath(link_path, output.parent),
         "ktruSource": "data/ktru.sqlite",
         "recordCount": total,
         "resolvedCount": linked,
         "unresolvedCount": total - linked,
         "missingOkpd2Ids": sorted(missing_ids),
         "codePrefixDifferenceCount": len(prefix_mismatches),
-        "codePrefixDifferencesFile": comparison_path.name,
+        "codePrefixDifferencesFile": os.path.relpath(comparison_path, output.parent),
     }
     meta_path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(f"KTRU LINKS resolved={linked}/{total}; missing IDs={len(missing_ids)}; prefix mismatches={len(prefix_mismatches)}", flush=True)
@@ -208,10 +211,12 @@ def main() -> None:
     if args.catalog == "okpd2":
         ENDPOINT = "https://moy-zakupki.ru/api/app/okpd/list"
         PARAMS = {"ordering": "code", "per_page": 50}
-        NOTES = "Full source records including internal IDs, hierarchy, actuality flags, synonyms and mirror-added limitations. Separate from data/okpd2.json.gz; source freshness is not independently verified."
+        NOTES = "Full source records including internal IDs, hierarchy, actuality flags, synonyms and mirror-added limitations. Separate from data/deprecated/okpd2.json.gz; source freshness is not independently verified."
     basename = "okpd2-moy-zakupki" if args.catalog == "okpd2" else "ktru"
     args.db = args.db or ROOT / f"data/{basename}.sqlite"
-    args.out = args.out or ROOT / f"data/{basename}.json.gz"
+    output_directory = ROOT / "data" if args.catalog == "okpd2" else ROOT / "data/deprecated"
+    args.out = args.out or output_directory / f"{basename}.json.gz"
+    args.out.parent.mkdir(parents=True, exist_ok=True)
     first = fetch_page(1)
     total = first["count"]
     page_size = len(first["results"])

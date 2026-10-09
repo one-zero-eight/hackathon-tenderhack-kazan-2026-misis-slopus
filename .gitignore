@@ -10,8 +10,21 @@ data/*
 !data/*.parquet
 data/ste-search-dataset.tar.gz
 !data/README.md
+!data/deprecated/
+data/deprecated/*
+!data/deprecated/*.gz
+!data/tmp/
+data/tmp/*
+!data/tmp/*.gz
+!data/tmp/ste-search-dataset/
+data/tmp/ste-search-dataset/*
+!data/tmp/ste-search-dataset/*.jsonl.gz
 !data/ste-search-dataset/
 data/ste-search-dataset/*
 !data/ste-search-dataset/*.jsonl.gz
+
+# Export metadata is local state, not a published dataset.
+data/**/*.meta.json
+data/**/*.meta.json.gz
 
 *.part
