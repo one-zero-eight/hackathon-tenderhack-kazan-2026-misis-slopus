@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Package local catalog and STE search JSON exports as gzip snapshots."""
+"""Package JSON exports as gzip and include Parquet catalogs in snapshot manifests."""
 from __future__ import annotations
 
 import argparse
@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import ijson
+import pyarrow.parquet as pq
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA = ROOT / "data"
@@ -29,6 +30,11 @@ def compress(source: Path) -> Path:
 
 
 def count_records(path: Path) -> int | None:
+    if path.suffix == ".parquet":
+        parquet = pq.ParquetFile(path)
+        for _ in parquet.iter_batches():
+            pass
+        return parquet.metadata.num_rows
     with gzip.open(path, "rb") as stream:
         if path.name.endswith(".jsonl.gz"):
             return sum(1 for line in stream if line.strip())
@@ -45,7 +51,7 @@ def staged_manifest() -> None:
     names = subprocess.check_output(["git", "ls-files", "-z", "data"], cwd=ROOT).decode().split("\0")
     files = []
     for name in names:
-        if not name.startswith("data/") or not name.endswith(".gz") or name == "data/publish-manifest.json.gz":
+        if not name.startswith("data/") or not name.endswith((".gz", ".parquet")) or name == "data/publish-manifest.json.gz":
             continue
         pointer = subprocess.check_output(["git", "show", f":{name}"], cwd=ROOT).decode()
         fields = dict(line.split(" ", 1) for line in pointer.strip().splitlines())
@@ -60,22 +66,28 @@ def staged_manifest() -> None:
         if actual.hexdigest() != digest or blob.stat().st_size != int(fields["size"]):
             raise ValueError(f"Invalid LFS object: {name}")
         item = {"file": str(Path(name).relative_to("data")), "bytes": blob.stat().st_size, "sha256": digest}
-        with gzip.open(blob, "rb") as stream:
-            if name.endswith(".jsonl.gz"):
-                item["records"] = sum(1 for line in stream if line.strip())
-            elif name.endswith(".json.gz"):
-                prefix = stream.read(256).lstrip()
-                stream.seek(0)
-                if prefix.startswith(b"["):
-                    item["records"] = sum(1 for _ in ijson.items(stream, "item"))
+        if name.endswith(".parquet"):
+            parquet = pq.ParquetFile(blob)
+            for _ in parquet.iter_batches():
+                pass
+            item["records"] = parquet.metadata.num_rows
+        else:
+            with gzip.open(blob, "rb") as stream:
+                if name.endswith(".jsonl.gz"):
+                    item["records"] = sum(1 for line in stream if line.strip())
+                elif name.endswith(".json.gz"):
+                    prefix = stream.read(256).lstrip()
+                    stream.seek(0)
+                    if prefix.startswith(b"["):
+                        item["records"] = sum(1 for _ in ijson.items(stream, "item"))
+                    else:
+                        json.load(stream)
                 else:
-                    json.load(stream)
-            else:
-                while stream.read(1024 * 1024):
-                    pass
+                    while stream.read(1024 * 1024):
+                        pass
         files.append(item)
         print(json.dumps(item), flush=True)
-    manifest = {"created_at": datetime.now(timezone.utc).isoformat(), "format": "gzip", "files": files,
+    manifest = {"created_at": datetime.now(timezone.utc).isoformat(), "format": "gzip and parquet", "files": files,
                 "note": "Counts and hashes verified against immutable staged Git LFS objects; live exports can differ.",
                 "excluded": ["SQLite databases", "web app", "secrets", "browser diagnostics"]}
     target = DATA / "publish-manifest.json.gz"
@@ -88,7 +100,7 @@ def staged_manifest() -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--staged-manifest", action="store_true", help="Validate staged LFS gzip objects and rebuild their manifest")
+    parser.add_argument("--staged-manifest", action="store_true", help="Validate staged LFS gzip/Parquet objects and rebuild their manifest")
     args = parser.parse_args()
     if args.staged_manifest:
         staged_manifest()
@@ -102,7 +114,7 @@ def main() -> None:
         for source in sorted(workspace.glob("*.jsonl")):
             print(f"PACKED {compress(source).relative_to(ROOT)}", flush=True)
     files = []
-    paths = sorted(DATA.glob("*.gz")) + sorted(workspace.glob("*.jsonl.gz"))
+    paths = sorted(DATA.glob("*.gz")) + sorted(DATA.glob("*.parquet")) + sorted(workspace.glob("*.jsonl.gz"))
     for path in paths:
         if path.name in {"publish-manifest.json.gz", "ste-search-dataset.tar.gz"}:
             continue
@@ -119,7 +131,7 @@ def main() -> None:
             item["records"] = count
         files.append(item)
         print(json.dumps(item), flush=True)
-    manifest = {"created_at": datetime.now(timezone.utc).isoformat(), "format": "gzip", "files": files,
+    manifest = {"created_at": datetime.now(timezone.utc).isoformat(), "format": "gzip and parquet", "files": files,
                 "excluded": ["SQLite databases", "web app", "secrets", "browser diagnostics", "search workspace archive"]}
     target = DATA / "publish-manifest.json.gz"
     partial = Path(str(target) + ".part")
