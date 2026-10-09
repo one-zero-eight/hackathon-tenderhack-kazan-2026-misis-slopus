@@ -7,11 +7,11 @@ html { scroll-behavior: smooth; scroll-padding-top: 100px; }
 .skip-link { position: fixed; z-index: 100; top: -100px; left: 20px; padding: 12px 20px; background: white; border: 1px solid var(--green); }
 .skip-link:focus { top: 15px; }
 .site-header { border-bottom: 1px solid var(--line); background: #faf9f6ee; }
-.header-inner { display: flex; align-items: center; height: 88px; gap: 58px; }
+.header-inner { display: flex; align-items: center; height: 88px; gap: 40px; }
 .brand { display: flex; align-items: center; gap: 11px; font-size: 27px; letter-spacing: -.9px; font-weight: 750; }
 .brand-symbol { background: var(--green); color: white; display: grid; place-items: center; width: 37px; height: 37px; border-radius: 10px; }
 .brand-period { color: var(--green); }
-.header-inner nav { display: flex; height: 100%; gap: 32px; align-items: center; font-size: 13px; font-weight: 500; color: #777d71; }
+.header-inner nav { display: flex; height: 100%; gap: 24px; align-items: center; font-size: 13px; font-weight: 500; color: #777d71; flex-wrap: wrap; }
 .header-inner nav a { display: flex; align-items: center; gap: 7px; height: 100%; position: relative; }
 .header-inner nav .nav-active { color: var(--green); }
 .header-inner nav .nav-active::after { content: ""; position: absolute; height: 2px; background: var(--green); bottom: -1px; left: 0; right: 0; }

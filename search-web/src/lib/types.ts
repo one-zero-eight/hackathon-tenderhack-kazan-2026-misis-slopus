@@ -57,3 +57,24 @@ export interface CatalogStats {
   categories: { id: number; name: string; count: number }[];
   lastImportedAt: string | null;
 }
+
+export type KtruNodeKind = "okpd" | "ktru";
+
+export interface KtruTreeNode {
+  id: string;
+  code: string;
+  name: string;
+  kind: KtruNodeKind;
+  status: string | null;
+  isTemplate: boolean;
+  childCount: number;
+  hasChildren: boolean;
+}
+
+export interface KtruChildrenPage {
+  parentId: string | null;
+  nodes: KtruTreeNode[];
+  total: number;
+  offset: number;
+  hasMore: boolean;
+}
