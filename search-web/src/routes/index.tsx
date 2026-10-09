@@ -57,13 +57,19 @@ export default function Home() {
   const returnTo = () => location.pathname + location.search;
   const reset = () => setParams({ q: undefined, category: undefined, page: undefined });
   const submit = (event: SubmitEvent) => { event.preventDefault(); setParams({ q: draft().trim() || undefined, page: undefined }); };
+  let searchInput!: HTMLInputElement;
+  const returnToSearch = (event: MouseEvent) => {
+    event.preventDefault();
+    searchInput.focus({ preventScroll: true });
+    searchInput.scrollIntoView({ behavior: "instant", block: "center" });
+  };
   return <main id="main-content" class="page-width catalog-main">
     <Title>{query() ? `${query()} — Каталог` : "Каталог — А ещё мы сделали поиск"}</Title>
     <Meta name="description" content="Ищите товары для закупок по смыслу и точным словам. Реальные данные Портала поставщиков Москвы, характеристики и ссылки на первоисточник." />
     <section class="hero"><h1>А ещё мы<br />сделали <em>поиск</em><span class="hero-asterisk" aria-hidden="true"><Sparkles strokeWidth={1.1} /></span></h1>
       <form class="search-form" role="search" onSubmit={submit}>
         <Search class="search-form-icon" size={23} strokeWidth={1.7} />
-        <TextField class="search-text-field" name="q" value={draft()} onChange={setDraft}><TextFieldLabel class="sr-only">Что вы ищете?</TextFieldLabel><TextFieldInput type="search" class="search-input" placeholder="Название товара, характеристика или задача…" autocomplete="off" /></TextField>
+        <TextField class="search-text-field" name="q" value={draft()} onChange={setDraft}><TextFieldLabel class="sr-only">Что вы ищете?</TextFieldLabel><TextFieldInput ref={searchInput} id="catalog-search" type="search" class="search-input" placeholder="Название товара, характеристика или задача…" autocomplete="off" /></TextField>
         <Button type="submit" size="lg" class="search-submit"><span>Найти</span><ArrowRight size={18} /></Button>
       </form>
       <DataBoundary retry={() => revalidate(getCatalogStats.key)}><Suspense fallback={<div class="stats-loading" role="status">Загружаем сведения о каталоге…</div>}><CatalogNumbers /></Suspense></DataBoundary>
@@ -75,6 +81,6 @@ export default function Home() {
       <div class="mode-explanation"><Sparkles size={14} /><span>{mode() === "hybrid" ? "Два способа поиска вместе: точные совпадения и близость по смыслу." : mode() === "semantic" ? "Опишите назначение или свойства — поиск найдёт близкие по смыслу товары." : "Поиск по словам в названии, описании и характеристиках."}</span><Show when={isRouting()}><Badge variant="secondary" class="pending-badge">Обновляем…</Badge></Show></div>
       <DataBoundary resetKey={JSON.stringify(input())} retry={() => revalidate(searchProducts.key)}><Suspense fallback={<ResultsSkeleton />}><Results input={input()} returnTo={returnTo()} reset={reset} setPage={page => { setParams({ page: page === 1 ? undefined : page }); document.getElementById("results")?.scrollIntoView({ behavior: "smooth", block: "start" }); }} /></Suspense></DataBoundary>
     </section>
-    <a class="back-to-search" href="#main-content">К поиску<ArrowDown size={15} /></a>
+    <a class="back-to-search" href="#catalog-search" onClick={returnToSearch}>К поиску<ArrowDown size={15} /></a>
   </main>;
 }

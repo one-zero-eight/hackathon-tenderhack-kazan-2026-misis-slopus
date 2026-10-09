@@ -2,7 +2,6 @@ import { A } from "@solidjs/router";
 import { AlertCircle, ArrowRight, ImageOff, Package, RotateCcw, Search, Sparkles } from "lucide-solid";
 import { createEffect, createSignal, ErrorBoundary, For, on, Show, type JSX } from "solid-js";
 import type { ProductHit } from "~/lib/types";
-import { formatPrice } from "~/lib/utils";
 import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
 import { Card } from "./ui/card";
@@ -59,7 +58,7 @@ export function ProductCard(props: { product: ProductHit; returnTo: string }) {
       <h3><A href={href()}>{product().name}</A></h3>
       <p class="product-brand">{product().manufacturer || "Производитель не указан"}</p>
       <Show when={product().characteristics.length}><dl class="card-characteristics"><For each={product().characteristics.slice(0, 2)}>{item => <div><dt>{item.name}</dt><dd>{item.value}{item.unit ? ` ${item.unit}` : ""}</dd></div>}</For></dl></Show>
-      <div class="product-bottom"><div><Show when={product().price !== null} fallback={<span class="missing-price">Цена не указана</span>}><strong class="product-price">{formatPrice(product().price!)}</strong></Show><Show when={product().unit}><span class="price-unit">за {product().unit}</span></Show></div><A href={href()} class="card-arrow" aria-label={`Подробнее: ${product().name}`}><ArrowRight size={18} /></A></div>
+      <A href={href()} class="product-bottom" aria-label={`Подробнее: ${product().name}`}><span class="card-arrow" aria-hidden="true"><ArrowRight size={18} /></span></A>
       <Show when={product().score !== null && product().match !== "text" && product().match !== "catalog"}><div class="similarity" title="Косинусная близость векторов, не вероятность совпадения"><Sparkles size={12} />Семантическая близость {product().score!.toFixed(3)}<Show when={product().match === "both"}><Badge variant="secondary">+ текст</Badge></Show></div></Show>
     </div>
   </Card>;

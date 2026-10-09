@@ -103,13 +103,9 @@ button, a, input, select { outline-offset: 4px; }
 .card-characteristics > div { display: flex; justify-content: space-between; gap: 12px; padding: 2px 0; }
 .card-characteristics dt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 55%; }
 .card-characteristics dd { margin: 0; color: #626d58; text-align: right; max-width: 55%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.product-bottom { margin-top: auto; padding-top: 16px; border-top: 1px solid #eeeee6; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.product-bottom > div { display: flex; flex-wrap: wrap; align-items: baseline; gap: 7px; }
-.product-price { font-size: 17px; font-weight: 600; letter-spacing: -.35px; }
-.missing-price { font-size: 14px; color: #68735d; font-weight: 500; }
-.price-unit { font-size: 10px; color: #949b8a; }
+.product-bottom { margin-top: auto; padding-top: 16px; border-top: 1px solid #eeeee6; display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
 .card-arrow { display: grid; place-items: center; width: 29px; height: 29px; border: 1px solid #e4e7dc; border-radius: 50%; color: #6f7d5f; flex-shrink: 0; }
-.card-arrow:hover { background: #edf2e9; }
+.product-bottom:hover .card-arrow, .product-bottom:focus-visible .card-arrow { background: #edf2e9; }
 .similarity { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; font-size: 9px; color: #8e9980; margin-top: 11px; }
 .similarity > div { padding: 2px 5px; font-size: 8px; }
 .pagination { display: flex; align-items: center; justify-content: center; gap: 28px; margin-top: 31px; }
@@ -158,11 +154,6 @@ button, a, input, select { outline-offset: 4px; }
 .detail-summary h1 { font-family: Georgia, "Times New Roman", serif; font-weight: 400; font-size: clamp(28px, 3vw, 40px); line-height: 1.2; letter-spacing: -.9px; margin: 9px 0 14px; overflow-wrap: anywhere; }
 .detail-manufacturer { font-size: 12px; color: #7e8b70; display: flex; flex-wrap: wrap; align-items: center; gap: 16px; }
 .detail-country { display: flex; align-items: center; gap: 5px; color: #939f85; font-size: 11px; }
-.detail-price { margin-top: 26px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); padding: 23px 0; }
-.detail-price > strong { font-size: 28px; font-weight: 500; letter-spacing: -.7px; }
-.detail-price > strong.price-unknown { font-size: 24px; color: #63745a; }
-.detail-price > span { color: #9ba48e; font-size: 13px; }
-.detail-price p { font-size: 10px; line-height: 1.6; color: #919d83; margin: 7px 0 0; }
 .detail-facts { margin: 20px 0 23px; }
 .detail-facts > div { display: flex; justify-content: space-between; gap: 20px; padding: 7px 0; font-size: 12px; line-height: 1.5; }
 .detail-facts dt { color: #929c86; }
@@ -277,10 +268,6 @@ button, a, input, select { outline-offset: 4px; }
   .card-characteristics { font-size: 8px; margin-bottom: 11px; }
   .card-characteristics > div { gap: 4px; }
   .product-bottom { gap: 4px; padding-top: 11px; }
-  .product-bottom > div { gap: 3px; flex-direction: column; }
-  .product-price { font-size: 14px; }
-  .missing-price { font-size: 11px; }
-  .price-unit { font-size: 8px; }
   .card-arrow { width: 23px; height: 23px; }
   .card-arrow svg { width: 13px; }
   .similarity { font-size: 8px; line-height: 1.5; gap: 4px; }
@@ -303,9 +290,6 @@ button, a, input, select { outline-offset: 4px; }
   .detail-summary h1 { font-size: 34px; line-height: 1.17; }
   .detail-category { margin-top: 13px; }
   .detail-manufacturer { font-size: 12px; }
-  .detail-price { margin-top: 21px; padding-block: 21px; }
-  .detail-price > strong { font-size: 28px; }
-  .detail-price p { font-size: 10px; }
   .detail-facts { margin-block: 18px 20px; }
   .detail-facts > div { font-size: 11px; }
   .original-link { font-size: 12px; }
@@ -332,7 +316,6 @@ button, a, input, select { outline-offset: 4px; }
   .product-content { padding: 16px; }
   .card-characteristics { font-size: 10px; }
   .product-brand { font-size: 10px; }
-  .product-price { font-size: 17px; }
 }
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }
