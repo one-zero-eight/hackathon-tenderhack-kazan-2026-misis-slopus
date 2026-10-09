@@ -31,7 +31,7 @@ export function Example() {
 | `Button` | `variant`: `default`, `outline`, `secondary`, `ghost`, `link`; `size`: `default`, `sm`, `lg`, `icon`. Поддерживает `disabled`, обработчики, `ref` и `as`. Для иконки без текста задайте `aria-label`. |
 | `Badge` | `variant`: `default`, `secondary`, `outline`; стандартные свойства `div`. |
 | `Card` | `CardHeader`, `CardTitle`, `CardDescription`, `CardContent`, `CardFooter`; стандартные свойства соответствующих HTML-элементов. |
-| `TextField` | `value` / `onChange` или `defaultValue`, `disabled`, `readOnly`, `validationState`. Состав: `TextFieldLabel`, `TextFieldInput`, `TextFieldDescription`, `TextFieldErrorMessage`. `TextFieldInput` поддерживает `type="text"` и `type="search"`. |
+| `TextField` | `value` / `onChange` или `defaultValue`, `disabled`, `readOnly`, `validationState`. Состав: `TextFieldLabel`, `TextFieldInput`, `TextFieldTextarea`, `TextFieldDescription`, `TextFieldErrorMessage`. `TextFieldInput` поддерживает `type="text"` и `type="search"`; `TextFieldTextarea` используется для многострочного ввода. |
 | `StatePanel` | `title`, `description?`, `icon?`, `action?`, `children?`, `variant`: `default` или `error`. Ошибка получает `role="alert"`; содержимое и действия задаёт потребитель. |
 | `Skeleton` | Стандартные свойства `div`. Размеры задаются через `class`; по умолчанию `aria-hidden="true"`. Задайте `role="status"` и описание загрузки на внешнем контейнере. |
 
