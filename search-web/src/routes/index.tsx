@@ -3,9 +3,7 @@ import { createAsync, revalidate, useIsRouting, useLocation, useSearchParams } f
 import { ArrowDown, ArrowLeft, ArrowRight, Check, ChevronDown, Layers3, Search, SlidersHorizontal, Sparkles, TextSearch } from "lucide-solid";
 import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show, Suspense } from "solid-js";
 import { DataBoundary, EmptyState, ProductCard, ResultsSkeleton } from "~/components/catalog";
-import { Badge } from "~/components/ui/badge";
-import { Button } from "~/components/ui/button";
-import { TextField, TextFieldInput, TextFieldLabel } from "~/components/ui/text-field";
+import { Badge, Button, TextField, TextFieldInput, TextFieldLabel } from "~/ui-kit";
 import { getCatalogStats, searchProducts } from "~/lib/rpc";
 import { RETRIEVAL_LIMIT } from "~/lib/search-config";
 import type { SearchInput, SearchMode } from "~/lib/types";

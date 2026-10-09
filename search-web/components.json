@@ -1,5 +1,5 @@
 {
   "$schema": "https://solid-ui.com/schema.json",
-  "tailwind": { "config": "", "css": "src/app.css", "baseColor": "stone", "cssVariables": true },
-  "aliases": { "components": "~/components", "utils": "~/lib/utils", "ui": "~/components/ui" }
+  "tailwind": { "config": "", "css": "src/ui-kit/styles.css", "baseColor": "stone", "cssVariables": true },
+  "aliases": { "components": "~/components", "utils": "~/ui-kit/utils", "ui": "~/ui-kit" }
 }

@@ -1,31 +1,7 @@
-@import "tailwindcss";
+@import "./ui-kit/styles.css";
 
-@theme inline {
-  --color-background: #faf9f6;
-  --color-foreground: #282e29;
-  --color-card: #fff;
-  --color-card-foreground: #282e29;
-  --color-primary: #285a40;
-  --color-primary-foreground: #fff;
-  --color-secondary: #edf2e9;
-  --color-secondary-foreground: #456345;
-  --color-muted-foreground: #81867c;
-  --color-input: #dfdfd6;
-  --color-accent: #eeeee7;
-  --color-ring: #285a40;
-}
-
-:root { font-family: "Inter", "Segoe UI", -apple-system, BlinkMacSystemFont, Arial, sans-serif; color: #282e29; background: #faf9f6; font-synthesis: none; --muted: #81867c; --line: #e4e4dc; --green: #285a40; }
-* { box-sizing: border-box; }
+:root { --muted: var(--ui-muted-foreground); --line: var(--ui-border); --green: var(--ui-primary); }
 html { scroll-behavior: smooth; scroll-padding-top: 100px; }
-body { margin: 0; min-width: 320px; }
-button, input, select { font: inherit; }
-a { color: inherit; text-decoration: none; }
-button, a, input, select { -webkit-tap-highlight-color: transparent; }
-button:not(:disabled), select { cursor: pointer; }
-button, a, input, select { outline-offset: 4px; }
-:focus-visible { outline: 2px solid #285a40; }
-::selection { background: #dce9d2; }
 .page-width { width: min(1200px, calc(100% - 96px)); margin-inline: auto; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
 .skip-link { position: fixed; z-index: 100; top: -100px; left: 20px; padding: 12px 20px; background: white; border: 1px solid var(--green); }
@@ -111,23 +87,14 @@ button, a, input, select { outline-offset: 4px; }
 .pagination { display: flex; align-items: center; justify-content: center; gap: 28px; margin-top: 31px; }
 .pagination > span { font-size: 12px; color: #818977; }
 .pagination .ui-button { font-size: 12px; }
-.state-panel { border: 1px dashed #d9ddcd; border-radius: 10px; padding: 46px 24px; text-align: center; background: #f5f5ef; display: flex; flex-direction: column; align-items: center; }
-.state-icon { border-radius: 50%; width: 56px; height: 56px; background: #e9eddf; color: #7b8a67; display: grid; place-items: center; margin-bottom: 17px; }
-.state-panel h3 { margin: 0 0 9px; font-size: 20px; font-weight: 500; }
-.state-panel p { margin: 0 0 20px; color: #8a9380; font-size: 13px; line-height: 1.6; max-width: 450px; }
-.error-panel { border-color: #ded0bd; background: #faf6ed; }
-.error-panel .state-icon { color: #987444; background: #f0e7d6; }
-.error-panel .error-message { color: #976f49; font: 11px/1.7 monospace; overflow-wrap: anywhere; }
 .loading-label { display: flex; align-items: center; gap: 8px; font-size: 12px; color: #8a9380; margin-bottom: 23px; }
 .loading-dot { width: 8px; height: 8px; border-radius: 50%; background: #87a276; animation: pulse 1s ease-in-out infinite alternate; }
 .skeleton-card { border: 1px solid var(--line); border-radius: 9px; overflow: hidden; }
-.skeleton-image { height: 215px; background: #e9ece2; }
+.skeleton-image { height: 215px; background-color: var(--ui-skeleton); }
 .skeleton-content { padding: 24px; }
-.skeleton-line { height: 12px; border-radius: 3px; background: #e9ece2; margin-bottom: 14px; width: 65%; }
+.skeleton-line { height: 12px; border-radius: 3px; background-color: var(--ui-skeleton); margin-bottom: 14px; width: 65%; }
 .skeleton-line.wide { width: 95%; height: 17px; }
 .skeleton-line.short { width: 45%; }
-.shimmer { background-image: linear-gradient(90deg, #e9ece2 0%, #f3f4ed 50%, #e9ece2 100%); background-size: 200% 100%; animation: shimmer 1.6s linear infinite; }
-@keyframes shimmer { to { background-position: -200% 0; } }
 @keyframes pulse { to { opacity: .3; } }
 .back-to-search { display: flex; align-items: center; gap: 7px; justify-content: center; margin-top: 28px; font-size: 11px; color: #8b947f; }
 .back-to-search svg { transform: rotate(180deg); }
@@ -276,9 +243,6 @@ button, a, input, select { outline-offset: 4px; }
   .pagination { gap: 18px; margin-top: 25px; }
   .pagination > span { font-size: 10px; }
   .pagination .ui-button { padding-inline: 12px; font-size: 11px; }
-  .state-panel { padding: 35px 18px; }
-  .state-panel h3 { font-size: 18px; }
-  .state-panel p { font-size: 11px; }
   .skeleton-image { height: 165px; }
   .skeleton-content { padding: 16px; }
   .detail-main { padding-top: 22px; }

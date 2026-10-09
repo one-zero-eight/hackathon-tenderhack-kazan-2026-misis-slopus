@@ -129,21 +129,23 @@ class Client:
         return self._get(path, referer=f"https://{HOST}/catalog")
 
 
-def export_jsonl_gz(db: Path, out: Path, meta_extra: dict):
+def export_jsonl_gz(db: Path, out: Path, meta_extra: dict, list_source: str = "ste.jsonl.gz"):
     con = sqlite3.connect(db)
     try:
         # Pin one SQLite snapshot for the count and streaming JSONL export.
         con.execute("BEGIN")
         count = con.execute("SELECT COUNT(*) FROM sku_details").fetchone()[0]
+        use_gzip = out.suffix == ".gz" or out.name.endswith(".jsonl.gz")
         meta = {
             "source": f"https://{HOST}/classifier/api/Sku/GetSku",
-            "listSource": "ste.jsonl.gz",
+            "listSource": list_source,
             "exportedAt": now_iso(),
             **meta_extra,
             "recordCount": count,
             "format": "jsonl",
-            "compression": "gzip",
         }
+        if use_gzip:
+            meta["compression"] = "gzip"
         meta_path = Path(str(out) + ".meta.json")
         if meta_path.exists():
             try:
@@ -154,8 +156,12 @@ def export_jsonl_gz(db: Path, out: Path, meta_extra: dict):
                 pass
 
         temporary = out.with_name(out.name + ".part")
-        with gzip.open(temporary, "wt", encoding="utf-8") as stream:
-            for (payload,) in con.execute("SELECT payload FROM sku_details ORDER BY sku_id"):
+        opener = gzip.open if use_gzip else open
+        with opener(temporary, "wt", encoding="utf-8") as stream:
+            for (payload,) in con.execute(
+                "SELECT d.payload FROM sku_details d "
+                "JOIN targets t USING(sku_id) ORDER BY t.ordinal"
+            ):
                 stream.write(json.dumps(json.loads(payload), ensure_ascii=False, separators=(",", ":")) + "\n")
         temporary.replace(out)
         meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -251,11 +257,21 @@ def load_ids(source: Path) -> list[int]:
     return [int(obj["id"]) for obj in iter_source_records(source)]
 
 
-def cmd_resume_sample(args):
-    db = Path(args.db)
-    source = Path(args.source)
-    out = Path(args.out)
-    all_ids = load_ids(source)
+def resume_download(
+    all_ids: list[int],
+    db: Path,
+    out: Path,
+    *,
+    bridge: str | None = None,
+    pause: float = 0.05,
+    workers: int = 4,
+    list_source: str = "ste.jsonl.gz",
+):
+    class Args:
+        pass
+
+    args = Args()
+    args.bridge = bridge
 
     con = sqlite3.connect(db, check_same_thread=False)
     con.execute(
@@ -274,10 +290,10 @@ def cmd_resume_sample(args):
 
     done = {r[0] for r in con.execute("select sku_id from sku_details")}
     pending = [i for i in all_ids if i not in done]
-    workers = max(1, int(args.workers))
+    workers = max(1, int(workers))
     print(
         f"resume: list={len(all_ids)} done={len(done)} pending={len(pending)} "
-        f"pause={args.pause}s workers={workers}",
+        f"pause={pause}s workers={workers}",
         flush=True,
     )
     if not pending:
@@ -285,6 +301,7 @@ def cmd_resume_sample(args):
             db,
             out,
             {"stopReason": "complete", "recordCount": len(done), "targetCount": len(all_ids), "via": "ui-GetSku"},
+            list_source=list_source,
         )
         print("nothing pending", flush=True)
         con.close()
@@ -317,7 +334,7 @@ def cmd_resume_sample(args):
                         sku_id = next(pending_iter)
                     except StopIteration:
                         break
-                    futs[pool.submit(fetch_one, clients[len(futs) % workers], sku_id, args.pause)] = sku_id
+                    futs[pool.submit(fetch_one, clients[len(futs) % workers], sku_id, pause)] = sku_id
 
             fill()
             n = 0
@@ -335,7 +352,7 @@ def cmd_resume_sample(args):
                         bot_hit = True
                         print(f"BOT_PROTECTION: {e}; cooldown 180s then retry sku={sku_id}", flush=True)
                         time.sleep(180)
-                        futs[pool.submit(fetch_one, clients[0], sku_id, args.pause)] = sku_id
+                        futs[pool.submit(fetch_one, clients[0], sku_id, pause)] = sku_id
                         fill()
                         continue
                     n += 1
@@ -363,10 +380,11 @@ def cmd_resume_sample(args):
                             {
                                 "stopReason": "running",
                                 "via": "ui-GetSku",
-                                "proxyMode": "socks5-direct-ip" if not args.bridge else "http-bridge",
+                                "proxyMode": "socks5-direct-ip" if not bridge else "http-bridge",
                                 "workers": workers,
                                 "failedCount": fail,
                             },
+                            list_source=list_source,
                         )
                     fill()
     finally:
@@ -383,9 +401,260 @@ def cmd_resume_sample(args):
                 "failedCount": fail,
                 "workers": workers,
             },
+            list_source=list_source,
         )
         con.close()
         print(f"done saved={total}/{len(all_ids)} ok_run={ok} fail={fail}", flush=True)
+
+
+def fetch_query_batch(
+    client: Client, batch_ids: list[int], pause: float
+) -> tuple[list[int], list[dict], list[int], str | None]:
+    """Return (batch_ids, items, missing_ids, error)."""
+    attempt = 0
+    while True:
+        attempt += 1
+        try:
+            data = client.query_index_ids(batch_ids)
+            items = data.get("items") if isinstance(data, dict) else None
+            if not isinstance(items, list):
+                raise RuntimeError(f"bad QueryIndex shape keys={list(data)[:10] if isinstance(data, dict) else type(data)}")
+            wanted = set(batch_ids)
+            returned = []
+            seen = set()
+            for item in items:
+                if not isinstance(item, dict) or not isinstance(item.get("id"), int):
+                    continue
+                if item["id"] in seen or item["id"] not in wanted:
+                    continue
+                seen.add(item["id"])
+                returned.append(item)
+            missing = [i for i in batch_ids if i not in seen]
+            if pause > 0:
+                time.sleep(pause)
+            return batch_ids, returned, missing, None
+        except GatewayDown as e:
+            if attempt >= 8:
+                return batch_ids, [], batch_ids, f"GatewayDown: {e}"
+            time.sleep(min(120, 3 * attempt))
+        except BotProtected:
+            raise
+        except Exception as e:
+            if attempt >= 4:
+                return batch_ids, [], batch_ids, f"{type(e).__name__}: {e}"
+            time.sleep(1.5 * attempt)
+
+
+def resume_download_query_index(
+    all_ids: list[int],
+    db: Path,
+    out: Path,
+    *,
+    bridge: str | None = None,
+    pause: float = 0.0,
+    workers: int = 8,
+    batch_size: int = 50,
+    list_source: str = "ste.jsonl.gz",
+):
+    """Batch-fetch cards via anonymous QueryIndex?filter.ids (much faster than GetSku)."""
+
+    class Args:
+        pass
+
+    args = Args()
+    args.bridge = bridge
+
+    con = sqlite3.connect(db, check_same_thread=False)
+    con.execute(
+        "create table if not exists sku_details ("
+        "sku_id integer primary key, fetched_at text not null, payload text not null)"
+    )
+    con.execute(
+        "create table if not exists targets (ordinal integer not null, sku_id integer primary key)"
+    )
+    con.executemany(
+        "insert or ignore into targets(ordinal, sku_id) values(?,?)",
+        list(enumerate(all_ids)),
+    )
+    con.commit()
+
+    done = {r[0] for r in con.execute("select sku_id from sku_details")}
+    pending = [i for i in all_ids if i not in done]
+    workers = max(1, int(workers))
+    batch_size = max(1, int(batch_size))
+    chunks = [pending[i : i + batch_size] for i in range(0, len(pending), batch_size)]
+    print(
+        f"resume-qi: list={len(all_ids)} done={len(done)} pending={len(pending)} "
+        f"chunks={len(chunks)} batch={batch_size} pause={pause}s workers={workers}",
+        flush=True,
+    )
+    via = "ui-QueryIndex"
+    source_url = f"https://{HOST}/newapi/api/Sku/QueryIndex"
+    if not pending:
+        export_jsonl_gz(
+            db,
+            out,
+            {
+                "stopReason": "complete",
+                "recordCount": len(done),
+                "targetCount": len(all_ids),
+                "via": via,
+                "source": source_url,
+            },
+            list_source=list_source,
+        )
+        print("nothing pending", flush=True)
+        con.close()
+        return
+
+    clients = [make_client(args) for _ in range(workers)]
+    lock = threading.Lock()
+    ok = 0
+    missing_marked = 0
+    fail = 0
+    t0 = time.perf_counter()
+    bot_hit = False
+    inflight_limit = workers * 2
+
+    def save_many(cards: list[dict]):
+        with lock:
+            fetched_at = now_iso()
+            con.executemany(
+                "insert or replace into sku_details(sku_id, fetched_at, payload) values(?,?,?)",
+                [(card["id"], fetched_at, json.dumps(card, ensure_ascii=False)) for card in cards],
+            )
+            con.commit()
+
+    try:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            chunk_iter = iter(chunks)
+            futs = {}
+
+            def fill():
+                while len(futs) < inflight_limit:
+                    try:
+                        batch = next(chunk_iter)
+                    except StopIteration:
+                        break
+                    futs[pool.submit(fetch_query_batch, clients[len(futs) % workers], batch, pause)] = batch
+
+            fill()
+            n = 0
+            while futs:
+                done_futs = []
+                for fut in as_completed(list(futs.keys()), timeout=None):
+                    done_futs.append(fut)
+                    break
+                for fut in done_futs:
+                    batch = futs.pop(fut)
+                    try:
+                        _batch, items, missing, err = fut.result()
+                    except BotProtected as e:
+                        bot_hit = True
+                        print(
+                            f"AGENT_ALERT kind=bot_protection detail={e!s}; "
+                            f"cooldown 180s then retry batch={batch[:3]}...",
+                            flush=True,
+                        )
+                        time.sleep(180)
+                        futs[pool.submit(fetch_query_batch, clients[0], batch, pause)] = batch
+                        fill()
+                        continue
+                    n += 1
+                    if err:
+                        fail += 1
+                        print(
+                            f"AGENT_ALERT kind=batch_fail "
+                            f"batch={batch[0]}..{batch[-1]} size={len(batch)} detail={err}",
+                            flush=True,
+                        )
+                        if "GatewayDown" in err or "Host unreachable" in err:
+                            print(
+                                "AGENT_ALERT kind=proxy_unreachable sleeping=30s",
+                                flush=True,
+                            )
+                            time.sleep(30)
+                        # re-queue once-worth by putting back? leave pending for next run
+                    else:
+                        if items:
+                            save_many(items)
+                            ok += len(items)
+                        if missing:
+                            stubs = [
+                                {
+                                    "id": sku_id,
+                                    "_fetchError": {
+                                        "httpStatus": 403,
+                                        "message": "Not returned by QueryIndex (likely access-restricted)",
+                                        "skippedAt": now_iso(),
+                                    },
+                                }
+                                for sku_id in missing
+                            ]
+                            save_many(stubs)
+                            missing_marked += len(missing)
+                    if n % 10 == 0 or n == len(chunks):
+                        rate = (ok + missing_marked) / max(time.perf_counter() - t0, 1e-6)
+                        print(
+                            f"progress {len(done)+ok+missing_marked}/{len(all_ids)} "
+                            f"cards={ok} missing={missing_marked} fail_batches={fail} "
+                            f"{rate:.1f}/s",
+                            flush=True,
+                        )
+                    if n % 100 == 0:
+                        export_jsonl_gz(
+                            db,
+                            out,
+                            {
+                                "stopReason": "running",
+                                "via": via,
+                                "source": source_url,
+                                "proxyMode": "socks5-direct-ip" if not bridge else "http-bridge",
+                                "workers": workers,
+                                "batchSize": batch_size,
+                                "failedCount": fail,
+                                "missingCount": missing_marked,
+                            },
+                            list_source=list_source,
+                        )
+                    fill()
+    finally:
+        total = con.execute("select count(*) from sku_details").fetchone()[0]
+        export_jsonl_gz(
+            db,
+            out,
+            {
+                "stopReason": "bot" if bot_hit else ("complete" if total >= len(all_ids) else "paused"),
+                "recordCount": total,
+                "targetCount": len(all_ids),
+                "via": via,
+                "source": source_url,
+                "finishedAt": now_iso(),
+                "failedCount": fail,
+                "missingCount": missing_marked,
+                "workers": workers,
+                "batchSize": batch_size,
+            },
+            list_source=list_source,
+        )
+        con.close()
+        print(
+            f"done saved={total}/{len(all_ids)} cards={ok} missing={missing_marked} fail_batches={fail}",
+            flush=True,
+        )
+
+
+def cmd_resume_sample(args):
+    source = Path(args.source)
+    resume_download(
+        load_ids(source),
+        Path(args.db),
+        Path(args.out),
+        bridge=args.bridge,
+        pause=args.pause,
+        workers=args.workers,
+        list_source=str(source),
+    )
 
 
 def main():

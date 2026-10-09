@@ -1,0 +1,32 @@
+@import "tailwindcss";
+@import "./tokens.css";
+
+:root { font-family: var(--ui-font-sans); color: var(--ui-foreground); background: var(--ui-background); font-synthesis: none; }
+* { box-sizing: border-box; }
+body { margin: 0; min-width: 320px; }
+button, input, select { font: inherit; }
+a { color: inherit; text-decoration: none; }
+button, a, input, select { -webkit-tap-highlight-color: transparent; }
+button:not(:disabled), select { cursor: pointer; }
+button, a, input, select { outline-offset: 4px; }
+:focus-visible { outline: 2px solid var(--ui-ring); }
+::selection { background: var(--ui-selection); }
+
+.state-panel { border: 1px dashed var(--ui-state-border); border-radius: 10px; padding: 46px 24px; text-align: center; background: var(--ui-state-background); display: flex; flex-direction: column; align-items: center; }
+.state-icon { border-radius: 50%; width: 56px; height: 56px; background: var(--ui-state-icon-background); color: var(--ui-state-icon); display: grid; place-items: center; margin-bottom: 17px; }
+.state-panel h3 { margin: 0 0 9px; font-size: 20px; font-weight: 500; }
+.state-panel p { margin: 0 0 20px; color: var(--ui-state-description); font-size: 13px; line-height: 1.6; max-width: 450px; }
+.error-panel { border-color: var(--ui-error-border); background: var(--ui-error-background); }
+.error-panel .state-icon { color: var(--ui-error-icon); background: var(--ui-error-icon-background); }
+.error-panel .error-message { color: var(--ui-destructive); font: 11px/1.7 monospace; overflow-wrap: anywhere; }
+.ui-skeleton { background-color: var(--ui-skeleton); background-image: linear-gradient(90deg, var(--ui-skeleton) 0%, var(--ui-skeleton-highlight) 50%, var(--ui-skeleton) 100%); background-size: 200% 100%; animation: ui-shimmer 1.6s linear infinite; }
+@keyframes ui-shimmer { to { background-position: -200% 0; } }
+
+@media (max-width: 600px) {
+  .state-panel { padding: 35px 18px; }
+  .state-panel h3 { font-size: 18px; }
+  .state-panel p { font-size: 11px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ui-skeleton { animation: none; }
+}

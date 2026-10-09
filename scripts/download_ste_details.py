@@ -22,10 +22,6 @@ PAUSE_SECONDS = 10
 BATCH_SIZE = 100
 MAX_RUN_SECONDS = 6 * 60 * 60
 STOP_REQUESTED = False
-RUN_LOCK = open('/tmp/slider-ste-details.lock', 'a')
-fcntl.flock(RUN_LOCK.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-API_LOCK = open('/tmp/slider-ste-download.lock', 'a')
-fcntl.flock(API_LOCK.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
 
 
 def stop(signum, frame):
@@ -71,27 +67,55 @@ async def wait(seconds):
         await asyncio.sleep(min(5, max(0, deadline - time.monotonic())))
 
 
-async def main():
-    scheduled = datetime.now(timezone.utc) + timedelta(seconds=COOLDOWN_SECONDS)
-    print(f'SCHEDULED: batch details probe at {scheduled.isoformat()} UTC; waiting 30 minutes; no API requests during cooldown', flush=True)
-    await wait(COOLDOWN_SECONDS)
-    if STOP_REQUESTED:
-        print('Stopped during cooldown; no API requests made', flush=True)
-        return
-    ids = [item['id'] for item in iter_records(SOURCE)]
-    metadata = json.loads(Path(str(SOURCE) + '.meta.json').read_text(encoding='utf-8'))
-    target = len(ids)
-    if metadata['source'] != 'https://api.zakupki.mos.ru/api/v2/Sku/public/Search' or metadata['recordCount'] != target or target != 10000:
-        raise RuntimeError('Unexpected list checkpoint; no API requests made')
-    if len(set(ids)) != target or any(a >= b for a, b in zip(ids, ids[1:])):
-        raise RuntimeError('List validation failed; no API requests made')
+def load_token() -> str:
     token = (ROOT / 'secrets' / 'zakupki-token').read_text(encoding='utf-8').strip()
     if token.lower().startswith('bearer '):
         token = token[7:]
     if not token or any(c.isspace() for c in token):
         raise RuntimeError('Invalid token file; value not logged')
+    return token
+
+
+def export_details(db, export: Path, completed: int):
+    export_metadata = {
+        key: json.loads(value)
+        for key, value in db.execute('SELECT key,value FROM metadata')
+    }
+    export_metadata['format'] = 'jsonl'
+    export_metadata['exportedAt'] = now()
+    use_gzip = export.suffix == '.gz' or export.name.endswith('.jsonl.gz')
+    if use_gzip:
+        export_metadata['compression'] = 'gzip'
+
+    temporary = export.with_name(export.name + '.part')
+    opener = gzip.open if use_gzip else open
+    with opener(temporary, 'wt', encoding='utf-8') as stream:
+        for (payload,) in db.execute('SELECT d.payload FROM sku_details d JOIN targets t USING(sku_id) ORDER BY t.ordinal'):
+            stream.write(payload + '\n')
+    temporary.replace(export)
+    Path(str(export) + '.meta.json').write_text(json.dumps(export_metadata, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+    print(f'EXPORTED: {export.name}; {completed} cards; bytes={export.stat().st_size}', flush=True)
+
+
+async def download_details(
+    ids: list[int],
+    *,
+    database: Path,
+    export: Path,
+    list_source: str | Path,
+    token: str,
+    cooldown_seconds: int = 0,
+):
+    target = len(ids)
+    if cooldown_seconds:
+        scheduled = datetime.now(timezone.utc) + timedelta(seconds=cooldown_seconds)
+        print(f'SCHEDULED: batch details probe at {scheduled.isoformat()} UTC; waiting {cooldown_seconds}s; no API requests during cooldown', flush=True)
+        await wait(cooldown_seconds)
+        if STOP_REQUESTED:
+            print('Stopped during cooldown; no API requests made', flush=True)
+            return
     fingerprint = hashlib.sha256(json.dumps(ids, separators=(',', ':')).encode()).hexdigest()
-    db = sqlite3.connect(DATABASE)
+    db = sqlite3.connect(database)
     db.execute('PRAGMA journal_mode=WAL')
     db.execute('PRAGMA synchronous=FULL')
     db.execute('PRAGMA foreign_keys=ON')
@@ -108,18 +132,20 @@ async def main():
     if prior and json.loads(prior[0]) != fingerprint:
         db.close()
         raise RuntimeError('Saved details belong to a different SKU list')
+    list_source = str(list_source)
     with db:
         if not prior:
             db.executemany('INSERT INTO targets(ordinal,sku_id) VALUES(?,?)', enumerate(ids))
-            update_metadata(db, listFingerprint=fingerprint, source=ENDPOINT, listSource=str(SOURCE), targetCount=target, startedAt=now())
+            update_metadata(db, listFingerprint=fingerprint, source=ENDPOINT, listSource=list_source, targetCount=target, startedAt=now())
         else:
             saved_source = db.execute('SELECT value FROM metadata WHERE key=?', ('source',)).fetchone()
             if not saved_source or json.loads(saved_source[0]) != ENDPOINT:
                 raise RuntimeError('Existing database uses a different details API')
-        update_metadata(db, listSource=str(SOURCE), pauseSeconds=PAUSE_SECONDS, batchSize=BATCH_SIZE, stopReason='in_progress', resumeStartedAt=now(), finishedAt=None)
+        update_metadata(db, listSource=list_source, pauseSeconds=PAUSE_SECONDS, batchSize=BATCH_SIZE, stopReason='in_progress', resumeStartedAt=now(), finishedAt=None)
     completed = db.execute('SELECT count(*) FROM sku_details').fetchone()[0]
     pending = [row[0] for row in db.execute('SELECT t.sku_id FROM targets t LEFT JOIN sku_details d USING(sku_id) WHERE d.sku_id IS NULL ORDER BY t.ordinal')]
-    print(f'COOLDOWN COMPLETE: {completed} saved; {len(pending)} pending. First request limited to 2 SKUs', flush=True)
+    prefix = 'COOLDOWN COMPLETE' if cooldown_seconds else 'READY'
+    print(f'{prefix}: {completed} saved; {len(pending)} pending. First request limited to 2 SKUs', flush=True)
     reason = 'complete'
     requests = 0
     deadline = time.monotonic() + MAX_RUN_SECONDS
@@ -188,25 +214,38 @@ async def main():
         if reason == 'complete' and completed != target:
             raise RuntimeError('Missing full cards at completion')
         if completed:
-            export = ROOT / 'data' / 'ste-details.jsonl.gz'
-            export_metadata = {
-                key: json.loads(value)
-                for key, value in db.execute('SELECT key,value FROM metadata')
-            }
-            export_metadata['format'] = 'jsonl'
-            export_metadata['compression'] = 'gzip'
-            export_metadata['exportedAt'] = now()
-
-            temporary = export.with_name(export.name + '.part')
-            with gzip.open(temporary, 'wt', encoding='utf-8') as stream:
-                for (payload,) in db.execute('SELECT d.payload FROM sku_details d JOIN targets t USING(sku_id) ORDER BY t.ordinal'):
-                    stream.write(payload + '\n')
-            temporary.replace(export)
-            Path(str(export) + '.meta.json').write_text(json.dumps(export_metadata, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
-            print(f'EXPORTED: {export.name}; {completed} cards; bytes={export.stat().st_size}', flush=True)
+            export_details(db, export, completed)
         db.execute('PRAGMA wal_checkpoint(TRUNCATE)')
         db.close()
-        print(f'FINISHED: {DATABASE.name}; {completed} validated full cards; stop={reason}', flush=True)
+        print(f'FINISHED: {database.name}; {completed} validated full cards; stop={reason}', flush=True)
 
 
-asyncio.run(main())
+def acquire_locks():
+    run_lock = open('/tmp/slider-ste-details.lock', 'a')
+    fcntl.flock(run_lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    api_lock = open('/tmp/slider-ste-download.lock', 'a')
+    fcntl.flock(api_lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    return run_lock, api_lock
+
+
+async def main():
+    acquire_locks()
+    ids = [item['id'] for item in iter_records(SOURCE)]
+    metadata = json.loads(Path(str(SOURCE) + '.meta.json').read_text(encoding='utf-8'))
+    target = len(ids)
+    if metadata['source'] != 'https://api.zakupki.mos.ru/api/v2/Sku/public/Search' or metadata['recordCount'] != target or target != 10000:
+        raise RuntimeError('Unexpected list checkpoint; no API requests made')
+    if len(set(ids)) != target or any(a >= b for a, b in zip(ids, ids[1:])):
+        raise RuntimeError('List validation failed; no API requests made')
+    await download_details(
+        ids,
+        database=DATABASE,
+        export=ROOT / 'data' / 'ste-details.jsonl.gz',
+        list_source=SOURCE,
+        token=load_token(),
+        cooldown_seconds=COOLDOWN_SECONDS,
+    )
+
+
+if __name__ == '__main__':
+    asyncio.run(main())

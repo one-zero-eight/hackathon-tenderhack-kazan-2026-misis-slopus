@@ -2,7 +2,7 @@
 // https://github.com/stefan-karger/solid-ui/blob/main/apps/docs/src/registry/ui/badge.tsx
 import { splitProps, type Component, type ComponentProps } from "solid-js";
 import { cva, type VariantProps } from "class-variance-authority";
-import { cn } from "~/lib/utils";
+import { cn } from "./utils";
 const badgeVariants = cva("inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium", {
   variants: { variant: {
     default: "border-transparent bg-primary text-primary-foreground",
