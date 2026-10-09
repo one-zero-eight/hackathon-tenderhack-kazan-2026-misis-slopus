@@ -77,4 +77,5 @@ export interface KtruChildrenPage {
   total: number;
   offset: number;
   hasMore: boolean;
+  filterMatches: number | null;
 }

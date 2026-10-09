@@ -1,10 +1,10 @@
 import { Meta, Title } from "@solidjs/meta";
 import { createAsync, revalidate } from "@solidjs/router";
 import { ChevronRight, Network, Search } from "lucide-solid";
-import { createEffect, createMemo, createSignal, For, on, Show, Suspense } from "solid-js";
+import { createEffect, createMemo, createSignal, For, on, onCleanup, Show, Suspense } from "solid-js";
 import { DataBoundary } from "~/components/catalog";
-import { getKtruChildren, getKtruRecord, getKtruStats, searchKtru } from "~/lib/rpc";
-import type { KtruTreeNode } from "~/lib/types";
+import { getKtruChildren, getKtruFilterMeta, getKtruRecord, getKtruStats } from "~/lib/rpc";
+import type { KtruChildrenPage, KtruTreeNode } from "~/lib/types";
 import { formatNumber } from "~/lib/utils";
 import "./ktru.css";
 
@@ -17,42 +17,65 @@ function statusBadge(status: string | null) {
 function TreeBranch(props: {
   parentId: string | null;
   selectedId: string | null;
+  filter: string;
+  matchIds: Set<string>;
   onSelect: (node: KtruTreeNode) => void;
 }) {
   const [extra, setExtra] = createSignal<KtruTreeNode[]>([]);
-  const page = createAsync(() => getKtruChildren(props.parentId, 0));
-  createEffect(on(() => props.parentId, () => setExtra([]), { defer: true }));
+  const [page, setPage] = createSignal<KtruChildrenPage | undefined>();
+  const [loading, setLoading] = createSignal(true);
+  createEffect(on(() => [props.parentId, props.filter] as const, ([parentId, filter]) => {
+    let alive = true;
+    setExtra([]);
+    setLoading(true);
+    void getKtruChildren(parentId, 0, filter).then(data => {
+      if (!alive) return;
+      setPage(data);
+      setLoading(false);
+    }, () => { if (alive) setLoading(false); });
+    onCleanup(() => { alive = false; });
+  }));
   const nodes = createMemo(() => [...(page()?.nodes ?? []), ...extra()]);
   const loadMore = async () => {
-    const more = await getKtruChildren(props.parentId, nodes().length);
+    const more = await getKtruChildren(props.parentId, nodes().length, props.filter);
     setExtra(current => [...current, ...more.nodes]);
   };
   return <Show when={page()} fallback={<div class="ktru-loading">Загружаем…</div>}>{data =>
-    <Show when={nodes().length} fallback={<div class="ktru-empty">Нет дочерних позиций</div>}>
-      <ul class="ktru-tree-list">
-        <For each={nodes()}>{node => <TreeNode node={node} selectedId={props.selectedId} onSelect={props.onSelect} />}</For>
-        <Show when={nodes().length < data().total}>
-          <li><button type="button" class="ktru-more" onClick={() => void loadMore()}>Показать ещё ({formatNumber(data().total - nodes().length)})</button></li>
-        </Show>
-      </ul>
-    </Show>
+    <div classList={{ "ktru-tree-pending": loading() }}>
+      <Show when={nodes().length} fallback={<div class="ktru-empty">{props.filter ? "Нет совпадений в этой ветке" : "Нет дочерних позиций"}</div>}>
+        <ul class="ktru-tree-list">
+          <For each={nodes()}>{node =>
+            <TreeNode node={node} selectedId={props.selectedId} filter={props.filter} matchIds={props.matchIds} onSelect={props.onSelect} />
+          }</For>
+          <Show when={nodes().length < data().total}>
+            <li><button type="button" class="ktru-more" onClick={() => void loadMore()}>Показать ещё ({formatNumber(data().total - nodes().length)})</button></li>
+          </Show>
+        </ul>
+      </Show>
+    </div>
   }</Show>;
 }
 
 function TreeNode(props: {
   node: KtruTreeNode;
   selectedId: string | null;
+  filter: string;
+  matchIds: Set<string>;
   onSelect: (node: KtruTreeNode) => void;
 }) {
-  const [open, setOpen] = createSignal(false);
+  const filtering = () => props.filter.length >= 2;
+  const [manualOpen, setManualOpen] = createSignal<boolean | null>(null);
+  const open = () => manualOpen() ?? (filtering() && props.node.hasChildren);
   const selected = () => props.selectedId === props.node.id;
+  const matched = () => props.matchIds.has(props.node.id);
+  createEffect(on(() => props.filter, () => setManualOpen(null)));
   const openDetails = () => {
     props.onSelect(props.node);
-    if (props.node.hasChildren) setOpen(true);
+    if (props.node.hasChildren) setManualOpen(true);
   };
   return <li>
-    <div class="ktru-node" classList={{ selected: selected() }} role="treeitem" aria-expanded={props.node.hasChildren ? open() : undefined} aria-selected={selected()}>
-      <button type="button" class="twist" classList={{ open: open() }} disabled={!props.node.hasChildren} aria-label={open() ? "Свернуть" : "Развернуть"} onClick={() => setOpen(value => !value)}>
+    <div class="ktru-node" classList={{ selected: selected(), match: matched() }} role="treeitem" aria-expanded={props.node.hasChildren ? open() : undefined} aria-selected={selected()}>
+      <button type="button" class="twist" classList={{ open: open() }} disabled={!props.node.hasChildren} aria-label={open() ? "Свернуть" : "Развернуть"} onClick={() => setManualOpen(!(open()))}>
         <ChevronRight size={15} />
       </button>
       <button type="button" class="ktru-node-main" onClick={openDetails}>
@@ -65,11 +88,7 @@ function TreeNode(props: {
       </button>
     </div>
     <Show when={open() && props.node.hasChildren}>
-      <DataBoundary resetKey={props.node.id} retry={() => revalidate(getKtruChildren.key)}>
-        <Suspense fallback={<div class="ktru-loading">Загружаем…</div>}>
-          <TreeBranch parentId={props.node.id} selectedId={props.selectedId} onSelect={props.onSelect} />
-        </Suspense>
-      </DataBoundary>
+      <TreeBranch parentId={props.node.id} selectedId={props.selectedId} filter={props.filter} matchIds={props.matchIds} onSelect={props.onSelect} />
     </Show>
   </li>;
 }
@@ -95,13 +114,31 @@ function StatsLine() {
 export default function KtruPage() {
   const [selected, setSelected] = createSignal<KtruTreeNode | null>(null);
   const [draft, setDraft] = createSignal("");
-  const [query, setQuery] = createSignal("");
-  const results = createAsync(() => query() ? searchKtru(query()) : Promise.resolve([]));
+  const [filter, setFilter] = createSignal("");
+  const [matchIds, setMatchIds] = createSignal(new Set<string>());
+  const [matchCount, setMatchCount] = createSignal<number | null>(null);
+  const [matchTruncated, setMatchTruncated] = createSignal(false);
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const onSearchInput = (value: string) => {
+  createEffect(on(() => filter(), value => {
+    let alive = true;
+    if (value.length < 2) {
+      setMatchIds(new Set<string>());
+      setMatchCount(null);
+      setMatchTruncated(false);
+      return;
+    }
+    void getKtruFilterMeta(value).then(meta => {
+      if (!alive) return;
+      setMatchIds(new Set(meta.matchIds));
+      setMatchCount(meta.matchCount);
+      setMatchTruncated(meta.truncated);
+    });
+    onCleanup(() => { alive = false; });
+  }));
+  const onFilterInput = (value: string) => {
     setDraft(value);
     clearTimeout(timer);
-    timer = setTimeout(() => setQuery(value.trim()), 220);
+    timer = setTimeout(() => setFilter(value.trim()), 280);
   };
   return <main id="main-content" class="page-width ktru-main">
     <Title>КТРУ — дерево категорий</Title>
@@ -111,34 +148,17 @@ export default function KtruPage() {
       <p>Иерархия по ОКПД2 и связям parent из <code>ktru-actual.parquet</code>. Для каждой позиции доступны все исходные параметры.</p>
       <DataBoundary retry={() => revalidate(getKtruStats.key)}><Suspense fallback={<div class="ktru-loading">Считаем позиции…</div>}><StatsLine /></Suspense></DataBoundary>
     </section>
-    <label class="ktru-search"><Search size={16} /><input type="search" value={draft()} placeholder="Поиск по коду или названию…" autocomplete="off" onInput={event => onSearchInput(event.currentTarget.value)} /></label>
-    <Show when={query().length >= 2}>
-      <DataBoundary resetKey={query()} retry={() => revalidate(searchKtru.key)}>
-        <Suspense fallback={<div class="ktru-loading">Ищем…</div>}>
-          <Show when={results()} keyed>
-            {items => <Show when={items.length} fallback={<div class="ktru-empty">Ничего не найдено</div>}>
-              <div class="ktru-search-results">
-                <For each={items}>{node =>
-                  <button type="button" classList={{ selected: selected()?.id === node.id }} onClick={() => setSelected(node)}>
-                    <span class="ktru-node-code">{node.code}</span>
-                    <span class="ktru-node-name">{node.name}</span>
-                  </button>
-                }</For>
-              </div>
-            </Show>}
-          </Show>
-        </Suspense>
-      </DataBoundary>
-    </Show>
     <div class="ktru-layout">
       <section class="ktru-panel" aria-label="Дерево КТРУ">
-        <div class="ktru-panel-head"><h2>Дерево</h2><span>ОКПД2 → позиции КТРУ</span></div>
+        <div class="ktru-panel-head">
+          <h2>Дерево</h2>
+          <Show when={matchCount() !== null} fallback={<span>ОКПД2 → позиции КТРУ</span>}>
+            <span>{formatNumber(matchCount()!)} совп.{matchTruncated() ? "+" : ""}</span>
+          </Show>
+        </div>
+        <label class="ktru-filter"><Search size={15} /><input type="search" value={draft()} placeholder="Фильтр по коду или названию…" autocomplete="off" onInput={event => onFilterInput(event.currentTarget.value)} /></label>
         <div class="ktru-tree" role="tree">
-          <DataBoundary retry={() => revalidate(getKtruChildren.key)}>
-            <Suspense fallback={<div class="ktru-loading">Строим дерево…</div>}>
-              <TreeBranch parentId={null} selectedId={selected()?.id ?? null} onSelect={setSelected} />
-            </Suspense>
-          </DataBoundary>
+          <TreeBranch parentId={null} selectedId={selected()?.id ?? null} filter={filter()} matchIds={matchIds()} onSelect={setSelected} />
         </div>
       </section>
       <section class="ktru-panel" aria-label="Параметры выбранной позиции">

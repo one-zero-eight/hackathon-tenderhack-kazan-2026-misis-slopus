@@ -28,8 +28,16 @@ interface Catalog {
 }
 
 const CHILDREN_PAGE = 200;
-const SEARCH_LIMIT = 40;
+const FILTER_MATCH_LIMIT = 800;
 let catalog: Catalog | undefined;
+const filterCache = new Map<string, FilterSets>();
+
+interface FilterSets {
+  visible: Set<string>;
+  matches: Set<string>;
+  matchCount: number;
+  truncated: boolean;
+}
 
 function repoRoot(): string {
   return resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
@@ -153,10 +161,10 @@ function getCatalog(): Catalog {
   return catalog;
 }
 
-function okpdNode(code: string, data: Catalog): KtruTreeNode {
+function okpdNode(code: string, data: Catalog, childCount?: number): KtruTreeNode {
   const okpdKids = data.okpdChildCodes.get(code) ?? [];
   const ktruRoots = okpdKids.length ? [] : (data.okpdKtruRoots.get(code) ?? []);
-  const childCount = okpdKids.length || ktruRoots.length;
+  const count = childCount ?? (okpdKids.length || ktruRoots.length);
   return {
     id: `okpd:${code}`,
     code,
@@ -164,14 +172,14 @@ function okpdNode(code: string, data: Catalog): KtruTreeNode {
     kind: "okpd",
     status: null,
     isTemplate: false,
-    childCount,
-    hasChildren: childCount > 0,
+    childCount: count,
+    hasChildren: count > 0,
   };
 }
 
-function ktruNode(code: string, data: Catalog): KtruTreeNode {
+function ktruNode(code: string, data: Catalog, childCount?: number): KtruTreeNode {
   const row = data.byCode.get(code)!;
-  const childCount = data.ktruChildren.get(code)?.length ?? 0;
+  const count = childCount ?? (data.ktruChildren.get(code)?.length ?? 0);
   return {
     id: `ktru:${code}`,
     code,
@@ -179,8 +187,8 @@ function ktruNode(code: string, data: Catalog): KtruTreeNode {
     kind: "ktru",
     status: row.status,
     isTemplate: !!row.isTemplate,
-    childCount,
-    hasChildren: childCount > 0,
+    childCount: count,
+    hasChildren: count > 0,
   };
 }
 
@@ -191,36 +199,112 @@ function pageSlice<T>(items: T[], offset: number, limit = CHILDREN_PAGE): { item
   return { items: slice, total, offset: start, hasMore: start + slice.length < total };
 }
 
+function normalizeFilter(filter: string): string {
+  return filter.trim().toLocaleLowerCase("ru-RU");
+}
+
+function buildFilterSets(filter: string): FilterSets | null {
+  const q = normalizeFilter(filter);
+  if (q.length < 2) return null;
+  const cached = filterCache.get(q);
+  if (cached) return cached;
+  const data = getCatalog();
+  const matches = new Set<string>();
+  const visible = new Set<string>();
+  let matchCount = 0;
+  let truncated = false;
+
+  const markOkpdAncestors = (code: string) => {
+    for (const prefix of prefixes(code)) visible.add(`okpd:${prefix}`);
+  };
+
+  for (const codes of data.okpdChildCodes.values()) {
+    for (const code of codes) {
+      const name = (data.okpdNames.get(code) || "").toLocaleLowerCase("ru-RU");
+      if (code.toLocaleLowerCase("ru-RU").includes(q) || name.includes(q)) {
+        matchCount += 1;
+        if (matches.size < FILTER_MATCH_LIMIT) {
+          const id = `okpd:${code}`;
+          matches.add(id);
+          markOkpdAncestors(code);
+        } else truncated = true;
+      }
+    }
+  }
+
+  for (const row of data.byCode.values()) {
+    if (!row.code.toLocaleLowerCase("ru-RU").includes(q) && !row.name.toLocaleLowerCase("ru-RU").includes(q)) continue;
+    matchCount += 1;
+    if (matches.size >= FILTER_MATCH_LIMIT) {
+      truncated = true;
+      continue;
+    }
+    const id = `ktru:${row.code}`;
+    matches.add(id);
+    visible.add(id);
+    let parent = row.parentCode;
+    const seen = new Set<string>([row.code]);
+    while (parent && data.byCode.has(parent) && !seen.has(parent)) {
+      seen.add(parent);
+      visible.add(`ktru:${parent}`);
+      parent = data.byCode.get(parent)!.parentCode;
+    }
+    const okpd = row.okpd2 || row.code.split("-", 1)[0];
+    if (okpd) markOkpdAncestors(okpd);
+  }
+
+  for (const id of matches) visible.add(id);
+  const sets = { visible, matches, matchCount, truncated };
+  if (filterCache.size > 32) filterCache.clear();
+  filterCache.set(q, sets);
+  return sets;
+}
+
+function rawChildCodes(parentId: string | null, data: Catalog): { kind: "okpd" | "ktru"; codes: string[] } {
+  if (!parentId) return { kind: "okpd", codes: data.okpdChildCodes.get("") ?? [] };
+  if (parentId.startsWith("okpd:")) {
+    const code = parentId.slice(5);
+    const next = data.okpdChildCodes.get(code) ?? [];
+    if (next.length) return { kind: "okpd", codes: next };
+    return { kind: "ktru", codes: data.okpdKtruRoots.get(code) ?? [] };
+  }
+  if (parentId.startsWith("ktru:")) return { kind: "ktru", codes: data.ktruChildren.get(parentId.slice(5)) ?? [] };
+  throw new Error(`Неизвестный узел дерева: ${parentId}`);
+}
+
+function filteredChildCount(id: string, data: Catalog, filter: FilterSets): number {
+  const { kind, codes } = rawChildCodes(id, data);
+  let count = 0;
+  for (const code of codes) {
+    if (filter.visible.has(`${kind}:${code}`)) count += 1;
+  }
+  return count;
+}
+
 export function ktruStats() {
   const data = getCatalog();
   return { total: data.total, roots: data.okpdChildCodes.get("")?.length ?? 0 };
 }
 
-export function listKtruChildren(parentId: string | null = null, offset = 0): KtruChildrenPage {
+export function listKtruChildren(parentId: string | null = null, offset = 0, filter = ""): KtruChildrenPage {
   const data = getCatalog();
-  if (!parentId) {
-    const codes = data.okpdChildCodes.get("") ?? [];
-    const page = pageSlice(codes, offset);
-    return { parentId: null, nodes: page.items.map(code => okpdNode(code, data)), total: page.total, offset: page.offset, hasMore: page.hasMore };
-  }
-  if (parentId.startsWith("okpd:")) {
-    const code = parentId.slice(5);
-    const next = data.okpdChildCodes.get(code) ?? [];
-    if (next.length) {
-      const page = pageSlice(next, offset);
-      return { parentId, nodes: page.items.map(item => okpdNode(item, data)), total: page.total, offset: page.offset, hasMore: page.hasMore };
-    }
-    const roots = data.okpdKtruRoots.get(code) ?? [];
-    const page = pageSlice(roots, offset);
-    return { parentId, nodes: page.items.map(item => ktruNode(item, data)), total: page.total, offset: page.offset, hasMore: page.hasMore };
-  }
-  if (parentId.startsWith("ktru:")) {
-    const code = parentId.slice(5);
-    const kids = data.ktruChildren.get(code) ?? [];
-    const page = pageSlice(kids, offset);
-    return { parentId, nodes: page.items.map(item => ktruNode(item, data)), total: page.total, offset: page.offset, hasMore: page.hasMore };
-  }
-  throw new Error(`Неизвестный узел дерева: ${parentId}`);
+  const sets = buildFilterSets(filter);
+  const { kind, codes } = rawChildCodes(parentId, data);
+  const filtered = sets ? codes.filter(code => sets.visible.has(`${kind}:${code}`)) : codes;
+  const page = pageSlice(filtered, offset);
+  const nodes = page.items.map(code => {
+    const id = `${kind}:${code}`;
+    const childCount = sets ? filteredChildCount(id, data, sets) : undefined;
+    return kind === "okpd" ? okpdNode(code, data, childCount) : ktruNode(code, data, childCount);
+  });
+  return {
+    parentId,
+    nodes,
+    total: page.total,
+    offset: page.offset,
+    hasMore: page.hasMore,
+    filterMatches: sets ? sets.matchCount : null,
+  };
 }
 
 export function getKtruRecord(code: string): Record<string, unknown> | null {
@@ -231,16 +315,13 @@ export function getKtruRecord(code: string): Record<string, unknown> | null {
   return JSON.parse(gunzipSync(row.payload).toString("utf8")) as Record<string, unknown>;
 }
 
-export function searchKtru(query: string): KtruTreeNode[] {
-  const q = query.trim().toLocaleLowerCase("ru-RU");
-  if (q.length < 2) return [];
-  const data = getCatalog();
-  const matches: KtruTreeNode[] = [];
-  for (const row of data.byCode.values()) {
-    if (row.code.toLocaleLowerCase("ru-RU").includes(q) || row.name.toLocaleLowerCase("ru-RU").includes(q)) {
-      matches.push(ktruNode(row.code, data));
-      if (matches.length >= SEARCH_LIMIT) break;
-    }
-  }
-  return matches;
+export function ktruFilterMeta(filter: string) {
+  const sets = buildFilterSets(filter);
+  if (!sets) return { active: false, matchCount: 0, truncated: false, matchIds: [] as string[] };
+  return {
+    active: true,
+    matchCount: sets.matchCount,
+    truncated: sets.truncated,
+    matchIds: [...sets.matches],
+  };
 }

@@ -31,10 +31,10 @@ export const getKtruStats = query(async () => {
   return ktruStats();
 }, "ktru-stats");
 
-export const getKtruChildren = query(async (parentId: string | null = null, offset = 0) => {
+export const getKtruChildren = query(async (parentId: string | null = null, offset = 0, filter = "") => {
   "use server";
   const { listKtruChildren } = await import("./server/ktru-tree");
-  return listKtruChildren(parentId, offset);
+  return listKtruChildren(parentId, offset, filter);
 }, "ktru-children");
 
 export const getKtruRecord = query(async (code: string) => {
@@ -43,8 +43,8 @@ export const getKtruRecord = query(async (code: string) => {
   return load(code);
 }, "ktru-record");
 
-export const searchKtru = query(async (queryText: string) => {
+export const getKtruFilterMeta = query(async (filter: string) => {
   "use server";
-  const { searchKtru: search } = await import("./server/ktru-tree");
-  return search(queryText);
-}, "ktru-search");
+  const { ktruFilterMeta } = await import("./server/ktru-tree");
+  return ktruFilterMeta(filter);
+}, "ktru-filter-meta");
