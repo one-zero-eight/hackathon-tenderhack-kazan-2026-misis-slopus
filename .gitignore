@@ -1,6 +1,5 @@
-# Local credentials and application excluded from this data repository.
+# Local credentials excluded from version control.
 secrets/
-search-web/
 .venv/
 __pycache__/
 *.pyc
