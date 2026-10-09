@@ -15,7 +15,7 @@
 
 ## Требования
 
-- Node.js **24+** и npm.
+- Node.js **24+** и pnpm **11.18.0** (версия закреплена в `packageManager`).
 - Исходные подробные карточки СТЕ в SQLite; подготовка из опубликованного JSONL описана ниже.
 - Для семантического поиска: Python-окружение с `meow-embed[server]`, Sentence Transformers и PyTorch. Штатный `meow:start` запускает модель на **CUDA в float32**: нужны совместимые NVIDIA GPU, драйвер и сборка PyTorch.
 - Интернет для первоначальной загрузки модели и некешированных изображений. Текстовый поиск после импорта не требует сервера эмбеддингов.
@@ -24,9 +24,11 @@
 
 ## Установка и конфигурация
 
+Если pnpm ещё не установлен, установите версию **11.18.0** по [официальной инструкции](https://pnpm.io/installation). При установленном Corepack можно выполнить `corepack enable`: он выберет версию из `packageManager`.
+
 ```bash
 cd search-web
-npm ci
+pnpm install --frozen-lockfile
 cp .env.example .env
 ```
 
@@ -81,7 +83,7 @@ PY
 ### 1. Импорт каталога
 
 ```bash
-npm run data:import
+pnpm run data:import
 ```
 
 После импорта доступен текстовый поиск. Повторный запуск обновляет карточки; векторы сбрасываются только при изменении текста, используемого для эмбеддинга.
@@ -92,13 +94,13 @@ npm run data:import
 
 ```bash
 python -m pip install 'meow-embed[server]'
-npm run meow:start
+pnpm run meow:start
 ```
 
 Скрипт слушает `127.0.0.1:8067`, загружает `sergeyzh/BERTA` на CUDA и использует float32. Если исполняемый файл не находится в `PATH`, передайте полный путь:
 
 ```bash
-MEOW_EMBED_BIN=/absolute/path/to/venv/bin/meow-embed npm run meow:start
+MEOW_EMBED_BIN=/absolute/path/to/venv/bin/meow-embed pnpm run meow:start
 ```
 
 **`meow:start` не читает `.env`**: `MEOW_EMBED_BIN` нужно экспортировать в окружение или передать прямо в команде. Для сервера на другом адресе настройте `MEOW_EMBED_URL` у приложения и индексатора. Ожидается HTTP `POST /embed` с моделью BERTA и 768-мерными float32-векторами в base64.
@@ -106,23 +108,23 @@ MEOW_EMBED_BIN=/absolute/path/to/venv/bin/meow-embed npm run meow:start
 ### 3. Векторный индекс
 
 ```bash
-npm run data:embed
+pnpm run data:embed
 ```
 
 Для ограниченного первого запуска или подбора батча:
 
 ```bash
-npm run data:embed -- --limit 1000 --batch 32
+pnpm run data:embed --limit 1000 --batch 32
 ```
 
 Индексатор сохраняет каждый батч и при повторном запуске продолжает с оставшихся карточек. SIGINT/SIGTERM останавливают его после текущего батча. Одновременный запуск второго индексатора блокируется SQLite lease.
 
-`npm run data:index` последовательно выполняет импорт и индексацию; сервер эмбеддингов должен быть уже запущен.
+`pnpm run data:index` последовательно выполняет импорт и индексацию; сервер эмбеддингов должен быть уже запущен.
 
 ### 4. Веб-приложение
 
 ```bash
-npm run dev
+pnpm run dev
 ```
 
 Откройте [http://127.0.0.1:3000](http://127.0.0.1:3000). Каталог доступен на `/`, карточки — на `/products/<id>`.
@@ -130,19 +132,19 @@ npm run dev
 Для production-сборки:
 
 ```bash
-npm run build
-npm start
+pnpm run build
+pnpm start
 ```
 
-Запускайте сервер из `search-web/`, сохранив рядом каталог `drizzle/` и доступ к файлу `SEARCH_DATABASE`. `npm start` читает `.env`; семантические запросы по-прежнему требуют отдельного сервера BERTA. Базу и кеш изображений нужно хранить на постоянном диске.
+Запускайте сервер из `search-web/`, сохранив рядом каталог `drizzle/` и доступ к файлу `SEARCH_DATABASE`. `pnpm start` читает `.env`; семантические запросы по-прежнему требуют отдельного сервера BERTA. Базу и кеш изображений нужно хранить на постоянном диске.
 
 ## Проверки и обслуживание
 
 ```bash
-npm run typecheck
-npm test
-npm run db:migrate
-npm run bench:embed -- --batches 8,16,32,64
+pnpm run typecheck
+pnpm test
+pnpm run db:migrate
+pnpm run bench:embed --batches 8,16,32,64
 ```
 
 Обычные тесты проверяют нормализацию, импорт, FTS, векторный поиск, гибридное ранжирование и HTTP-контракт без настоящей модели. Бенчмарк требует запущенного `meow-embed` и карточек с `embedded_hash IS NULL`.
@@ -153,7 +155,7 @@ Live-тест включается явно и проверяет реальны
 LIVE_EMBED=1 node --env-file-if-exists=.env --import tsx --test tests/live.test.ts
 ```
 
-`npm run db:generate` создаёт Drizzle-миграции после изменения схемы. FTS5, sqlite-vec и триггеры инициализируются отдельно в `src/lib/server/database.ts`.
+`pnpm run db:generate` создаёт Drizzle-миграции после изменения схемы. FTS5, sqlite-vec и триггеры инициализируются отдельно в `src/lib/server/database.ts`.
 
 ## Ограничения
 

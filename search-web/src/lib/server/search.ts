@@ -80,7 +80,7 @@ export async function runSearch(input: SearchInput, catalog = getDatabase(), emb
     return finish(hydrate(catalog, textRows(PAGE_SIZE, offset).map((row) => ({ ...row, score: null, match: "text" }))), total);
   }
   const ready = catalog.sqlite.prepare("SELECT 1 FROM product_vectors LIMIT 1").get();
-  if (!ready) throw new Error("Семантический индекс пока пуст. Запустите npm run data:embed; поиск по словам доступен отдельно.");
+  if (!ready) throw new Error("Семантический индекс пока пуст. Запустите pnpm run data:embed; поиск по словам доступен отдельно.");
   const vector = await embed(query);
   const vectorRows = catalog.sqlite.prepare(`
     SELECT product_id AS id,distance FROM product_vectors
