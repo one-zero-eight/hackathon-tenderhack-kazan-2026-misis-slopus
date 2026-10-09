@@ -601,22 +601,7 @@ def resume_download_query_index(
                             f"{rate:.1f}/s",
                             flush=True,
                         )
-                    if n % 100 == 0:
-                        export_jsonl_gz(
-                            db,
-                            out,
-                            {
-                                "stopReason": "running",
-                                "via": via,
-                                "source": source_url,
-                                "proxyMode": "socks5-direct-ip" if not bridge else "http-bridge",
-                                "workers": workers,
-                                "batchSize": batch_size,
-                                "failedCount": fail,
-                                "missingCount": missing_marked,
-                            },
-                            list_source=list_source,
-                        )
+                    # Full jsonl export of 300k cards is multi-minute; only finalize in `finally`.
                     fill()
     finally:
         total = con.execute("select count(*) from sku_details").fetchone()[0]
@@ -657,6 +642,20 @@ def cmd_resume_sample(args):
     )
 
 
+def cmd_resume_qi(args):
+    source = Path(args.source)
+    resume_download_query_index(
+        load_ids(source),
+        Path(args.db),
+        Path(args.out),
+        bridge=args.bridge,
+        pause=args.pause,
+        workers=args.workers,
+        batch_size=args.batch_size,
+        list_source=str(source),
+    )
+
+
 def main():
     p = argparse.ArgumentParser(description="STE UI API fetcher")
     p.add_argument("--bridge", default=None, help="HTTP bridge e.g. http://127.0.0.1:18080")
@@ -674,11 +673,20 @@ def main():
 
     r = sub.add_parser("resume-sample")
     r.add_argument("--source", default=str(ROOT / "data" / "ste.jsonl.gz"), help="JSONL (.jsonl or .jsonl.gz), JSON array or JSON items wrapper")
-    r.add_argument("--db", default=str(ROOT / "data" / "ste-details.sqlite"))
+    r.add_argument("--db", default=str(ROOT / "data" / "tmp" / "ste-details.sqlite"))
     r.add_argument("--out", default=str(ROOT / "data" / "ste-details.jsonl.gz"))
     r.add_argument("--pause", type=float, default=0.05)
     r.add_argument("--workers", type=int, default=4)
     r.set_defaults(func=cmd_resume_sample)
+
+    rq = sub.add_parser("resume-qi", help="Batch cards via QueryIndex?filter.ids (faster than GetSku)")
+    rq.add_argument("--source", default=str(ROOT / "data" / "ste.jsonl.gz"))
+    rq.add_argument("--db", default=str(ROOT / "data" / "tmp" / "ste-details.sqlite"))
+    rq.add_argument("--out", default=str(ROOT / "data" / "ste-details.jsonl.gz"))
+    rq.add_argument("--pause", type=float, default=0.0)
+    rq.add_argument("--workers", type=int, default=8)
+    rq.add_argument("--batch-size", type=int, default=50)
+    rq.set_defaults(func=cmd_resume_qi)
 
     args = p.parse_args()
     try:

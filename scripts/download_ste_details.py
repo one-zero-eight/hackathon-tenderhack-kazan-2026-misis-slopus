@@ -15,7 +15,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / 'data' / 'ste.jsonl.gz'
-DATABASE = ROOT / 'data' / 'ste-details.sqlite'
+DATABASE = ROOT / 'data' / 'tmp' / 'ste-details.sqlite'
 ENDPOINT = 'https://api.zakupki.mos.ru/api/v2/eetp/sku/GetDetails'
 COOLDOWN_SECONDS = 30 * 60
 PAUSE_SECONDS = 10

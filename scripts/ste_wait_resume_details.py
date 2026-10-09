@@ -83,7 +83,7 @@ def main():
         "--source",
         str(ROOT / "data" / "ste.jsonl.gz"),
         "--db",
-        str(ROOT / "data" / "ste-details.sqlite"),
+        str(ROOT / "data" / "tmp" / "ste-details.sqlite"),
         "--out",
         str(ROOT / "data" / "ste-details.jsonl.gz"),
         "--workers",

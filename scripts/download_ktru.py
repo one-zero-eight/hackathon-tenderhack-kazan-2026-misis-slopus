@@ -214,8 +214,7 @@ def main() -> None:
         NOTES = "Full source records including internal IDs, hierarchy, actuality flags, synonyms and mirror-added limitations. Separate from data/deprecated/okpd2.json.gz; source freshness is not independently verified."
     basename = "okpd2-moy-zakupki" if args.catalog == "okpd2" else "ktru"
     args.db = args.db or ROOT / f"data/{basename}.sqlite"
-    output_directory = ROOT / "data" if args.catalog == "okpd2" else ROOT / "data/deprecated"
-    args.out = args.out or output_directory / f"{basename}.json.gz"
+    args.out = args.out or ROOT / "data/deprecated" / f"{basename}.json.gz"
     args.out.parent.mkdir(parents=True, exist_ok=True)
     first = fetch_page(1)
     total = first["count"]

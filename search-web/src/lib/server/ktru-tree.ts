@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { gunzipSync } from "node:zlib";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -86,16 +86,8 @@ function loadOkpdNames(rows: LightRow[]): Map<string, string> {
   for (const row of rows) {
     if (row.okpd2 && row.okpd2Name && !names.has(row.okpd2)) names.set(row.okpd2, row.okpd2Name);
   }
-  const okpdPath = resolve(repoRoot(), "data/okpd2-moy-zakupki.json.gz");
-  if (!existsSync(okpdPath)) return names;
-  try {
-    const items = JSON.parse(gunzipSync(readFileSync(okpdPath)).toString("utf8")) as { code?: string; name?: string }[];
-    for (const item of items) {
-      if (item.code && item.name && !names.has(item.code)) names.set(item.code, item.name);
-    }
-  } catch {
-    // Optional enrichment; tree works without OKPD2 names.
-  }
+  // Optional OKPD2 name enrichment used to live in a JSON.gz next to the parquet catalogs.
+  // Names already present on KTRU rows are enough for the tree.
   return names;
 }
 

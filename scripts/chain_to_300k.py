@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-DB = ROOT / "data" / "ste-details.sqlite"
+DB = ROOT / "data" / "tmp" / "ste-details.sqlite"
 UV_BASE = ["uv", "run", "--with", "requests", "--with", "PySocks", "python", "-u"]
 WORKERS = "16"
 PAUSE = "0.02"

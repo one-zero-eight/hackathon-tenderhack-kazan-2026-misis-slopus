@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-DB = ROOT / "data" / "ste-details.sqlite"
+DB = ROOT / "data" / "tmp" / "ste-details.sqlite"
 LIST_META = ROOT / "data" / "ste.jsonl.gz.meta.json"
 PY = sys.executable
 UV_BASE = ["uv", "run", "--with", "requests", "--with", "PySocks", "python", "-u"]

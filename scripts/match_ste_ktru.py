@@ -99,6 +99,8 @@ class TextIndex:
         self.records = records
         self.tokens = [self.words(r['name']) for r in records]
         self.names = [normalized(r['name']) for r in records]
+        self.heads = [next((self.lemma(w) for w in TOKEN.findall(r['name'].casefold().replace('ё', 'е'))
+                            if len(w) > 2 and self.lemma(w) not in STOP_WORDS), None) for r in records]
         df = Counter(word for words in self.tokens for word in words)
         self.idf = {w: math.log((1 + len(records)) / (1 + n)) + 1 for w, n in df.items()}
         self.postings = defaultdict(set)
@@ -127,6 +129,9 @@ class TextIndex:
         precision = shared / weight(query)
         recall = shared / weight(target)
         return 2 * precision * recall / (precision + recall), recall
+
+    def supports_head(self, candidate, *queries):
+        return any(self.heads[candidate] in query for query in queries)
 
     def short_list(self, words, pool, limit=30):
         # Only classify within the pool selected by the source's own OKPD2.
@@ -173,13 +178,13 @@ def load_details(path):
 
 def source_profile(ste, details, pp, categories):
     card = details.get(ste['id'])
-    p = pp.get(ste.get('productionCode'))
-    category = categories.get(ste.get('productionDirectoryId'))
+    p = pp.get(ste.get('production_code'))
+    category = categories.get(ste.get('category_id'))
     sources = []
     if card and not card['error'] and card['okpd']:
         sources.append(('card', card['okpd']))
-    if ste.get('okpdCode'):
-        sources.append(('list', ste['okpdCode']))
+    if ste.get('okpd2_code'):
+        sources.append(('list', ste['okpd2_code']))
     if p and p.get('okpd'):
         sources.append(('pp_kpgz', p['okpd']['code']))
     if category and category.get('production') and category['production'].get('okpd'):
@@ -187,24 +192,36 @@ def source_profile(ste, details, pp, categories):
     origin, code = sources[0] if sources else ('missing', None)
     # Card and list have precedence; do not select a stale alternative just
     # because it happens to retrieve more KTRU candidates.
-    title = ((card or {}).get('category') or (category or {}).get('name') or
+    title = ((card or {}).get('category') or ste.get('category') or (category or {}).get('name') or
              (card or {}).get('production') or (p or {}).get('name') or '')
     return origin, code, title, len({c for _, c in sources}) > 1
 
 
-def match(data, output, details_db, active_only=True):
+def match(data, output, details_db, active_only=True, details_snapshot=None):
     output.mkdir(parents=True, exist_ok=True)
-    pp = {r['code']: r for r in load_json(data / 'pp-kpgz.json.gz')}
-    categories = {r['id']: r for r in load_json(data / 'ste-categories.json.gz')}
-    hierarchy = Hierarchy(load_json(data / 'okpd2-moy-zakupki.json.gz'))
+    pp = {r['code']: r for r in pq.read_table(data / 'pp-kpgz.parquet').to_pylist()}
+    categories = {r['id']: r for r in pq.read_table(data / 'ste-categories.parquet').to_pylist()}
+    hierarchy = Hierarchy(pq.read_table(data / 'okpd2-moy-zakupki.parquet', columns=['id', 'code', 'name', 'parent']).to_pylist())
     records = pq.read_table(data / 'ktru-actual.parquet', columns=['code', 'name', 'status', 'okpd2', 'nsi', 'units']).to_pylist()
     if active_only:
         records = [r for r in records if r['status'] == 'ACTIVE']
     index = CandidateIndex(records, hierarchy)
     text = TextIndex(records)
     print(f'INDEX: {len(records)} KTRU positions; {len(index.exact)} OKPD2 codes', flush=True)
-    details, details_info = load_details(details_db)
+    if details_snapshot is not None:
+        details = {int(k): v for k, v in load_json(details_snapshot).items()}
+        details_info = {'rows': len(details), 'fetch_errors': sum(r['error'] for r in details.values()),
+                        'snapshot_file': str(details_snapshot), 'snapshot_sha256': sha256(details_snapshot),
+                        'note': 'Reused immutable projected card-classification snapshot.'}
+    else:
+        details, details_info = load_details(details_db)
     print(f'DETAILS: {len(details)} projected cards', flush=True)
+    if details_info is not None and details_snapshot is None:
+        snapshot_path = output / 'card-classification-snapshot.json.gz'
+        with gzip.open(snapshot_path, 'wt', encoding='utf-8') as stream:
+            json.dump(details, stream, ensure_ascii=False)
+        details_info['snapshot_file'] = snapshot_path.name
+        details_info['snapshot_sha256'] = sha256(snapshot_path)
     profiles = {}
     groups = []
     counts = Counter()
@@ -224,10 +241,10 @@ def match(data, output, details_db, active_only=True):
     target = output / 'ste-ktru-candidates.parquet'
     partial = target.with_suffix('.parquet.part')
     pending = []
+    ste_columns = ['id', 'name', 'production_code', 'okpd2_code', 'category_id', 'category', 'okei']
     with pq.ParquetWriter(partial, schema, compression='zstd') as writer:
-        with gzip.open(data / 'ste.jsonl.gz', 'rt', encoding='utf-8') as stream:
-            for line in stream:
-                ste = json.loads(line)
+        for batch in pq.ParquetFile(data / 'ste.parquet').iter_batches(columns=ste_columns, batch_size=2000):
+            for ste in batch.to_pylist():
                 origin, code, title, conflict = source_profile(ste, details, pp, categories)
                 key = (origin, code, title)
                 if key not in profiles:
@@ -239,7 +256,8 @@ def match(data, output, details_db, active_only=True):
                     profiles[key] = (group_id, route, pool_set, matched, shortlist, query)
                     groups.append({'group_id': group_id, 'okpd_source': origin, 'okpd_code': code,
                                    'category_name': title, 'route': route, 'matched_okpd_code': matched,
-                                   'candidate_count': len(pool), 'ste_count': 0})
+                                   'candidate_count': len(pool), 'candidate_codes': [records[i]['code'] for i in pool],
+                                   'ste_count': 0})
                 group_id, route, pool_set, matched, shortlist, category_words = profiles[key]
                 groups[group_id]['ste_count'] += 1
                 product_words = text.words(ste['name'])
@@ -248,17 +266,22 @@ def match(data, output, details_db, active_only=True):
                 # a generic category name, still inside the same graph pool.
                 candidates.update(text.short_list(product_words, pool_set, limit=15))
                 ranked = []
-                unit = normalized((details.get(ste['id']) or {}).get('unit') or ste.get('okeiName'))
+                unit = normalized((details.get(ste['id']) or {}).get('unit') or ste.get('okei'))
                 for i in candidates:
                     cs, cr = text.score(category_words, i)
                     ps, pr = text.score(product_words, i)
                     name_exact = bool(title) and normalized(title) == text.names[i]
-                    score = max(ps, 0.85 * cs)
+                    score, recall = max((ps, pr), (0.85 * cs, cr))
                     if name_exact:
-                        score = max(score, 0.95)
+                        score, recall = max(score, 0.95), 1.0
+                    # Shared modifiers (e.g. "for sewing machines") do not
+                    # make a needle threader a needle. Require the candidate's
+                    # leading content word, not just incidental shared words.
+                    if not text.supports_head(i, category_words, product_words):
+                        continue
                     units = records[i]['units'] or []
                     unit_matches = bool(unit) and any(normalized(u['name']) == unit for u in units)
-                    ranked.append((score, max(cr, pr), name_exact, unit_matches, i))
+                    ranked.append((score, recall, name_exact, unit_matches, i))
                 ranked.sort(key=lambda r: (-r[0], -r[3], records[r[4]]['code']))
                 # No supported text evidence means classification-only; do not
                 # emit arbitrary first IDs from a large set as selected matches.
@@ -315,16 +338,18 @@ def match(data, output, details_db, active_only=True):
                'evidence_counts': dict(tier_counts), 'source_conflicts': counts['conflicting_source_codes'],
                'candidate_count_quantiles': quantiles, 'classification_groups': len(groups),
                'details_snapshot': details_info, 'source_sha256': {name: sha256(data / name) for name in
-                   ('ste.jsonl.gz', 'pp-kpgz.json.gz', 'ste-categories.json.gz', 'okpd2-moy-zakupki.json.gz', 'ktru-actual.parquet')},
+                   ('ste.parquet', 'pp-kpgz.parquet', 'ste-categories.parquet', 'okpd2-moy-zakupki.parquet', 'ktru-actual.parquet')},
                'policy': {'okpd_source_priority': ['card', 'list', 'pp_kpgz', 'category'], 'min_ancestor_digits': 4,
                           'sibling_branches': False, 'exact_pool_not_broadened': True, 'top_candidate_limit': 5,
                           'text_thresholds': {'min_score': 0.30, 'min_name_token_coverage': 0.50,
                                               'strong_score': 0.60, 'strong_name_token_coverage': 0.70},
+                          'candidate_head_word_required': True,
                           'score_is_probability': False, 'confirmed_matches': 0,
                           'characteristic_validation': 'Not performed; every emitted candidate requires characteristic checking.'},
                'review_examples': dict(review_examples)}
     (output / 'summary.json').write_text(json.dumps(summary, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
-    pq.ParquetFile(target).metadata.num_rows == total or (_ for _ in ()).throw(AssertionError('Output row count differs'))
+    if pq.ParquetFile(target).metadata.num_rows != total:
+        raise AssertionError('Output row count differs')
     print(json.dumps({k: v for k, v in summary.items() if k not in ('review_examples', 'source_sha256')}, ensure_ascii=False, indent=2))
     return summary
 
@@ -333,10 +358,13 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--data', type=Path, default=ROOT / 'data')
     parser.add_argument('--out', type=Path, default=ROOT / 'data/tmp/ste-ktru-matching')
-    parser.add_argument('--details-db', type=Path, help='Use a read-only snapshot of projected live card classification fields')
+    detail_source = parser.add_mutually_exclusive_group()
+    detail_source.add_argument('--details-db', type=Path, help='Use a read-only snapshot of projected live card classification fields')
+    detail_source.add_argument('--details-snapshot', type=Path, help='Reuse saved projected card classifications for a repeatable run')
     parser.add_argument('--include-terminated', action='store_true')
     args = parser.parse_args()
-    match(args.data, args.out, args.details_db, active_only=not args.include_terminated)
+    match(args.data, args.out, args.details_db, active_only=not args.include_terminated,
+          details_snapshot=args.details_snapshot)
 
 
 if __name__ == '__main__':

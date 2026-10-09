@@ -37,7 +37,7 @@ cp .env.example .env
 
 Настройки в `.env`:
 
-- `SOURCE_DATABASE` — исходная база карточек; по умолчанию `../data/ste-details.sqlite`.
+- `SOURCE_DATABASE` — исходная база карточек; по умолчанию `../data/tmp/ste-details.sqlite`.
 - `SEARCH_DATABASE` — база приложения, FTS и векторного индекса; по умолчанию `./data/search-berta.sqlite`.
 - `MEOW_EMBED_URL` — адрес сервера эмбеддингов; по умолчанию `http://127.0.0.1:8067`.
 - `EMBED_BATCH_SIZE` — размер батча индексации, по умолчанию `64`; допустимо `1–128`.
