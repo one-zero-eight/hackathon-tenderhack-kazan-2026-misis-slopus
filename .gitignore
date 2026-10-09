@@ -4,9 +4,10 @@ secrets/
 __pycache__/
 *.pyc
 
-# Only compressed data and its README are versioned.
+# Compressed exports, Parquet catalogs and the data README are versioned.
 data/*
 !data/*.gz
+!data/*.parquet
 data/ste-search-dataset.tar.gz
 !data/README.md
 !data/ste-search-dataset/

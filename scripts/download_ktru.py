@@ -102,6 +102,11 @@ def export(db: sqlite3.Connection, output: Path, total: int, started_at: str, co
         "notes": NOTES,
     }
 
+    if TABLE == "ktru":
+        metadata["deprecated"] = True
+        metadata["preferredDataset"] = "ktru-actual.parquet"
+        metadata["deprecationReason"] = "Prefer the actual XML-derived Parquet for source characteristics, ranges, units and lifecycle metadata; this mirror remains useful only for its own annotations."
+
     def records():
         for (payload,) in db.execute(f"SELECT payload FROM {TABLE} ORDER BY code,id"):
             yield json.loads(payload)
