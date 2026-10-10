@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import math
 import operator
 import re
@@ -15,6 +16,9 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field, StrictFloat, StrictInt, StrictStr, field_validator, model_validator
 
 from search_api.config import ROOT, settings
+from search_api.web_enrichment import enrich_from_web, identity_from_product
+
+logger = logging.getLogger("uvicorn.error")
 
 NONE = "не указано"
 MAX_CHOICES = 254
@@ -336,14 +340,16 @@ async def llm_parse(client: httpx.AsyncClient, prompt: str, payload: dict[str, A
 
 
 def typesafe_key() -> str:
+    """InnoHassle TypeSafe works without a token; Authorization is omitted when empty."""
     if settings.typesafe_api_key is not None:
-        key = settings.typesafe_api_key.get_secret_value().strip()
-    else:
-        path = ROOT / "secrets" / "typesafe-token"
-        key = path.read_text(encoding="utf-8").strip() if path.is_file() else ""
-    if not key:
-        raise AutofillConfigError("Не настроен TYPESAFE_API_KEY или secrets/typesafe-token")
-    return key
+        return settings.typesafe_api_key.get_secret_value().strip()
+    path = ROOT / "secrets" / "typesafe-token"
+    return path.read_text(encoding="utf-8").strip() if path.is_file() else ""
+
+
+def typesafe_headers(key: str | None = None) -> dict[str, str]:
+    token = typesafe_key() if key is None else key
+    return {"Authorization": f"Bearer {token}"} if token else {}
 
 
 def ground_quote(text: str, quote: str, *, literal: str | None = None) -> tuple[int, int] | None:
@@ -485,7 +491,7 @@ async def ask_jev(client: httpx.AsyncClient, key: str, state: dict[str, Any],
             try:
                 response = await client.post(
                     f"{settings.typesafe_base_url.rstrip('/')}/v1/systemone",
-                    headers={"Authorization": f"Bearer {key}"},
+                    headers=typesafe_headers(key),
                     json={"model": settings.typesafe_model, "state": state, "questions": batch},
                 )
                 response.raise_for_status()
@@ -633,6 +639,7 @@ async def autofill_characteristics(body: AutofillRequest) -> dict[str, Any]:
     jev_usage = {"input_tokens": 0, "output_tokens": 0}
     timeout = max(settings.openai_timeout, settings.typesafe_timeout)
 
+    web_enrichment = None
     async with httpx.AsyncClient(timeout=timeout) as client:
         extraction = await extract_schema(
             client, body.text, schema_fields,
@@ -640,6 +647,13 @@ async def autofill_characteristics(body: AutofillRequest) -> dict[str, Any]:
             standards=body.standards, usage=llm_usage,
         )
         product = await extract_product(client, body.text, issues, llm_usage)
+        enrichment_task = asyncio.create_task(
+            enrich_from_web(
+                body.text,
+                [item.name for item in body.characteristics],
+                identity=identity_from_product(product, body.text),
+            ),
+        )
         questions = build_claim_questions(extraction)
         state = {
             "source_text": body.text,
@@ -649,7 +663,16 @@ async def autofill_characteristics(body: AutofillRequest) -> dict[str, Any]:
             ),
             "extraction": extraction.model_dump(),
         }
-        answers, jev_model = await ask_jev(client, key, state, questions, jev_usage)
+        try:
+            answers, jev_model = await ask_jev(client, key, state, questions, jev_usage)
+        except BaseException:
+            enrichment_task.cancel()
+            raise
+        try:
+            web_enrichment = await enrichment_task
+        except Exception:
+            logger.exception("web enrichment failed")
+            web_enrichment = None
 
     probabilities = {qid: probability(answers, qid) for qid in questions}
     threshold = settings.typesafe_confidence
@@ -792,6 +815,7 @@ async def autofill_characteristics(body: AutofillRequest) -> dict[str, Any]:
         "additional_fields": additional_fields,
         "additional_allowed": additional_allowed,
         "product": product,
+        "webEnrichment": web_enrichment,
         "issues": issues,
         "threshold": threshold,
         "filled": accepted_count,

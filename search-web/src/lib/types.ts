@@ -233,6 +233,16 @@ export type CharacteristicAutofillInput = {
   excludedNames?: string[];
 };
 
+export type WebEnrichmentSuggestion = {
+  brand: string;
+  model: string;
+  query: string;
+  sources: { title: string; url: string; snippet: string }[];
+  facts: string[];
+  suggestedDescription: string;
+  message: string;
+};
+
 export type CharacteristicAutofillResult = {
   status: "accepted" | "needs_review" | "no_match";
   characteristics: {
@@ -270,6 +280,7 @@ export type CharacteristicAutofillResult = {
     errors: string[];
     evidence?: AutofillEvidence | null;
   }>;
+  webEnrichment?: WebEnrichmentSuggestion | null;
   issues: string[];
   threshold: number;
   filled: number;

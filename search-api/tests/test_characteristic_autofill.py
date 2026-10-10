@@ -28,6 +28,9 @@ def mock_providers(monkeypatch, *, llm_handler=None, jev_handler=None):
     monkeypatch.setattr(settings, "typesafe_confidence", 0.85)
     monkeypatch.setattr(settings, "openai_base_url", "https://api.innohassle.ru/llama/v1")
     monkeypatch.setattr(settings, "openai_model", "ggml-org/gemma-4-E4B-it-GGUF:Q8_0")
+    async def no_web(*_args, **_kwargs):
+        return None
+    monkeypatch.setattr(autofill, "enrich_from_web", no_web)
 
     def default_llm(req):
         body = json.loads(req.content)
@@ -348,6 +351,11 @@ def test_secret_file_and_environment_override(monkeypatch, tmp_path):
     assert autofill.typesafe_key() == "file-token"
     monkeypatch.setattr(settings, "typesafe_api_key", SecretStr("env-token"))
     assert autofill.typesafe_key() == "env-token"
+    monkeypatch.setattr(settings, "typesafe_api_key", None)
+    monkeypatch.setattr(autofill, "ROOT", tmp_path / "missing")
+    assert autofill.typesafe_key() == ""
+    assert autofill.typesafe_headers("") == {}
+    assert autofill.typesafe_headers("x") == {"Authorization": "Bearer x"}
 
 
 def test_endpoint_reports_configuration_and_upstream_errors(monkeypatch):

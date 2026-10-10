@@ -57,8 +57,8 @@ uv run zakupki-search-index classifiers --embed --embeddings ../data/classifier_
 | `OPENAI_BASE_URL` | `https://api.innohassle.ru/llama/v1` |
 | `OPENAI_MODEL` | `ggml-org/gemma-4-E4B-it-GGUF:Q8_0` |
 | `OPENAI_TIMEOUT` | `120` |
-| `TYPESAFE_API_KEY` | _(или `secrets/typesafe-token`)_ |
-| `TYPESAFE_BASE_URL` | `https://api.typesafe.ai` |
+| `TYPESAFE_API_KEY` | _(опционально; InnoHassle работает без ключа)_ |
+| `TYPESAFE_BASE_URL` | `https://api.innohassle.ru/typesafe` |
 | `TYPESAFE_MODEL` | `jev-latest` |
 | `TYPESAFE_CONFIDENCE` | `0.85` |
 

@@ -8,7 +8,7 @@ from typing import Any
 
 import httpx
 
-from search_api.characteristic_autofill import AutofillConfigError, typesafe_key
+from search_api.characteristic_autofill import AutofillConfigError, typesafe_headers, typesafe_key
 from search_api.config import settings
 
 logger = logging.getLogger("uvicorn.error")
@@ -139,7 +139,7 @@ async def _ask_questions(text: str, questions: dict[str, dict[str, Any]]) -> dic
         try:
             response = await client.post(
                 f"{base_url}/v1/systemone",
-                headers={"Authorization": f"Bearer {key}"},
+                headers=typesafe_headers(key),
                 json={
                     "model": settings.typesafe_model,
                     "state": {"товар": text},

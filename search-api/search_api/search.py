@@ -5,6 +5,8 @@ import re
 import time
 from typing import Any, Literal
 
+import httpx
+
 from search_api.config import settings
 from search_api.database import get_db, has_vectors
 from search_api.embeddings import embed_query, embed_texts
@@ -157,13 +159,10 @@ async def run_search(
         timings["text"] = round((time.perf_counter() - stage) * 1000)
         return finish(hydrate_hits(ranked), total)
 
-    stage = time.perf_counter()
-    vectors_ready = has_vectors(db)
-    timings["vectorCheck"] = round((time.perf_counter() - stage) * 1000)
-    if not vectors_ready:
-        # Vectors not ready yet — fall back to FTS instead of failing the request.
+    def text_page() -> dict[str, Any]:
+        nonlocal mode
         mode = "text"
-        stage = time.perf_counter()
+        stage_local = time.perf_counter()
         total = 0
         if tokens:
             total = int(db.execute(
@@ -175,11 +174,24 @@ async def run_search(
                 [tokens, *category_params],
             ).fetchone()["n"])
         ranked = [{"id": row["id"], "score": None, "match": "text"} for row in text_rows(settings.page_size, offset)]
-        timings["text"] = round((time.perf_counter() - stage) * 1000)
+        timings["text"] = round((time.perf_counter() - stage_local) * 1000)
         return finish(hydrate_hits(ranked), total)
 
     stage = time.perf_counter()
-    vector = await embed_query(query)
+    vectors_ready = has_vectors(db)
+    timings["vectorCheck"] = round((time.perf_counter() - stage) * 1000)
+    if not vectors_ready:
+        # Vectors not ready yet — fall back to FTS instead of failing the request.
+        return text_page()
+
+    stage = time.perf_counter()
+    try:
+        vector = await embed_query(query)
+    except (httpx.HTTPError, RuntimeError, TimeoutError, OSError) as exc:
+        logger.warning("Embedding unavailable, falling back to text search: %s", exc)
+        timings["embedding"] = round((time.perf_counter() - stage) * 1000)
+        timings["embeddingFallback"] = 1
+        return text_page()
     timings["embedding"] = round((time.perf_counter() - stage) * 1000)
     if category_list is None:
         vec_sql = """

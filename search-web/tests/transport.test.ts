@@ -68,6 +68,7 @@ test("autofill transport sends the actual schema, supports abort and exposes API
           manufacturer: { name: "Производитель", value: null, quote: null, status: "missing", source: null, errors: [], evidence: null },
           article: { name: "Артикул", value: null, quote: null, status: "missing", source: null, errors: [], evidence: null },
         },
+        webEnrichment: null,
         issues: [], threshold: 0.85, filled: 1, total: 1,
         model: "ggml-org/gemma-4-E4B-it-GGUF:Q8_0", durationMs: 100,
         usage: { input_tokens: 1, output_tokens: 1 },
@@ -77,6 +78,7 @@ test("autofill transport sends the actual schema, supports abort and exposes API
     assert.equal(result.characteristics[0].value, "0.5");
     assert.equal(result.status, "accepted");
     assert.equal(result.product.article.status, "missing");
+    assert.equal(result.webEnrichment, null);
     globalThis.fetch = async () => Response.json({ detail: "TypeSafe API: HTTP 429" }, { status: 502 });
     await assert.rejects(apiAutofillCharacteristics(input), { message: "TypeSafe API: HTTP 429" });
   } finally {

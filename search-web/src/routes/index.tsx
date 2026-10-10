@@ -144,7 +144,8 @@ import {
 } from "~/lib/evidence-highlight";
 import type { AutofillEvidence, CatalogSpecialization, CategoryPairCandidate, DirTreeNode, DraftCharacteristic, KtruTreeNode, VotedCode } from "~/lib/types";
 import { checkSpelling, spellerErrorLabel, type SpellerError } from "~/lib/yandex-speller";
-import { Badge, Button, Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, Select, SelectContent, SelectItem, SelectTrigger, SelectValue, Skeleton, TextField, TextFieldInput, TextFieldLabel, TextFieldTextarea } from "~/ui-kit";
+import { Badge, Button, Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle, Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, Select, SelectContent, SelectItem, SelectTrigger, SelectValue, Skeleton, TextField, TextFieldInput, TextFieldLabel, TextFieldTextarea } from "~/ui-kit";
+import type { WebEnrichmentSuggestion } from "~/lib/types";
 import "./create-product.css";
 import "./directories.css";
 import "./ktru.css";
@@ -153,6 +154,16 @@ const MAX_PHOTOS = 8;
 
 function formatSuggestTiming(ms: number): string {
   return ms < 1000 ? `${Math.round(ms)} мс` : `${(ms / 1000).toFixed(2)} с`;
+}
+
+/** Split suggested description so the appended web facts can be highlighted. */
+function enrichmentDescriptionParts(original: string, suggested: string): { kept: string; added: string } {
+  const next = suggested.trim();
+  const raw = original.trim();
+  const base = raw.replace(/\.+\s*$/, "");
+  if (base && next.startsWith(base)) return { kept: base, added: next.slice(base.length) };
+  if (raw && next.startsWith(raw)) return { kept: raw, added: next.slice(raw.length) };
+  return { kept: "", added: next };
 }
 
 function normCharName(name: string): string {
@@ -726,6 +737,7 @@ export default function NewProduct() {
   const [autofillRequestedText, setAutofillRequestedText] = createSignal<string | null>(null);
   const [autofillCompletedText, setAutofillCompletedText] = createSignal<string | null>(null);
   const [autofillStatus, setAutofillStatus] = createSignal<"accepted" | "needs_review" | "no_match" | null>(null);
+  const [webEnrichment, setWebEnrichment] = createSignal<WebEnrichmentSuggestion | null>(null);
   const autofillBusy = () => autofilling() || autofillRequestedText() !== null;
   const autofillCompleted = () => autofillCompletedText() === description().trim();
   const autofillNeedsReview = () => autofillCompleted() && autofillStatus() === "needs_review";
@@ -1320,6 +1332,7 @@ export default function NewProduct() {
     setAutofillDurationMs(null);
     setAutofillCompletedText(null);
     setAutofillStatus(null);
+    setWebEnrichment(null);
     setEvidenceFlashId(null);
     clearTimeout(evidenceFlashTimer);
     setProductEvidenceVersion((version) => version + 1);
@@ -1872,6 +1885,7 @@ export default function NewProduct() {
       setAutofillError("");
       setAutofillCompletedText(null);
       setAutofillStatus(null);
+      setWebEnrichment(null);
       setAutofillRequestedText(text);
     });
   };
@@ -2001,6 +2015,7 @@ export default function NewProduct() {
         ]);
         setAutofillDurationMs(result.durationMs);
         setAutofillStatus(result.status);
+        setWebEnrichment(result.webEnrichment ?? null);
         setAutofilling(false);
         const filledRefine = characteristics().some((item) =>
           updates.has(item.id) && item.refinesKtru && item.applyPositionRefine !== false && item.value.trim());
@@ -2335,6 +2350,47 @@ export default function NewProduct() {
           <span>{autofillError()}</span>
           <Button type="button" variant="outline" size="sm" onClick={requestAutofill}>Повторить</Button>
         </div>
+      </Show>
+      <Show when={webEnrichment() && autofillCompleted() ? webEnrichment() : null}>
+        {(enrichment) => {
+          const parts = () => enrichmentDescriptionParts(description(), enrichment().suggestedDescription);
+          return (
+          <Card class="create-web-enrichment-card">
+            <CardHeader>
+              <CardTitle>Уточните описание по данным из интернета</CardTitle>
+              <CardDescription>{enrichment().message}</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <p class="create-web-enrichment-label">Предлагаемое описание</p>
+              <p class="create-web-enrichment-text">
+                {parts().kept}
+                <Show when={parts().added || false}>
+                  <span class="create-web-enrichment-added">{parts().added}</span>
+                </Show>
+              </p>
+            </CardContent>
+            <CardFooter class="create-web-enrichment-footer">
+              <Button
+                type="button"
+                variant="default"
+                size="sm"
+                onClick={() => {
+                  const next = enrichment().suggestedDescription;
+                  setDescription(next);
+                  setWebEnrichment(null);
+                  if (enrichment().brand && !brand().trim()) setBrand(enrichment().brand);
+                  if (enrichment().model && !model().trim()) setModel(enrichment().model);
+                }}
+              >
+                Применить к описанию
+              </Button>
+              <Button type="button" variant="outline" size="sm" onClick={() => setWebEnrichment(null)}>
+                Скрыть
+              </Button>
+            </CardFooter>
+          </Card>
+          );
+        }}
       </Show>
     </section>
 

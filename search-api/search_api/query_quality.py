@@ -11,7 +11,7 @@ from typing import Any
 
 import httpx
 
-from search_api.characteristic_autofill import AutofillConfigError, AutofillError, ask_jev, typesafe_key
+from search_api.characteristic_autofill import AutofillError, ask_jev, typesafe_key
 from search_api.config import settings
 
 logger = logging.getLogger("uvicorn.error")
@@ -57,11 +57,7 @@ async def check_query_quality(text: str) -> dict[str, Any]:
     """{"verdict": ok | suspicious | reject | unchecked, "reasons": [...], "probabilities": {...}}."""
     if not settings.query_quality_enabled:
         return {"verdict": "unchecked", "reasons": [], "probabilities": {}}
-    try:
-        key = typesafe_key()
-    except AutofillConfigError as exc:
-        return {"verdict": "unchecked", "reasons": [f"оценка запроса недоступна: {exc}"], "probabilities": {}}
-
+    key = typesafe_key()
     questions = {
         qid: {"type": "noul", "instructions": {"question": question, "правило": RULE}}
         for qid, (question, _) in QUESTIONS.items()
