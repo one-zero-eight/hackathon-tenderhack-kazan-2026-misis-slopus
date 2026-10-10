@@ -28,3 +28,8 @@ data/**/*.meta.json
 data/**/*.meta.json.gz
 
 *.part
+
+# Presentation exports and local browser state.
+slides/**/*.pdf
+slides/.chromium/
+slides/.layout-check.html

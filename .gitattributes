@@ -1,2 +1,6 @@
 data/**/*.gz filter=lfs diff=lfs merge=lfs -text
 data/**/*.parquet filter=lfs diff=lfs merge=lfs -text
+slides/*.html filter=lfs diff=lfs merge=lfs -text
+slides/*.png filter=lfs diff=lfs merge=lfs -text
+slides/*.cjs filter=lfs diff=lfs merge=lfs -text
+slides/*.json filter=lfs diff=lfs merge=lfs -text
