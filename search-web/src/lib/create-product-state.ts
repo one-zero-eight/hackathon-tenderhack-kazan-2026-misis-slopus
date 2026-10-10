@@ -12,7 +12,6 @@ export type DraftPhoto = { id: string; url: string; name: string };
 
 /** Module-level draft — survives route changes (create ↔ directories ↔ catalog). */
 export const [name, setName] = createSignal("");
-export const [nameTouched, setNameTouched] = createSignal(false);
 export const [sku, setSku] = createSignal("");
 export const [model, setModel] = createSignal("");
 export const [brand, setBrand] = createSignal("");

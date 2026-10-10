@@ -49,7 +49,6 @@ import {
   lastSuggestQuery,
   model,
   name,
-  nameTouched,
   nextRefineSeq,
   noNewFeatures,
   noNewFeaturesReason,
@@ -71,7 +70,6 @@ import {
   setLastSuggestQuery,
   setModel,
   setName,
-  setNameTouched,
   setNoNewFeatures,
   setNoNewFeaturesReason,
   setOkpd2,
@@ -103,10 +101,6 @@ import "./directories.css";
 import "./ktru.css";
 
 const MAX_PHOTOS = 8;
-
-function nameFromDescription(text: string): string {
-  return text.trim().split(/[.!?\n]/)[0]?.trim().slice(0, 200) ?? "";
-}
 
 function formatSuggestTiming(ms: number): string {
   return ms < 1000 ? `${Math.round(ms)} мс` : `${(ms / 1000).toFixed(2)} с`;
@@ -529,10 +523,6 @@ export default function NewProduct() {
       setCharacteristics((current) => current.filter((item) => item.source !== "ktru"));
       clearCharMeta();
       setGeneratedFor(`\u0000${text}`);
-      if (!nameTouched() || !name().trim()) {
-        setName(nameFromDescription(text) || node.name);
-        setNameTouched(false);
-      }
     });
   };
 
@@ -689,10 +679,6 @@ export default function NewProduct() {
             score: okpd2()?.score ?? 1,
           });
         }
-        if (!nameTouched() || !name().trim()) {
-          setName(nameFromDescription(text) || ktruNode.name);
-          setNameTouched(false);
-        }
       }
       if (input.clearSpgz) {
         setSpgz(null);
@@ -817,8 +803,7 @@ export default function NewProduct() {
   const fillExample = () => {
     batch(() => {
       setName("");
-      setNameTouched(false);
-      setSku("MOL-500-DRV");
+      setSku("");
       setModel("");
       setBrand("");
       setSelected(null);
@@ -841,7 +826,7 @@ export default function NewProduct() {
 
   const reset = () => {
     batch(() => {
-      setName(""); setNameTouched(false); setSku(""); setModel(""); setBrand(""); setDescription("");
+      setName(""); setSku(""); setModel(""); setBrand(""); setDescription("");
       setSelected(null); setOkpd2(null); setKpgz(null); setSpgz(null); setKtruVote(null);
       setKtruLocked(false); setSpgzLocked(false);
       setSimilar([]); setSuggesting(false); setLastSuggestQuery(""); setSuggestDurationMs(null);
@@ -948,10 +933,6 @@ export default function NewProduct() {
                 setSelected(null);
                 setGeneratedFor(`\u0000${query}`);
               }
-            }
-            if (!nameTouched()) {
-              setName(draft.productName || nameFromDescription(query));
-              setNameTouched(false);
             }
           });
 
@@ -1201,7 +1182,7 @@ export default function NewProduct() {
         <div class="detail-summary create-summary">
           <div class="detail-category">{selected()?.name || ktruVote()?.name || spgz()?.name || "Категория не выбрана"}</div>
           <div class="create-name-wrap">
-            <TextField class="create-name-field" name="product-name" value={name()} onChange={(value) => { setName(value); setNameTouched(true); }} required>
+            <TextField class="create-name-field" name="product-name" value={name()} onChange={setName} required>
               <TextFieldLabel class="sr-only">Наименование</TextFieldLabel>
               <TextFieldTextarea id="product-name" required placeholder="Наименование товара" maxlength={200} rows={2} />
             </TextField>
