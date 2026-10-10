@@ -861,6 +861,8 @@ export function getDirectoryRaw(tab: DirectoryTab, code: string): Record<string,
 
 let indexedIds: Set<number> | undefined;
 let indexedFingerprint = "";
+let ktruProductIds: Map<string, number[]> | undefined;
+let ktruProductFingerprint = "";
 
 function indexedProductIds(): Set<number> {
   const { sqlite } = getDatabase();
@@ -875,6 +877,37 @@ function indexedProductIds(): Set<number> {
     indexedFingerprint = fingerprint;
   }
   return indexedIds;
+}
+
+function ktruCodeFromCharacteristics(
+  characteristics: Array<{ name: string | null; value: string | null } | null> | null | undefined,
+): string {
+  for (const item of characteristics ?? []) {
+    if (!item) continue;
+    if ((item.name ?? "").trim().toLocaleLowerCase("ru") !== "ктру") continue;
+    return String(item.value ?? "").trim();
+  }
+  return "";
+}
+
+function productsByKtruCode(): Map<string, number[]> {
+  const catalog = getSteCatalog();
+  if (ktruProductIds && ktruProductFingerprint === catalog.fingerprint) return ktruProductIds;
+  const map = new Map<string, number[]>();
+  const rows = catalog.frame.select("id", "characteristics").toRecords() as {
+    id: number;
+    characteristics: Array<{ name: string | null; value: string | null } | null> | null;
+  }[];
+  for (const row of rows) {
+    const ktru = ktruCodeFromCharacteristics(row.characteristics);
+    if (!ktru) continue;
+    const list = map.get(ktru);
+    if (list) list.push(row.id);
+    else map.set(ktru, [row.id]);
+  }
+  ktruProductIds = map;
+  ktruProductFingerprint = catalog.fingerprint;
+  return map;
 }
 
 function listIndexedCatalogProducts(
@@ -938,19 +971,9 @@ export function listDirectoryProducts(tab: DirectoryTab, code: string, limit = 2
     );
   }
   if (tab === "ktru") {
-    const { sqlite } = getDatabase();
-    const total = (sqlite.prepare("SELECT count(*) AS n FROM products WHERE ktru_code = ?").get(code) as { n: number }).n;
-    if (!total) return { total: 0, items: [] };
-    const items = sqlite.prepare(`
-      SELECT id, name,
-        coalesce(okpd2, '') AS okpd2,
-        coalesce(kpgz_code, '') AS kpgzCode,
-        coalesce(kpgz_name, '') AS kpgzName
-      FROM products
-      WHERE ktru_code = ?
-      ORDER BY name LIMIT ?
-    `).all(code, limit) as DirProductHit[];
-    return { total, items };
+    const ids = productsByKtruCode().get(code.trim()) ?? [];
+    if (!ids.length) return { total: 0, items: [] };
+    return listIndexedCatalogProducts((frame) => frame.filter(pl.col("id").isIn(pl.lit(ids))), limit);
   }
   return { total: 0, items: [] };
 }
