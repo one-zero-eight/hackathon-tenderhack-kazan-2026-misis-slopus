@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     moy_ktru_parquet: Path = DATA / "moy-zakupki-ktru.parquet"
     okpd2_parquet: Path = DATA / "okpd2-moy-zakupki.parquet"
     kpgz_parquet: Path = DATA / "pp-kpgz.parquet"
+    kpgz_characteristics_parquet: Path = DATA / "pp-kpgz-characteristics.parquet"
     spgz_parquet: Path = DATA / "spgz.parquet"
     catalog_mmap_size: int = Field(default=1024**3, ge=0)
     search_mmap_size: int = Field(default=2 * 1024**3, ge=0)
@@ -39,6 +40,8 @@ class Settings(BaseSettings):
     image_cache_dir: Path | None = None
     # sku_id → float16[768]: .parquet (Git LFS) or LMDB dir; preferred over text meow cache
     sku_embeddings: Path = DATA / "sku_embeddings.parquet"
+    # classifier content_hash → float16[768] (Git LFS); preferred over meow for classifiers --embed
+    classifier_embeddings: Path = DATA / "classifier_embeddings.parquet"
     meow_embed_url: str = "https://api.innohassle.ru/meow-embed"
     model_id: str = "google/embeddinggemma-2"
     dimensions: int = 768

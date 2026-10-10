@@ -17,10 +17,11 @@ import pysqlite3 as sqlite3
 import sqlite_vec
 
 from search_api.config import settings
-from search_api.embeddings import embed_client, embed_query, embed_texts
+from search_api.embeddings import _float16_to_sqlite, embed_client, embed_query, embed_texts
 
 logger = logging.getLogger("uvicorn.error")
 SCHEMA_VERSION = "classifiers-search-v2"
+CLASSIFIER_EMBEDDINGS_SCHEMA = "classifier-embeddings-v2"
 BATCH_SIZE = 128
 RRF_K = 60
 Kind = Literal["okpd", "ktru", "kpgz", "spgz"]
@@ -355,8 +356,57 @@ def publish_classifier_index(*, output: Path | None = None, require_embeddings: 
     temporary.replace(output)
 
 
+def apply_classifier_embeddings_from_parquet(conn: sqlite3.Connection, path: Path) -> int:
+    """Fill pending entry_vectors from id/kind/code + content_hash float16 parquet (Git LFS)."""
+    path = path.resolve()
+    if not path.is_file():
+        raise FileNotFoundError(path)
+    meta = pq.read_schema(path).metadata or {}
+    schema = (meta.get(b"schema") or b"").decode()
+    signature = (meta.get(b"embedding_signature") or b"").decode()
+    if schema and schema != CLASSIFIER_EMBEDDINGS_SCHEMA:
+        raise RuntimeError(f"Неверная схема classifier embeddings: {schema}")
+    if signature and signature != _model_signature():
+        logger.warning("Classifier parquet signature mismatch, skip %s", path)
+        print(f"Classifier parquet пропущен (другая модель/prompt): {path}", flush=True)
+        return 0
+    expected = settings.dimensions * 2
+    # (kind, code) → (content_hash, float32 embedding); id is stable blake2b(kind||code).
+    by_key: dict[tuple[str, str], tuple[str, bytes]] = {}
+    with pq.ParquetFile(path, memory_map=True) as parquet:
+        cols = ["kind", "code", "content_hash", "embedding"]
+        for batch in parquet.iter_batches(columns=cols, batch_size=1024, use_threads=False):
+            for row in batch.to_pylist():
+                blob = bytes(row["embedding"])
+                if len(blob) != expected:
+                    raise RuntimeError(f"Неверная размерность в {path}: {len(blob)} байт")
+                by_key[(str(row["kind"]), str(row["code"]))] = (
+                    str(row["content_hash"]),
+                    _float16_to_sqlite(blob),
+                )
+    if not by_key:
+        return 0
+    rows = conn.execute("""
+        SELECT id, kind, code, content_hash FROM entries
+        WHERE embedded_hash IS NULL OR embedded_hash != content_hash
+    """).fetchall()
+    applied = 0
+    with conn:
+        for row in rows:
+            cached = by_key.get((row["kind"], row["code"]))
+            if cached is None or cached[0] != row["content_hash"]:
+                continue
+            conn.execute("DELETE FROM entry_vectors WHERE entry_id=?", (row["id"],))
+            conn.execute("INSERT INTO entry_vectors VALUES(?,?)", (row["id"], cached[1]))
+            conn.execute("UPDATE entries SET embedded_hash=? WHERE id=?", (row["content_hash"], row["id"]))
+            applied += 1
+    logger.info("Classifier embeddings from parquet: %s", applied)
+    return applied
+
+
 async def embed_classifier_pending(*, path: Path | None = None, limit: int | None = None,
-                                   batch_size: int | None = None, concurrency: int | None = None) -> int:
+                                   batch_size: int | None = None, concurrency: int | None = None,
+                                   embeddings: Path | None = None) -> int:
     batch_size = settings.embed_batch_size if batch_size is None else batch_size
     concurrency = settings.embed_concurrency if concurrency is None else concurrency
     if batch_size <= 0 or concurrency <= 0 or (limit is not None and limit < 0):
@@ -366,49 +416,64 @@ async def embed_classifier_pending(*, path: Path | None = None, limit: int | Non
         validate_classifier_index(conn)
         if _metadata(conn)["embedding_signature"] != _model_signature():
             raise RuntimeError(f"Изменилась модель эмбеддингов. Пересоберите: {_REBUILD}")
-        done, last_id = 0, 0
+        done = 0
         with conn:
             conn.execute("UPDATE metadata SET value='0' WHERE key='embeddings_complete'")
-        import asyncio
-        from collections import deque
+        cache = embeddings if embeddings is not None else (
+            settings.classifier_embeddings if settings.classifier_embeddings.exists() else None
+        )
+        if cache is not None:
+            print(f"Classifier parquet: {cache}", flush=True)
+            done += apply_classifier_embeddings_from_parquet(conn, cache)
+        still = conn.execute(
+            "SELECT 1 FROM entries WHERE embedded_hash IS NULL OR embedded_hash!=content_hash LIMIT 1"
+        ).fetchone()
+        meow_budget = None if limit is None else max(limit - done, 0)
+        if still and meow_budget != 0:
+            import asyncio
+            from collections import deque
 
-        async with embed_client() as client:
-            pending = deque()
-            scheduled = 0
-            exhausted = False
-            try:
-                while pending or not exhausted:
-                    while not exhausted and len(pending) < concurrency:
-                        take = batch_size if limit is None else min(batch_size, limit - scheduled)
-                        if take <= 0:
-                            exhausted = True
+            last_id = 0
+            async with embed_client() as client:
+                pending = deque()
+                scheduled = 0
+                meow_done = 0
+                exhausted = False
+                try:
+                    while pending or not exhausted:
+                        while not exhausted and len(pending) < concurrency:
+                            take = batch_size if meow_budget is None else min(batch_size, meow_budget - meow_done - scheduled)
+                            if take <= 0:
+                                exhausted = True
+                                break
+                            rows = conn.execute("""SELECT id,embed_text,content_hash FROM entries WHERE id>?
+                                AND (embedded_hash IS NULL OR embedded_hash!=content_hash) ORDER BY id LIMIT ?""",
+                                                (last_id, take)).fetchall()
+                            if not rows:
+                                exhausted = True
+                                break
+                            task = asyncio.create_task(embed_texts([row["embed_text"] for row in rows], "document", client=client))
+                            pending.append((rows, task))
+                            scheduled += len(rows)
+                            last_id = rows[-1]["id"]
+                        if not pending:
                             break
-                        rows = conn.execute("""SELECT id,embed_text,content_hash FROM entries WHERE id>?
-                            AND (embedded_hash IS NULL OR embedded_hash!=content_hash) ORDER BY id LIMIT ?""",
-                                            (last_id, take)).fetchall()
-                        if not rows:
-                            exhausted = True
-                            break
-                        task = asyncio.create_task(embed_texts([row["embed_text"] for row in rows], "document", client=client))
-                        pending.append((rows, task))
-                        scheduled += len(rows)
-                        last_id = rows[-1]["id"]
-                    if not pending:
-                        break
-                    rows, task = pending.popleft()
-                    vectors = await task
-                    with conn:
-                        for row, vector in zip(rows, vectors, strict=True):
-                            conn.execute("DELETE FROM entry_vectors WHERE entry_id=?", (row["id"],))
-                            conn.execute("INSERT INTO entry_vectors VALUES(?,?)", (row["id"], vector))
-                            conn.execute("UPDATE entries SET embedded_hash=? WHERE id=?", (row["content_hash"], row["id"]))
-                    done += len(rows)
-                    logger.info("Classifier embeddings: %s", done)
-            finally:
-                tasks = [task for _, task in pending]
-                for task in tasks:
-                    task.cancel()
-                await asyncio.gather(*tasks, return_exceptions=True)
+                        rows, task = pending.popleft()
+                        vectors = await task
+                        with conn:
+                            for row, vector in zip(rows, vectors, strict=True):
+                                conn.execute("DELETE FROM entry_vectors WHERE entry_id=?", (row["id"],))
+                                conn.execute("INSERT INTO entry_vectors VALUES(?,?)", (row["id"], vector))
+                                conn.execute("UPDATE entries SET embedded_hash=? WHERE id=?", (row["content_hash"], row["id"]))
+                        done += len(rows)
+                        meow_done += len(rows)
+                        scheduled -= len(rows)
+                        logger.info("Classifier embeddings: %s", done)
+                finally:
+                    tasks = [task for _, task in pending]
+                    for task in tasks:
+                        task.cancel()
+                    await asyncio.gather(*tasks, return_exceptions=True)
         validate_classifier_index(conn)
         pending = conn.execute("SELECT 1 FROM entries WHERE embedded_hash IS NULL OR embedded_hash!=content_hash LIMIT 1").fetchone()
         if not pending:

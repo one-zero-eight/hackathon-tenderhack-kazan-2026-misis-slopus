@@ -32,6 +32,13 @@ uv run zakupki-search-index embed \
 # uv run scripts/pack_sku_embeddings_parquet.py \
 #   --input ../data/sku_embeddings.lmdb --output ../data/sku_embeddings.parquet
 uv run zakupki-search-index embed --sku-embeddings ../data/sku_embeddings.parquet
+
+# Справочники OKPD2/KTRU/KPGZ/SPGZ:
+uv run zakupki-search-index classifiers --embed
+# Эмбеддинги справочников (Git LFS: data/classifier_embeddings.parquet):
+# uv run scripts/pack_classifier_embeddings_parquet.py \
+#   --input ../data/classifier-search.sqlite --output ../data/classifier_embeddings.parquet
+uv run zakupki-search-index classifiers --embed --embeddings ../data/classifier_embeddings.parquet
 ```
 
 ## Env

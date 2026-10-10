@@ -25,6 +25,8 @@ git lfs pull
 - `ste-categories.parquet`: **14 743** записи дерева категорий СТЕ из Портала поставщиков.
 - `pp-kpgz.parquet`: **15 075** записей классификатора продукции/КПГЗ в представлении Портала поставщиков, с иерархией и связями с ОКПД2.
 - `pp-kpgz-characteristics.parquet`: **106 185** строк схемы характеристик конечных категорий ПП/КПГЗ (Лист2 выгрузок Инструменты/Мебель/Одежда), **617** кодов. Колонки: категория ПП, код/имя КПГЗ, название, kind (базовая/эталонная/категореобразующая), тип значения, допустимые значения, единица, связь с эталонной характеристикой СПГЗ. Сборка: `uv run --with openpyxl --with pyarrow python scripts/convert_pp_kpgz_characteristics.py`.
+- `classifier_embeddings.parquet`: эмбеддинги EmbeddingGemma-2 (float16[768]) для OKPD2/KTRU/KPGZ/SPGZ. Колонки: `id` (стабильный uint64 от `kind+code`), `kind`, `code`, `content_hash` (версия текста), `embedding`. Упаковка: `uv run search-api/scripts/pack_classifier_embeddings_parquet.py --input data/classifier-search.sqlite --output data/classifier_embeddings.parquet`. Подхват: `uv run zakupki-search-index classifiers --embed`.
+- `sku_embeddings.parquet`: эмбеддинги карточек СТЕ по `sku id` (float16[768]) для `zakupki-search-index embed`.
 - `Инструменты_from_api.parquet`, `Мебель_from_api.parquet`, `Одежда_from_api.parquet`: по ~100 000 карточек СТЕ из QueryIndex по спискам ID из соответствующих `.xlsx`. Тот же schema, что `ste.parquet`.
 
 Для справочников Портала отдельный полный журнал HTTP-запросов не сохранился. Не следует считать идентификаторы одинаковыми между разными системами.

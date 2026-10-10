@@ -27,6 +27,7 @@ def _embed_classifier_stage(args: argparse.Namespace) -> int:
         raise FileNotFoundError(f"Нет незавершённой сборки: {stage}. Запустите classifiers --embed")
     embedded = asyncio.run(embed_classifier_pending(
         path=stage, limit=args.limit, batch_size=args.batch, concurrency=args.concurrency,
+        embeddings=args.embeddings,
     ))
     print(f"Эмбеддинги справочников: {embedded:,}".replace(",", "\u00a0"))
     conn = open_classifier_db(stage, readonly=True)
@@ -123,6 +124,12 @@ def main(argv: list[str] | None = None) -> None:
     p_cls.add_argument("--limit", type=int, default=None)
     p_cls.add_argument("--batch", type=int, default=None)
     p_cls.add_argument("--concurrency", type=int, default=None)
+    p_cls.add_argument(
+        "--embeddings",
+        type=Path,
+        default=None,
+        help="Load vectors by content_hash from .parquet (default: data/classifier_embeddings.parquet if present)",
+    )
     p_cls.set_defaults(func=_cmd_classifiers)
 
     p_cls_embed = sub.add_parser("classifiers-embed", help="Resume staged classifier embeddings and publish when complete")
@@ -130,6 +137,12 @@ def main(argv: list[str] | None = None) -> None:
     p_cls_embed.add_argument("--limit", type=int, default=None)
     p_cls_embed.add_argument("--batch", type=int, default=None)
     p_cls_embed.add_argument("--concurrency", type=int, default=None)
+    p_cls_embed.add_argument(
+        "--embeddings",
+        type=Path,
+        default=None,
+        help="Load vectors by content_hash from .parquet (default: data/classifier_embeddings.parquet if present)",
+    )
     p_cls_embed.set_defaults(func=_embed_classifier_stage)
 
     p_import = sub.add_parser("import", help="Build FTS + index_state from STE parquet")
