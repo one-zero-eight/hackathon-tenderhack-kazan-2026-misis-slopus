@@ -105,7 +105,13 @@ async def download_details(
     list_source: str | Path,
     token: str,
     cooldown_seconds: int = 0,
-):
+    pause_seconds: float | None = None,
+    batch_size: int | None = None,
+    max_run_seconds: float | None = None,
+) -> str:
+    pause = PAUSE_SECONDS if pause_seconds is None else pause_seconds
+    batch = BATCH_SIZE if batch_size is None else batch_size
+    run_limit = MAX_RUN_SECONDS if max_run_seconds is None else max_run_seconds
     target = len(ids)
     if cooldown_seconds:
         scheduled = datetime.now(timezone.utc) + timedelta(seconds=cooldown_seconds)
@@ -113,8 +119,10 @@ async def download_details(
         await wait(cooldown_seconds)
         if STOP_REQUESTED:
             print('Stopped during cooldown; no API requests made', flush=True)
-            return
+            return 'stop_requested'
     fingerprint = hashlib.sha256(json.dumps(ids, separators=(',', ':')).encode()).hexdigest()
+    database.parent.mkdir(parents=True, exist_ok=True)
+    export.parent.mkdir(parents=True, exist_ok=True)
     db = sqlite3.connect(database)
     db.execute('PRAGMA journal_mode=WAL')
     db.execute('PRAGMA synchronous=FULL')
@@ -141,29 +149,29 @@ async def download_details(
             saved_source = db.execute('SELECT value FROM metadata WHERE key=?', ('source',)).fetchone()
             if not saved_source or json.loads(saved_source[0]) != ENDPOINT:
                 raise RuntimeError('Existing database uses a different details API')
-        update_metadata(db, listSource=list_source, pauseSeconds=PAUSE_SECONDS, batchSize=BATCH_SIZE, stopReason='in_progress', resumeStartedAt=now(), finishedAt=None)
+        update_metadata(db, listSource=list_source, pauseSeconds=pause, batchSize=batch, stopReason='in_progress', resumeStartedAt=now(), finishedAt=None)
     completed = db.execute('SELECT count(*) FROM sku_details').fetchone()[0]
     pending = [row[0] for row in db.execute('SELECT t.sku_id FROM targets t LEFT JOIN sku_details d USING(sku_id) WHERE d.sku_id IS NULL ORDER BY t.ordinal')]
     prefix = 'COOLDOWN COMPLETE' if cooldown_seconds else 'READY'
-    print(f'{prefix}: {completed} saved; {len(pending)} pending. First request limited to 2 SKUs', flush=True)
+    print(f'{prefix}: {completed} saved; {len(pending)} pending. First request limited to 2 SKUs; pause={pause}s batch={batch}', flush=True)
     reason = 'complete'
     requests = 0
-    deadline = time.monotonic() + MAX_RUN_SECONDS
+    deadline = time.monotonic() + run_limit
     offset = 0
     try:
         while offset < len(pending):
             if STOP_REQUESTED:
                 reason = 'stop_requested'
                 break
-            if time.monotonic() + PAUSE_SECONDS + 60 >= deadline:
+            if time.monotonic() + pause + 60 >= deadline:
                 reason = 'time_limit'
                 break
             if requests:
-                await wait(PAUSE_SECONDS)
+                await wait(pause)
             if STOP_REQUESTED:
                 reason = 'stop_requested'
                 break
-            batch_ids = pending[offset:offset + (2 if requests == 0 else BATCH_SIZE)]
+            batch_ids = pending[offset:offset + (2 if requests == 0 else batch)]
             requests += 1
             try:
                 result = await asyncio.to_thread(fetch, batch_ids, token)
@@ -218,6 +226,7 @@ async def download_details(
         db.execute('PRAGMA wal_checkpoint(TRUNCATE)')
         db.close()
         print(f'FINISHED: {database.name}; {completed} validated full cards; stop={reason}', flush=True)
+    return reason
 
 
 def acquire_locks():

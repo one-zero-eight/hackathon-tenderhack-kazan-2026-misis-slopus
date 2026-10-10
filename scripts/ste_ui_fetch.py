@@ -23,7 +23,7 @@ import requests
 
 ROOT = Path(__file__).resolve().parents[1]
 PROXY_FILE = ROOT / "secrets" / "zakupki-proxy"
-DIRECT_IP = "94.79.51.128"
+DIRECT_IP = "94.79.51.126"
 HOST = "zakupki.mos.ru"
 UA = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
@@ -64,7 +64,13 @@ def now_iso() -> str:
 
 
 class Client:
-    def __init__(self, proxy_url: str | None = None, bridge: str | None = None):
+    def __init__(
+        self,
+        proxy_url: str | None = None,
+        bridge: str | None = None,
+        *,
+        direct: bool = False,
+    ):
         self.session = requests.Session()
         self.session.verify = False
         self.session.headers.update(
@@ -80,10 +86,19 @@ class Client:
             self.base = f"https://{HOST}"
             self.session.proxies = {"http": bridge, "https": bridge}
             self._force_host = False
+        elif direct or not proxy_url:
+            # Hostname HTTPS (correct SNI). Bypass VPN for 94.79.51.0/24 first.
+            self.base = f"https://{HOST}"
+            self._force_host = False
         else:
             self.base = f"https://{DIRECT_IP}"
             self.session.proxies = {"http": proxy_url, "https": proxy_url}
             self._force_host = True
+        from requests.adapters import HTTPAdapter
+
+        adapter = HTTPAdapter(pool_connections=32, pool_maxsize=32, max_retries=0)
+        self.session.mount("https://", adapter)
+        self.session.mount("http://", adapter)
         requests.packages.urllib3.disable_warnings()  # type: ignore[attr-defined]
 
     def _get(self, path: str, referer: str, timeout: float = 60.0) -> dict:
@@ -123,6 +138,26 @@ class Client:
             "take": len(ids),
             "skip": 0,
             "withCount": True,
+        }
+        qf = json.dumps(q, separators=(",", ":"), ensure_ascii=False)
+        path = "/newapi/api/Sku/QueryIndex?" + urlencode({"queryFilter": qf})
+        return self._get(path, referer=f"https://{HOST}/catalog")
+
+    def query_index_page(
+        self,
+        *,
+        skip: int,
+        take: int,
+        filt: dict | None = None,
+        order: list | None = None,
+        with_count: bool = False,
+    ) -> dict:
+        q = {
+            "filter": filt if filt is not None else {},
+            "order": order if order is not None else [{"field": "id", "desc": False}],
+            "skip": skip,
+            "take": take,
+            "withCount": with_count,
         }
         qf = json.dumps(q, separators=(",", ":"), ensure_ascii=False)
         path = "/newapi/api/Sku/QueryIndex?" + urlencode({"queryFilter": qf})
@@ -170,8 +205,10 @@ def export_jsonl_gz(db: Path, out: Path, meta_extra: dict, list_source: str = "s
 
 
 def make_client(args) -> Client:
-    if args.bridge:
+    if getattr(args, "bridge", None):
         return Client(bridge=args.bridge)
+    if getattr(args, "direct", False):
+        return Client(direct=True)
     return Client(proxy_url=load_socks_url())
 
 
@@ -263,6 +300,7 @@ def resume_download(
     out: Path,
     *,
     bridge: str | None = None,
+    direct: bool = False,
     pause: float = 0.05,
     workers: int = 4,
     list_source: str = "ste.jsonl.gz",
@@ -272,6 +310,7 @@ def resume_download(
 
     args = Args()
     args.bridge = bridge
+    args.direct = direct
 
     con = sqlite3.connect(db, check_same_thread=False)
     con.execute(
@@ -373,14 +412,19 @@ def resume_download(
                             f"{rate:.2f}/s last={sku_id}",
                             flush=True,
                         )
-                    if n % 2000 == 0:
+                    # Full gzip rewrite gets slow on large DBs; keep rare checkpoints only.
+                    if n % 25000 == 0:
                         export_jsonl_gz(
                             db,
                             out,
                             {
                                 "stopReason": "running",
                                 "via": "ui-GetSku",
-                                "proxyMode": "socks5-direct-ip" if not bridge else "http-bridge",
+                                "proxyMode": (
+                                    "http-bridge"
+                                    if bridge
+                                    else ("hostname-direct" if direct else "socks5-direct-ip")
+                                ),
                                 "workers": workers,
                                 "failedCount": fail,
                             },
@@ -629,6 +673,302 @@ def resume_download_query_index(
         )
 
 
+CATALOG_FILTER = {
+    "productionDirectoryPaths": {"values": ["."]},
+    "entityState": {"values": [2]},
+    "skuStateId": {"values": [61000002]},
+    "characteristicFilter": [],
+    "characteristicName": {"contains": True},
+    "characteristicValue": {"contains": True},
+    "ids": {},
+    "keyword": "",
+    "modelName": {"contains": True},
+    "name": {"contains": True},
+    "offersCount": {},
+    "referencePrice": {},
+    "okpdPaths": {},
+    "productionDirectoryId": {},
+    "productionDirectoryRequestType": {},
+    "productionPath": {},
+    "manufacturerId": {},
+    "supplierKeyword": "",
+    "tagIds": {},
+    "tags": {},
+    "vendorId": {},
+}
+CATALOG_ORDER = [{"field": "id", "desc": False}]
+
+
+def fetch_query_page(
+    client: Client, skip: int, take: int, *, with_count: bool = False
+) -> tuple[dict | None, str | None]:
+    attempt = 0
+    while True:
+        attempt += 1
+        try:
+            return (
+                client.query_index_page(
+                    skip=skip,
+                    take=take,
+                    filt=CATALOG_FILTER,
+                    order=CATALOG_ORDER,
+                    with_count=with_count,
+                ),
+                None,
+            )
+        except GatewayDown as e:
+            if attempt >= 8:
+                return None, f"GatewayDown: {e}"
+            time.sleep(min(120, 3 * attempt))
+        except BotProtected:
+            raise
+        except Exception as e:
+            if attempt >= 6:
+                return None, f"{type(e).__name__}: {e}"
+            time.sleep(min(60, 1.5 * attempt))
+
+
+def catalog_total(bridge: str | None = None) -> int:
+    class Args:
+        pass
+
+    args = Args()
+    args.bridge = bridge
+    data, err = fetch_query_page(make_client(args), 0, 1, with_count=True)
+    if err or not data or not isinstance(data.get("count"), int) or data["count"] <= 0:
+        raise RuntimeError(f"catalog count failed: {err or data}")
+    return data["count"]
+
+
+def _list_shard_worker(args: tuple) -> dict:
+    shard_id, n_shards, take, total, bridge, workers, shard_dir = args
+    shard_dir = Path(shard_dir)
+    db = shard_dir / f"shard-{shard_id:02d}.sqlite"
+    out = shard_dir / f"shard-{shard_id:02d}.jsonl.gz"
+    page_count = (total + take - 1) // take
+    pages = list(range(shard_id, page_count, n_shards))
+
+    class Args:
+        pass
+
+    a = Args()
+    a.bridge = bridge
+    con = sqlite3.connect(db, check_same_thread=False)
+    con.execute(
+        "create table if not exists sku_details ("
+        "sku_id integer primary key, fetched_at text not null, payload text not null)"
+    )
+    con.execute(
+        "create table if not exists targets (ordinal integer not null, sku_id integer primary key)"
+    )
+    con.execute(
+        "create table if not exists pages_done (page_index integer primary key, item_count integer not null)"
+    )
+    con.commit()
+    done = {r[0] for r in con.execute("select page_index from pages_done")}
+    pending = [p for p in pages if p not in done]
+    print(f"shard {shard_id}: pending_pages={len(pending)}/{len(pages)} workers={workers}", flush=True)
+    if not pending:
+        export_jsonl_gz(db, out, {"via": "ui-QueryIndex-list", "shard": shard_id}, list_source="catalog")
+        n = con.execute("select count(*) from sku_details").fetchone()[0]
+        con.close()
+        return {"shard": shard_id, "saved": n, "pages": 0}
+
+    clients = [make_client(a) for _ in range(max(1, workers))]
+    lock = threading.Lock()
+    ok = 0
+    t0 = time.perf_counter()
+
+    def one(page_index: int):
+        data, err = fetch_query_page(clients[page_index % len(clients)], page_index * take, take)
+        if err:
+            return page_index, None, err
+        items = data.get("items") if isinstance(data, dict) else None
+        if not isinstance(items, list):
+            return page_index, None, "bad items"
+        return page_index, items, None
+
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+        futs = {pool.submit(one, p): p for p in pending}
+        for fut in as_completed(futs):
+            page_index = futs[fut]
+            try:
+                page_index, items, err = fut.result()
+            except BotProtected as e:
+                print(f"AGENT_ALERT kind=bot_protection shard={shard_id} detail={e}", flush=True)
+                time.sleep(180)
+                continue
+            if err or items is None:
+                print(f"AGENT_ALERT kind=page_fail shard={shard_id} page={page_index} detail={err}", flush=True)
+                continue
+            rows = []
+            for item in items:
+                if isinstance(item, dict) and isinstance(item.get("id"), int):
+                    rows.append(
+                        (
+                            item["id"],
+                            now_iso(),
+                            json.dumps(item, ensure_ascii=False, separators=(",", ":")),
+                        )
+                    )
+            with lock:
+                with con:
+                    if rows:
+                        con.executemany(
+                            "insert or replace into sku_details(sku_id,fetched_at,payload) values(?,?,?)",
+                            rows,
+                        )
+                        con.executemany(
+                            "insert or ignore into targets(ordinal,sku_id) values(?,?)",
+                            [(page_index * take + i, sku_id) for i, (sku_id, _, _) in enumerate(rows)],
+                        )
+                    con.execute(
+                        "insert or replace into pages_done(page_index,item_count) values(?,?)",
+                        (page_index, len(rows)),
+                    )
+            ok += 1
+            if ok % 25 == 0 or ok == len(pending):
+                saved = con.execute("select count(*) from sku_details").fetchone()[0]
+                rate = ok * take / max(time.perf_counter() - t0, 1e-6)
+                print(f"shard {shard_id}: {ok}/{len(pending)} pages saved={saved} ~{rate:.0f}/s", flush=True)
+
+    export_jsonl_gz(db, out, {"via": "ui-QueryIndex-list", "shard": shard_id}, list_source="catalog")
+    saved = con.execute("select count(*) from sku_details").fetchone()[0]
+    con.close()
+    return {"shard": shard_id, "saved": saved, "pages": ok}
+
+
+def resume_download_catalog(
+    out: Path,
+    shard_dir: Path,
+    *,
+    bridge: str | None = None,
+    shards: int = 6,
+    workers: int = 4,
+    take: int = 100,
+    enrich_workers: int = 8,
+    enrich_batch: int = 50,
+    skip_enrich: bool = False,
+) -> dict:
+    """Full-catalog QueryIndex dump with parallel skip shards; optional ids enrich."""
+    from concurrent.futures import ProcessPoolExecutor
+
+    shard_dir.mkdir(parents=True, exist_ok=True)
+    total = catalog_total(bridge)
+    print(f"catalog total={total} shards={shards} workers={workers} take={take}", flush=True)
+    t0 = time.perf_counter()
+
+    with ProcessPoolExecutor(max_workers=shards) as pool:
+        jobs = [
+            (i, shards, take, total, bridge, workers, str(shard_dir)) for i in range(shards)
+        ]
+        for result in pool.map(_list_shard_worker, jobs):
+            print(f"list {result}", flush=True)
+
+    pending_ids: list[int] = []
+    if not skip_enrich:
+        for i in range(shards):
+            db = shard_dir / f"shard-{i:02d}.sqlite"
+            if not db.exists():
+                continue
+            con = sqlite3.connect(db)
+            for (payload,) in con.execute("select payload from sku_details"):
+                card = json.loads(payload)
+                if not isinstance(card.get("skuCharacteristics"), list):
+                    pending_ids.append(card["id"])
+            con.close()
+        pending_ids = sorted(set(pending_ids))
+        print(f"enrich pending={len(pending_ids)}", flush=True)
+        if pending_ids:
+            resume_download_query_index(
+                pending_ids,
+                shard_dir / "enrich.sqlite",
+                shard_dir / "enrich.jsonl.gz",
+                bridge=bridge,
+                pause=0.0,
+                workers=enrich_workers,
+                batch_size=enrich_batch,
+                list_source="catalog-enrich",
+            )
+            eco = sqlite3.connect(shard_dir / "enrich.sqlite")
+            by_id = {r[0]: r[1] for r in eco.execute("select sku_id, payload from sku_details")}
+            eco.close()
+            for i in range(shards):
+                db = shard_dir / f"shard-{i:02d}.sqlite"
+                if not db.exists():
+                    continue
+                con = sqlite3.connect(db)
+                ids = [r[0] for r in con.execute("select sku_id from sku_details")]
+                with con:
+                    for sku_id in ids:
+                        if sku_id in by_id:
+                            con.execute(
+                                "update sku_details set payload=?, fetched_at=? where sku_id=?",
+                                (by_id[sku_id], now_iso(), sku_id),
+                            )
+                con.close()
+
+    temporary = out.with_name(out.name + ".part")
+    count = 0
+    seen: set[int] = set()
+    with gzip.open(temporary, "wt", encoding="utf-8") as stream:
+        cons = []
+        cursors = []
+        for i in range(shards):
+            db = shard_dir / f"shard-{i:02d}.sqlite"
+            if not db.exists():
+                continue
+            con = sqlite3.connect(db)
+            cur = con.execute("select sku_id, payload from sku_details order by sku_id")
+            cons.append(con)
+            cursors.append([cur, cur.fetchone()])
+        while True:
+            best_i, best_id = None, None
+            for i, (_c, row) in enumerate(cursors):
+                if row and (best_id is None or row[0] < best_id):
+                    best_i, best_id = i, row[0]
+            if best_i is None:
+                break
+            row = cursors[best_i][1]
+            if best_id not in seen:
+                seen.add(best_id)
+                payload = row[1]
+                stream.write(payload if payload.endswith("\n") else payload + "\n")
+                count += 1
+            for i, (cur, r) in enumerate(cursors):
+                while r is not None and r[0] == best_id:
+                    r = cur.fetchone()
+                cursors[i][1] = r
+            if count % 200000 == 0:
+                print(f"export {count}...", flush=True)
+        for con in cons:
+            con.close()
+    temporary.replace(out)
+    elapsed = time.perf_counter() - t0
+    meta = {
+        "source": f"https://{HOST}/newapi/api/Sku/QueryIndex",
+        "filter": CATALOG_FILTER,
+        "order": CATALOG_ORDER,
+        "apiTotalCount": total,
+        "recordCount": count,
+        "shards": shards,
+        "workers": workers,
+        "take": take,
+        "elapsedSeconds": round(elapsed, 1),
+        "itemsPerSecond": round(count / max(elapsed, 1e-6), 1),
+        "finishedAt": now_iso(),
+        "stopReason": "complete" if count >= total * 0.99 else "partial",
+        "format": "jsonl",
+        "compression": "gzip",
+        "via": "ui-QueryIndex-catalog",
+    }
+    Path(str(out) + ".meta.json").write_text(
+        json.dumps(meta, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+    print(f"DONE {count}/{total} in {elapsed/60:.1f}m ({count/max(elapsed,1e-6):.0f}/s) -> {out}", flush=True)
+    return meta
+
+
 def cmd_resume_sample(args):
     source = Path(args.source)
     resume_download(
@@ -636,6 +976,7 @@ def cmd_resume_sample(args):
         Path(args.db),
         Path(args.out),
         bridge=args.bridge,
+        direct=getattr(args, "direct", False),
         pause=args.pause,
         workers=args.workers,
         list_source=str(source),
@@ -656,9 +997,28 @@ def cmd_resume_qi(args):
     )
 
 
+def cmd_download_all(args):
+    resume_download_catalog(
+        Path(args.out),
+        Path(args.shard_dir),
+        bridge=args.bridge,
+        shards=args.shards,
+        workers=args.workers,
+        take=args.take,
+        enrich_workers=args.enrich_workers,
+        enrich_batch=args.enrich_batch,
+        skip_enrich=args.skip_enrich,
+    )
+
+
 def main():
     p = argparse.ArgumentParser(description="STE UI API fetcher")
     p.add_argument("--bridge", default=None, help="HTTP bridge e.g. http://127.0.0.1:18080")
+    p.add_argument(
+        "--direct",
+        action="store_true",
+        help="Call zakupki.mos.ru without SOCKS (hostname HTTPS)",
+    )
     sub = p.add_subparsers(dest="cmd", required=True)
 
     g = sub.add_parser("get")
@@ -687,6 +1047,17 @@ def main():
     rq.add_argument("--workers", type=int, default=8)
     rq.add_argument("--batch-size", type=int, default=50)
     rq.set_defaults(func=cmd_resume_qi)
+
+    da = sub.add_parser("download-all", help="Full catalog via parallel QueryIndex pages")
+    da.add_argument("--out", default=str(ROOT / "data" / "ste-all.jsonl.gz"))
+    da.add_argument("--shard-dir", default=str(ROOT / "data" / "ste-all-shards"))
+    da.add_argument("--shards", type=int, default=6)
+    da.add_argument("--workers", type=int, default=4)
+    da.add_argument("--take", type=int, default=100)
+    da.add_argument("--enrich-workers", type=int, default=8)
+    da.add_argument("--enrich-batch", type=int, default=50)
+    da.add_argument("--skip-enrich", action="store_true")
+    da.set_defaults(func=cmd_download_all)
 
     args = p.parse_args()
     try:

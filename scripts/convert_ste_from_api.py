@@ -3,6 +3,7 @@
 
 Supports:
   - QueryIndex category dumps: *_from_api.jsonl.gz → *_from_api.parquet
+  - UI GetSku dumps: *_getsku.jsonl.gz → *_getsku.parquet
   - Merged catalog: ste.jsonl.gz + ste-details.jsonl.gz → ste.parquet
 """
 from __future__ import annotations
@@ -17,7 +18,11 @@ import pyarrow.parquet as pq
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA = ROOT / "data"
-DEFAULT_SOURCES = sorted((DATA / "deprecated").glob("*_from_api.jsonl.gz")) + sorted(DATA.glob("*_from_api.jsonl.gz"))
+DEFAULT_SOURCES = (
+    sorted((DATA / "deprecated").glob("*_from_api.jsonl.gz"))
+    + sorted(DATA.glob("*_from_api.jsonl.gz"))
+    + sorted(DATA.glob("*_getsku.jsonl.gz"))
+)
 
 CHAR_SCHEMA = pa.struct([
     ("name", pa.string()),
@@ -320,12 +325,30 @@ def write_rows(rows_iter, output: Path, batch_size: int = 2000) -> tuple[int, in
     return count, chars
 
 
-def convert(source: Path, output: Path, okpd_by_production: dict[str, tuple[str | None, str | None]], batch_size: int = 2000) -> None:
+def is_getsku_source(source: Path) -> bool:
+    return "_getsku" in source.name
+
+
+def convert(
+    source: Path,
+    output: Path,
+    okpd_by_production: dict[str, tuple[str | None, str | None]],
+    batch_size: int = 2000,
+    *,
+    getsku: bool | None = None,
+) -> None:
+    use_getsku = is_getsku_source(source) if getsku is None else getsku
+
     def rows():
         with gzip.open(source, "rt", encoding="utf-8") as stream:
             for line in stream:
-                if line.strip():
-                    yield convert_row(json.loads(line), okpd_by_production)
+                if not line.strip():
+                    continue
+                raw = json.loads(line)
+                if use_getsku:
+                    yield convert_getsku_row(raw, {}, okpd_by_production)
+                else:
+                    yield convert_row(raw, okpd_by_production)
 
     count, chars = write_rows(rows(), output, batch_size)
     print(
@@ -381,7 +404,7 @@ def main() -> None:
 
     sources = [p.resolve() for p in args.sources] if args.sources else [p for p in DEFAULT_SOURCES if p.exists()]
     if not sources:
-        raise SystemExit("No *_from_api.jsonl.gz sources found")
+        raise SystemExit("No *_from_api.jsonl.gz / *_getsku.jsonl.gz sources found")
     for source in sources:
         name = source.name.removesuffix(".jsonl.gz") + ".parquet"
         convert(source, args.out_dir / name, okpd)
