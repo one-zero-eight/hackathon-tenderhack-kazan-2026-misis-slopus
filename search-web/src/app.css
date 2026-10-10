@@ -19,13 +19,38 @@ html { scroll-behavior: smooth; scroll-padding-top: 72px; }
 .header-inner nav .nav-active::after { content: ""; position: absolute; height: 2px; background: var(--green); bottom: -1px; left: 0; right: 0; }
 .source-link { margin-left: auto; display: flex; gap: 6px; align-items: center; font-size: 12px; color: #777d71; }
 .source-link:hover { color: var(--green); }
-.catalog-main { padding-top: 57px; padding-bottom: 40px; }
+.catalog-main { padding-top: 28px; padding-bottom: 40px; }
 .hero { position: relative; padding-bottom: 41px; }
 .status-dot { display: inline-block; width: 6px; height: 6px; flex-shrink: 0; border-radius: 50%; background: #6e8658; }
-.hero h1 { position: relative; display: inline-block; font-family: Georgia, "Times New Roman", serif; font-size: clamp(52px, 5.7vw, 78px); font-weight: 400; line-height: 1.05; letter-spacing: -3px; margin: 24px 0 20px; }
-.hero h1 em { color: var(--green); font-weight: 400; }
-.hero-asterisk { position: absolute; right: -86px; bottom: 8px; color: #95a687; transform: rotate(-12deg); }
-.hero-asterisk svg { width: 55px; height: 55px; }
+.hero h1,
+.create-hero h1,
+.ktru-hero h1 {
+  position: relative;
+  display: inline-block;
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: clamp(42px, 5vw, 68px);
+  font-weight: 400;
+  line-height: 1.05;
+  letter-spacing: -2.6px;
+  margin: 0;
+}
+.hero h1 em,
+.create-hero h1 em,
+.ktru-hero h1 em {
+  color: var(--green);
+  font-weight: 400;
+  font-style: normal;
+}
+.hero-asterisk {
+  position: absolute;
+  right: -78px;
+  bottom: 4px;
+  color: #95a687;
+  transform: rotate(-12deg);
+}
+.hero-asterisk svg { width: 46px; height: 46px; }
+.hero h1 { margin-bottom: 20px; }
+.ktru-hero h1 { margin-bottom: 16px; }
 .search-form { display: flex; align-items: center; border: 1px solid #cecec1; border-radius: 11px; background: white; padding: 8px; gap: 12px; box-shadow: 0 5px 24px #403c2710; max-width: 940px; }
 .search-form:focus-within { border-color: #6e8965; box-shadow: 0 0 0 3px #285a400c, 0 5px 24px #403c2710; }
 .search-form-icon { margin-left: 13px; color: #8b9185; flex-shrink: 0; }
@@ -167,7 +192,6 @@ html { scroll-behavior: smooth; scroll-padding-top: 72px; }
 .not-found h1 { font-family: Georgia, serif; font-size: 42px; font-weight: 400; letter-spacing: -1px; margin: 0 0 14px; }
 .not-found p { font-size: 13px; color: #92a082; line-height: 1.8; margin: 0 0 25px; }
 
-@media (min-width: 1500px) { .hero { padding-top: 10px; } }
 @media (max-width: 1050px) {
   .page-width { width: calc(100% - 64px); }
   .header-inner { gap: 38px; }
@@ -184,8 +208,12 @@ html { scroll-behavior: smooth; scroll-padding-top: 72px; }
   .header-inner nav { gap: 18px; }
   .source-link { font-size: 0; gap: 0; }
   .source-link svg { width: 18px; height: 18px; }
-  .catalog-main { padding-top: 40px; }
-  .hero h1 { font-size: 65px; }
+  .catalog-main { padding-top: 24px; }
+  .hero h1,
+  .create-hero h1,
+  .ktru-hero h1 { font-size: clamp(36px, 7vw, 52px); letter-spacing: -2px; }
+  .hero-asterisk { right: -58px; }
+  .hero-asterisk svg { width: 36px; height: 36px; }
   .product-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 17px; }
   .product-image { height: 220px; }
   .catalog-toolbar { flex-wrap: wrap; gap: 15px; }
@@ -207,11 +235,14 @@ html { scroll-behavior: smooth; scroll-padding-top: 72px; }
   .header-inner nav { gap: 14px; font-size: 11px; margin-left: auto; }
   .header-inner nav a svg { display: none; }
   .source-link { display: none; }
-  .catalog-main { padding-top: 32px; }
+  .catalog-main { padding-top: 20px; }
   .hero { padding-bottom: 28px; }
-  .hero h1 { font-size: 54px; line-height: 1.1; letter-spacing: -2.5px; margin: 20px 0 16px; }
-  .hero-asterisk { right: -55px; bottom: 12px; }
-  .hero-asterisk svg { width: 37px; height: 37px; }
+  .hero h1,
+  .create-hero h1,
+  .ktru-hero h1 { font-size: 42px; letter-spacing: -2px; }
+  .hero h1 { margin-bottom: 16px; }
+  .hero-asterisk { right: -48px; bottom: 2px; }
+  .hero-asterisk svg { width: 32px; height: 32px; }
   .search-form { gap: 8px; padding: 6px; border-radius: 8px; }
   .search-form-icon { width: 18px; margin-left: 5px; }
   .search-input { font-size: 12px; height: 41px; }
@@ -278,8 +309,6 @@ html { scroll-behavior: smooth; scroll-padding-top: 72px; }
   .not-found h1 { font-size: 32px; }
 }
 @media (max-width: 370px) {
-  .hero h1 { font-size: 46px; }
-  .hero-asterisk { right: -47px; }
   .catalog-numbers { gap: 12px; }
   .catalog-numbers > div + div { padding-left: 12px; }
   .catalog-numbers strong { font-size: 17px; }

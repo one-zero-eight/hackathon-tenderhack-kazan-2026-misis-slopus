@@ -16,7 +16,8 @@ export function draftFromSpgzCharacteristic(
   const unit = shortUnitName(item.parts?.find((part) => part.okeiName)?.okeiName);
   const required = !!item.required
     || (item.badges ?? []).some((badge) => /обязательн/i.test(badge));
-  const badges = (item.badges ?? []).filter((badge) => !/обязательн/i.test(badge));
+  const badges = (item.badges ?? []).filter((badge) =>
+    !/обязательн|качественн|количественн/i.test(badge));
   return {
     id: `spgz:${item.code || item.name}`,
     name: item.name,

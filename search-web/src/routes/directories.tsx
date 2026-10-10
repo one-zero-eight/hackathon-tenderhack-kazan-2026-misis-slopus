@@ -1,8 +1,8 @@
 import { Meta, Title } from "@solidjs/meta";
 import { A, createAsync, revalidate, useSearchParams } from "@solidjs/router";
-import BookOpen from "lucide-solid/icons/book-open";
 import ChevronRight from "lucide-solid/icons/chevron-right";
 import Search from "lucide-solid/icons/search";
+import Sparkles from "lucide-solid/icons/sparkles";
 import { createEffect, createMemo, createSignal, For, on, onCleanup, Show, Suspense } from "solid-js";
 import { DataBoundary } from "~/components/catalog";
 import {
@@ -567,15 +567,17 @@ export default function DirectoriesPage() {
     <Title>Справочники — каталог</Title>
     <Meta name="description" content="Справочники ОКПД2, КТРУ, КПГЗ, СПГЗ и ОКЕИ со связями и товарами каталога." />
     <section class="ktru-hero">
-      <h1><BookOpen size={34} strokeWidth={1.4} style={{ "vertical-align": "-6px", "margin-right": "10px", color: "var(--green)" }} />Справочники</h1>
+      <h1>Изучите<br /><em>справочники</em><span class="hero-asterisk" aria-hidden="true"><Sparkles strokeWidth={1.1} /></span></h1>
       <p>{current().hint}. Дерево, параметры позиции, кросс-ссылки и связанные товары из каталога СТЕ.</p>
       <div class="ktru-stats">
         <Suspense fallback={<span>Загружаем счётчики…</span>}>
+          <Show when={classifierStats()}>
+            <span><strong>{formatNumber(classifierStats()!.okpd)}</strong> ОКПД2</span>
+          </Show>
           <Show when={ktruStats()}><span><strong>{formatNumber(ktruStats()!.total)}</strong> КТРУ</span></Show>
           <Show when={classifierStats()}>
             <span><strong>{formatNumber(classifierStats()!.kpgz)}</strong> КПГЗ</span>
             <span><strong>{formatNumber(classifierStats()!.spgz)}</strong> СПГЗ</span>
-            <span><strong>{formatNumber(classifierStats()!.okpd)}</strong> ОКПД2</span>
             <span><strong>{formatNumber(classifierStats()!.okei)}</strong> ОКЕИ</span>
           </Show>
         </Suspense>

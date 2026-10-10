@@ -1,17 +1,40 @@
 .create-main { padding-top: 28px; padding-bottom: 72px; min-height: 65vh; }
 .create-hero { position: relative; margin-bottom: 28px; padding-bottom: 8px; }
 .create-hero-row { display: flex; justify-content: space-between; align-items: flex-end; gap: 24px; }
-.create-hero h1 { position: relative; display: inline-block; font-family: Georgia, "Times New Roman", serif; font-size: clamp(42px, 5vw, 68px); font-weight: 400; line-height: 1.05; letter-spacing: -2.6px; margin: 0; }
-.create-hero h1 em { color: var(--green); font-weight: 400; font-style: normal; }
-.create-hero .hero-asterisk { right: -78px; bottom: 4px; }
-.create-hero .hero-asterisk svg { width: 46px; height: 46px; }
 .create-top-actions { display: flex; flex-wrap: wrap; gap: 8px; padding-bottom: 10px; flex-shrink: 0; }
 
 .create-describe { margin-bottom: 8px; }
-.create-describe-field { gap: 0; }
-.create-describe-field textarea { min-height: 140px; resize: vertical; padding: 16px 18px; border-radius: 12px; border-color: #e1e5d7; background: #f7f8f2; font-size: 14px; line-height: 1.65; color: #2e382f; }
-.create-describe-field textarea:focus-visible { outline: none; border-color: #638a67; box-shadow: 0 0 0 3px #285a401b; background: #fff; }
-.create-describe-field textarea::placeholder { color: #aab1a4; }
+.create-describe-field {
+  gap: 0;
+  border: 1px solid #cecec1;
+  border-radius: 11px;
+  background: white;
+  padding: 8px;
+  box-shadow: 0 5px 24px #403c2710;
+}
+.create-describe-field:focus-within {
+  border-color: #6e8965;
+  box-shadow: 0 0 0 3px #285a400c, 0 5px 24px #403c2710;
+}
+.create-describe-field textarea {
+  min-height: 140px;
+  resize: vertical;
+  border: 0 !important;
+  border-radius: 0;
+  background: transparent;
+  padding: 8px 13px;
+  font-size: 15px;
+  line-height: 1.55;
+  color: inherit;
+  box-shadow: none;
+}
+.create-describe-field textarea:focus-visible {
+  outline: none;
+  border: 0 !important;
+  box-shadow: none;
+  background: transparent;
+}
+.create-describe-field textarea::placeholder { color: #9a9d94; }
 .create-describe-meta { display: flex; justify-content: space-between; gap: 12px; margin-top: 10px; font-size: 11px; color: #96a092; line-height: 1.5; }
 .create-describe-meta span:last-child { flex-shrink: 0; font-variant-numeric: tabular-nums; }
 
@@ -599,9 +622,6 @@
 }
 
 @media (max-width: 800px) {
-  .create-hero h1 { font-size: clamp(36px, 7vw, 52px); letter-spacing: -2px; }
-  .create-hero .hero-asterisk { right: -58px; }
-  .create-hero .hero-asterisk svg { width: 36px; height: 36px; }
   .create-vote-card { grid-template-columns: 1fr; }
   .create-vote-rows > div { grid-template-columns: 1fr; gap: 4px; }
   .ktru-picker-body { grid-template-columns: 1fr; overflow: auto; }
@@ -612,12 +632,9 @@
 }
 
 @media (max-width: 600px) {
-  .create-main { padding-top: 22px; padding-bottom: 48px; }
+  .create-main { padding-top: 20px; padding-bottom: 48px; }
   .create-hero-row { flex-direction: column; align-items: stretch; gap: 14px; }
   .create-top-actions { padding-bottom: 0; }
-  .create-hero h1 { font-size: 42px; letter-spacing: -2px; }
-  .create-hero .hero-asterisk { right: -48px; bottom: 2px; }
-  .create-hero .hero-asterisk svg { width: 32px; height: 32px; }
   .create-describe-meta { flex-direction: column; gap: 4px; }
   .create-live { gap: 22px; margin-top: 22px; }
   .create-detail { margin-top: 32px; }

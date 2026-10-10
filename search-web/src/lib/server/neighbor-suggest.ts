@@ -62,7 +62,8 @@ function fillCharacteristics(schema: KtruCharacteristic[]): DraftCharacteristic[
       value: "",
       rangeOption: "",
       required: item.required,
-      badges: item.badges.filter((badge) => badge !== "обязательная"),
+      badges: item.badges.filter((badge) =>
+        !/^(обязательная|качественная|количественная)$/i.test(badge.trim())),
       hint: item.hint || "",
       options,
       optionLabels: item.optionLabels ?? {},

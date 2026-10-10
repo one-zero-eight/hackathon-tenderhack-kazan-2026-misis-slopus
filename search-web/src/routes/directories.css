@@ -1,8 +1,7 @@
-.ktru-main { padding-top: 36px; padding-bottom: 48px; }
-.ktru-hero { margin-bottom: 22px; }
-.ktru-hero h1 { margin: 0 0 10px; font-family: Georgia, "Times New Roman", serif; font-size: clamp(36px, 4.5vw, 52px); font-weight: 400; letter-spacing: -1.6px; line-height: 1.1; }
+.ktru-main { padding-top: 28px; padding-bottom: 48px; }
+.ktru-hero { position: relative; margin-bottom: 28px; padding-bottom: 8px; }
 .ktru-hero p { margin: 0; color: #7f8678; font-size: 14px; line-height: 1.55; max-width: 62ch; }
-.ktru-stats { display: flex; flex-wrap: wrap; gap: 22px; margin-top: 16px; font-size: 12px; color: #858b7d; }
+.ktru-stats { display: flex; flex-wrap: wrap; gap: 22px; margin-top: 18px; font-size: 12px; color: #858b7d; }
 .ktru-stats strong { color: var(--ui-foreground); font-weight: 600; font-variant-numeric: tabular-nums; }
 .dir-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin: 18px 0 8px; padding: 4px; border: 1px solid #e5e5dc; background: #efefe8; border-radius: 8px; width: fit-content; }
 .dir-tabs a { display: inline-flex; align-items: center; gap: 7px; padding: 9px 14px; border-radius: 5px; font-size: 12px; color: #818777; }
@@ -99,4 +98,7 @@
   .ktru-tree { max-height: 55vh; }
   .ktru-json { max-height: 60vh; }
   .header-inner { gap: 28px; }
+}
+@media (max-width: 600px) {
+  .ktru-main { padding-top: 20px; }
 }

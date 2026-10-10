@@ -77,9 +77,9 @@ export default function Home() {
     searchInput.scrollIntoView({ behavior: "instant", block: "center" });
   };
   return <main id="main-content" class="page-width catalog-main">
-    <Title>{query() ? `${query()} — Каталог` : "Каталог — А ещё мы сделали поиск"}</Title>
+    <Title>{query() ? `${query()} — Каталог` : "Каталог — Найдите товар"}</Title>
     <Meta name="description" content="Ищите товары для закупок по смыслу и точным словам. Реальные данные Портала поставщиков Москвы, характеристики и ссылки на первоисточник." />
-    <section class="hero"><h1>А ещё мы<br />сделали <em>поиск</em><span class="hero-asterisk" aria-hidden="true"><Sparkles strokeWidth={1.1} /></span></h1>
+    <section class="hero"><h1>Найдите<br /><em>товар</em><span class="hero-asterisk" aria-hidden="true"><Sparkles strokeWidth={1.1} /></span></h1>
       <form class="search-form" role="search" onSubmit={submit}>
         <Search class="search-form-icon" size={23} strokeWidth={1.7} />
         <TextField class="search-text-field" name="q" value={draft()} onChange={setDraft}><TextFieldLabel class="sr-only">Что вы ищете?</TextFieldLabel><TextFieldInput ref={searchInput} id="catalog-search" type="search" class="search-input" placeholder="Название товара, характеристика или задача…" autocomplete="off" /></TextField>
