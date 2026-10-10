@@ -23,7 +23,7 @@ def search_db(tmp_path, monkeypatch):
     writer.close()
     db = database.open_database(path)
     monkeypatch.setattr(database, "get_db", lambda: db)
-    monkeypatch.setattr(database, "get_catalog", lambda: ({1: object()}, set(), []))
+    monkeypatch.setattr(database, "product_count", lambda: 1)
     yield db, vector
     db.close()
 

@@ -1,4 +1,3 @@
-import { spawnSync } from "node:child_process";
 import { existsSync, statSync } from "node:fs";
 import { gunzipSync } from "node:zlib";
 import { dirname, resolve } from "node:path";
@@ -10,12 +9,18 @@ import {
   dedupeCharacteristicOptions,
   shortUnitName,
 } from "../characteristic-options";
+import {
+  pickDiscriminatingCharacteristics,
+  specializationOptionLabel,
+  type SpecChild,
+} from "../specialization";
 import type { CharacteristicRange, KtruChildrenPage, KtruSpecialization, KtruTreeNode } from "../types";
-import { classifiersSqlitePath, ktruParquetPath, ktruSqlitePath } from "./config";
+import { classifiersSqlitePath, ktruParquetPath, ktruSqlitePath, moyKtruParquetPath } from "./config";
 
 interface LightRow {
   code: string;
   name: string;
+  officialName: string;
   status: string | null;
   okpd2: string | null;
   okpd2Name: string | null;
@@ -25,13 +30,43 @@ interface LightRow {
 
 interface Catalog {
   db: Database.Database;
+  statements: Map<string, Database.Statement>;
   okpdNames: Map<string, string>;
   okpdParentOf: Map<string, string | null>;
   okpdChildCodes: Map<string, string[]>;
-  okpdKtruRoots: Map<string, string[]>;
-  ktruChildren: Map<string, string[]>;
-  byCode: Map<string, LightRow>;
+  okpdCodes: Set<string>;
   total: number;
+}
+
+const SCHEMA_VERSION = "ktru-mmap-v2";
+const LIGHT_COLUMNS = "code, name, official_name AS officialName, status, okpd2, okpd2_name AS okpd2Name, parent_code AS parentCode, is_template AS isTemplate";
+const LIGHT_CACHE_LIMIT = 512;
+const SPECIALIZATION_CACHE_LIMIT = 32;
+const FILTER_CACHE_LIMIT = 8;
+const SPECIALIZATION_CACHE_OPTION_LIMIT = 800;
+const lightCache = new Map<string, LightRow | null>();
+
+function statement(data: Catalog, sql: string): Database.Statement {
+  let prepared = data.statements.get(sql);
+  if (!prepared) {
+    prepared = data.db.prepare(sql);
+    if (data.statements.size >= 128) data.statements.delete(data.statements.keys().next().value!);
+    data.statements.set(sql, prepared);
+  }
+  return prepared;
+}
+
+function lightRow(code: string, data: Catalog): LightRow | null {
+  if (lightCache.has(code)) {
+    const row = lightCache.get(code)!;
+    lightCache.delete(code);
+    lightCache.set(code, row);
+    return row;
+  }
+  const row = statement(data, `SELECT ${LIGHT_COLUMNS} FROM ktru WHERE code=?`).get(code) as LightRow | undefined;
+  if (lightCache.size >= LIGHT_CACHE_LIMIT) lightCache.delete(lightCache.keys().next().value!);
+  lightCache.set(code, row ?? null);
+  return row ?? null;
 }
 
 const CHILDREN_PAGE = 200;
@@ -47,6 +82,7 @@ interface FilterSets {
   matches: Set<string>;
   matchCount: number;
   truncated: boolean;
+  ktruCodes: string;
 }
 
 function repoRoot(): string {
@@ -55,28 +91,33 @@ function repoRoot(): string {
 
 function ensureSqlite(): string {
   const parquet = ktruParquetPath();
+  const names = moyKtruParquetPath();
   const sqlite = ktruSqlitePath();
-  if (!existsSync(parquet)) throw new Error(`Не найден файл КТРУ: ${parquet}`);
+  const command = `uv run --with pyarrow python ${resolve(repoRoot(), "scripts/build_ktru_sqlite.py")} --source ${JSON.stringify(parquet)} --names ${JSON.stringify(names)} --output ${JSON.stringify(sqlite)}`;
+  const rebuildError = () => new Error(`Кэш КТРУ отсутствует, устарел или несовместим. Постройте его явно: ${command}`);
+  if (!existsSync(parquet)) throw rebuildError();
   const parquetMtime = String(Math.trunc(statSync(parquet).mtimeMs));
+  const namesMtime = existsSync(names) ? String(Math.trunc(statSync(names).mtimeMs)) : "";
   const needsBuild = !existsSync(sqlite) || (() => {
     try {
       const db = new Database(sqlite, { readonly: true, fileMustExist: true });
-      const stored = db.prepare("SELECT value FROM meta WHERE key='source_mtime_ms'").get() as { value: string } | undefined;
-      db.close();
-      return stored?.value !== parquetMtime;
+      try {
+        const meta = (key: string) =>
+          (db.prepare("SELECT value FROM meta WHERE key=?").get(key) as { value: string } | undefined)?.value;
+        return meta("source_mtime_ms") !== parquetMtime
+          || meta("names_mtime_ms") !== namesMtime
+          || meta("schema") !== SCHEMA_VERSION
+          || meta("lexical_schema") !== "folded-grams-v1"
+          || !meta("source") || resolve(repoRoot(), meta("source")!) !== parquet
+          || (meta("names_source") || "") !== (existsSync(names) ? (names.startsWith(`${repoRoot()}/`) ? names.slice(repoRoot().length + 1) : names) : "");
+      } finally {
+        db.close();
+      }
     } catch {
       return true;
     }
   })();
-  if (!needsBuild) return sqlite;
-  const script = resolve(repoRoot(), "scripts/build_ktru_sqlite.py");
-  const result = spawnSync("uv", ["run", "--with", "pyarrow", "python", script, "--source", parquet, "--output", sqlite], {
-    cwd: repoRoot(),
-    encoding: "utf8",
-  });
-  if (result.status !== 0) {
-    throw new Error(`Не удалось построить кэш КТРУ: ${result.stderr || result.stdout || "unknown error"}`);
-  }
+  if (needsBuild) throw rebuildError();
   return sqlite;
 }
 
@@ -91,13 +132,16 @@ function compareCodes(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0;
 }
 
-function loadOkpdMeta(rows: LightRow[]): { names: Map<string, string>; parentOf: Map<string, string | null> } {
+function loadOkpdMeta(rows: { code: string; name: string }[]): { names: Map<string, string>; parentOf: Map<string, string | null> } {
   const names = new Map<string, string>();
   const parentOf = new Map<string, string | null>();
   const classifiersPath = classifiersSqlitePath();
   if (existsSync(classifiersPath)) {
     const classifiers = new Database(classifiersPath, { readonly: true, fileMustExist: true });
     classifiers.pragma("query_only = ON");
+    classifiers.pragma("mmap_size = 1073741824");
+    classifiers.pragma("cache_size = -2048");
+    classifiers.pragma("temp_store = FILE");
     const okpdRows = classifiers.prepare("SELECT id, code, name, parent_id AS parentId FROM okpd").all() as {
       id: number; code: string; name: string; parentId: number | null;
     }[];
@@ -110,7 +154,7 @@ function loadOkpdMeta(rows: LightRow[]): { names: Map<string, string>; parentOf:
     classifiers.close();
   }
   for (const row of rows) {
-    if (row.okpd2 && row.okpd2Name && !names.has(row.okpd2)) names.set(row.okpd2, row.okpd2Name);
+    if (row.code && row.name && !names.has(row.code)) names.set(row.code, row.name);
   }
   return { names, parentOf };
 }
@@ -135,8 +179,11 @@ function getCatalog(): Catalog {
   const sqlite = ensureSqlite();
   const db = new Database(sqlite, { readonly: true, fileMustExist: true });
   db.pragma("query_only = ON");
-  const rows = db.prepare("SELECT code, name, status, okpd2, okpd2_name AS okpd2Name, parent_code AS parentCode, is_template AS isTemplate FROM ktru").all() as LightRow[];
-  const byCode = new Map(rows.map(row => [row.code, row]));
+  db.pragma("mmap_size = 1073741824");
+  db.pragma("cache_size = -2048");
+  db.pragma("temp_store = FILE");
+  // Only the small, precomputed OKPD taxonomy is retained on the JS heap.
+  const rows = db.prepare("SELECT code, name FROM ktru_okpd").all() as { code: string; name: string }[];
   const { names: okpdNames, parentOf: okpdParentOf } = loadOkpdMeta(rows);
   const okpdChildSet = new Map<string, Set<string>>();
   const addChild = (parent: string, child: string) => {
@@ -147,68 +194,48 @@ function getCatalog(): Catalog {
     }
     set.add(child);
   };
-  const seenOkpd = new Set<string>();
+  const okpdCodes = new Set<string>();
   for (const row of rows) {
-    const okpd = row.okpd2 || row.code.split("-", 1)[0];
-    if (!okpd || seenOkpd.has(okpd)) continue;
-    seenOkpd.add(okpd);
-    const chain = okpdChain(okpd, okpdParentOf);
+    if (!row.code) continue;
+    okpdCodes.add(row.code);
+    const chain = okpdChain(row.code, okpdParentOf);
     addChild("", chain[0]!);
     for (let i = 1; i < chain.length; i++) addChild(chain[i - 1]!, chain[i]!);
   }
   const okpdChildCodes = new Map<string, string[]>();
-  for (const [parent, set] of okpdChildSet) {
-    okpdChildCodes.set(parent, [...set].sort(compareCodes));
-  }
-  const ktruChildren = new Map<string, string[]>();
-  const okpdMembers = new Map<string, string[]>();
-  for (const row of rows) {
-    const okpd = row.okpd2 || row.code.split("-", 1)[0];
-    if (!okpd) continue;
-    let members = okpdMembers.get(okpd);
-    if (!members) {
-      members = [];
-      okpdMembers.set(okpd, members);
-    }
-    members.push(row.code);
-    if (row.parentCode && byCode.has(row.parentCode)) {
-      let kids = ktruChildren.get(row.parentCode);
-      if (!kids) {
-        kids = [];
-        ktruChildren.set(row.parentCode, kids);
-      }
-      kids.push(row.code);
-    }
-  }
-  for (const kids of ktruChildren.values()) kids.sort(compareCodes);
-  const okpdKtruRoots = new Map<string, string[]>();
-  for (const [okpd, members] of okpdMembers) {
-    const memberSet = new Set(members);
-    const roots = members.filter(code => {
-      const parent = byCode.get(code)?.parentCode;
-      return !parent || !memberSet.has(parent);
-    }).sort(compareCodes);
-    okpdKtruRoots.set(okpd, roots);
-  }
-  catalog = { db, okpdNames, okpdParentOf, okpdChildCodes, okpdKtruRoots, ktruChildren, byCode, total: rows.length };
+  for (const [parent, set] of okpdChildSet) okpdChildCodes.set(parent, [...set].sort(compareCodes));
+  db.function("ktru_token_score", { deterministic: true }, (text: unknown, token: unknown) => tokenScore(String(text), String(token)));
+  const total = Number((db.prepare("SELECT value FROM meta WHERE key='record_count'").get() as { value: string }).value);
+  catalog = { db, statements: new Map(), okpdNames, okpdParentOf, okpdChildCodes, okpdCodes, total };
   return catalog;
 }
 
-function variantLabelFor(code: string, data: Catalog): string | null {
-  const row = data.byCode.get(code);
+function variantLabelFor(code: string, data: Catalog, pageSpecializations?: Map<string, KtruSpecialization | null>): string | null {
+  const row = lightRow(code, data);
   if (!row || row.isTemplate || !row.parentCode) return null;
-  const parent = data.byCode.get(row.parentCode);
+  const parent = lightRow(row.parentCode, data);
   if (!parent?.isTemplate) return null;
-  const spec = specializationForTemplate(row.parentCode, data);
+  let spec: KtruSpecialization | null;
+  if (pageSpecializations?.has(row.parentCode)) {
+    spec = pageSpecializations.get(row.parentCode)!;
+  } else {
+    spec = specializationForTemplate(row.parentCode, data);
+    pageSpecializations?.set(row.parentCode, spec);
+  }
   const option = spec?.options.find(item => item.code === code);
   if (!spec || !option) return null;
-  return `${spec.characteristicName}: ${option.value}`;
+  const label = specializationOptionLabel(spec.characteristics, option.values);
+  if (!label) return null;
+  const displayWords = normalizeFilter(row.name).match(/[\p{L}\p{N}]+/gu) ?? [];
+  const optionWords = normalizeFilter(Object.values(option.values).join(" ")).match(/[\p{L}\p{N}]+/gu) ?? [];
+  // Compare complete lexical forms, not substrings (e.g. «медь» / «медный»).
+  if (optionWords.length && optionWords.every(word => displayWords.some(display => variantRoot(display) === variantRoot(word)))) return null;
+  return label;
 }
 
 function okpdNode(code: string, data: Catalog, childCount?: number): KtruTreeNode {
   const okpdKids = data.okpdChildCodes.get(code) ?? [];
-  const ktruRoots = okpdKids.length ? [] : (data.okpdKtruRoots.get(code) ?? []);
-  const count = childCount ?? (okpdKids.length || ktruRoots.length);
+  const count = childCount ?? (okpdKids.length || ktruChildCount({ kind: "ktru", where: "effective_okpd=? AND is_okpd_root=1", key: code }, data));
   return {
     id: `okpd:${code}`,
     code,
@@ -221,9 +248,9 @@ function okpdNode(code: string, data: Catalog, childCount?: number): KtruTreeNod
   };
 }
 
-function ktruNode(code: string, data: Catalog, childCount?: number): KtruTreeNode {
-  const row = data.byCode.get(code)!;
-  const count = childCount ?? (data.ktruChildren.get(code)?.length ?? 0);
+function ktruNode(code: string, data: Catalog, childCount?: number, pageSpecializations?: Map<string, KtruSpecialization | null>): KtruTreeNode {
+  const row = lightRow(code, data)!;
+  const count = childCount ?? ktruChildCount({ kind: "ktru", where: "parent_code=?", key: code }, data);
   return {
     id: `ktru:${code}`,
     code,
@@ -233,7 +260,7 @@ function ktruNode(code: string, data: Catalog, childCount?: number): KtruTreeNod
     isTemplate: !!row.isTemplate,
     childCount: count,
     hasChildren: count > 0,
-    variantLabel: variantLabelFor(code, data),
+    variantLabel: variantLabelFor(code, data, pageSpecializations),
   };
 }
 
@@ -245,85 +272,180 @@ function pageSlice<T>(items: T[], offset: number, limit = CHILDREN_PAGE): { item
 }
 
 function normalizeFilter(filter: string): string {
-  return filter.trim().toLocaleLowerCase("ru-RU");
+  return filter.trim().normalize("NFKC").toLocaleLowerCase("ru-RU").replaceAll("ё", "е").replace(/\s+/g, " ");
 }
 
-function buildFilterSets(filter: string): FilterSets | null {
-  const q = normalizeFilter(filter);
-  if (q.length < 2) return null;
+function gramQuery(text: string): string {
+  const points = [...text];
+  const grams = new Set<string>();
+  if (points.length === 1) grams.add(`g${points[0]!.codePointAt(0)!.toString(16).padStart(6, "0")}`);
+  for (let i = 1; i < points.length; i++) {
+    grams.add(`g${points[i - 1]!.codePointAt(0)!.toString(16).padStart(6, "0")}${points[i]!.codePointAt(0)!.toString(16).padStart(6, "0")}`);
+  }
+  return `(${[...grams].join(" AND ")})`;
+}
+
+function lexicalTokens(query: string): string[] {
+  return [...new Set(query.match(/[\p{L}\p{N}./№+%\-]+/gu) ?? [])];
+}
+
+function tokenStem(token: string): string {
+  if (!/^[а-я]+$/.test(token) || token.length < 5) return token;
+  const stem = token.replace(/(?:иями|ами|ого|ему|ому|ыми|ими|ая|яя|ое|ее|ые|ие|ый|ий|ой|ую|юю|ов|ев|ам|ям|ах|ях|ом|ем|а|я|ы|и|у|ю|е|о|ь)$/u, "");
+  return stem.length >= 4 ? stem : token;
+}
+
+function variantRoot(token: string): string {
+  const stem = tokenStem(token);
+  if (/^дерев(?:о|янн(?:ый|ая|ое|ые|ую|ой|ого|ых)?)$/.test(token)) return "дерево";
+  if (/^мед(?:ь|н(?:ый|ая|ое|ые|ую|ой|ого|ых)?)$/.test(token)) return "медь";
+  if (/^сталь$|^стальн(?:ый|ая|ое|ые|ую|ой|ого|ых)$/.test(token)) return "сталь";
+  return stem;
+}
+
+function oneEdit(left: string, right: string): boolean {
+  if (Math.abs(left.length - right.length) > 1) return false;
+  let i = 0; let j = 0; let edits = 0;
+  while (i < left.length && j < right.length) {
+    if (left[i] === right[j]) { i++; j++; continue; }
+    if (++edits > 1) return false;
+    if (left.length >= right.length) i++;
+    if (right.length >= left.length) j++;
+  }
+  return edits + Number(i < left.length || j < right.length) <= 1;
+}
+
+function tokenScore(text: string, token: string): number {
+  const words = lexicalTokens(text);
+  if (words.includes(token)) return 5;
+  if (/^\d+$/.test(token)) return 0;
+  if (words.some(word => word.startsWith(token))) return 4;
+  if (text.includes(token)) return 3;
+  const stem = tokenStem(token);
+  if (words.some(word => tokenStem(word) === stem || (/^[а-я]+$/.test(token) && stem.length >= 4 && word.startsWith(stem)))) return 2;
+  if (/^[а-я]+$/.test(token) && token.length >= 6 && words.some(word => oneEdit(word, token))) return 1;
+  return 0;
+}
+
+function tokenCandidate(token: string): string {
+  const stem = tokenStem(token);
+  const alternatives = new Set([gramQuery(stem)]);
+  // A single edit destroys at most two adjacent bigrams. Omit those pairs,
+  // then verify actual edit distance on the indexed candidates only.
+  if (/^[а-я]+$/.test(token) && token.length >= 6) {
+    for (let index = 0; index < token.length; index++) {
+      const pieces = [token.slice(0, index), token.slice(index + 1)].filter(piece => piece.length >= 2);
+      if (pieces.length) alternatives.add(`(${pieces.map(gramQuery).join(" AND ")})`);
+    }
+  }
+  return `(${[...alternatives].join(" OR ")})`;
+}
+
+function lexicalFilter(q: string) {
+  const tokens = lexicalTokens(q);
+  if (!tokens.length) return null;
+  const fields = "name_fold || ' ' || official_name_fold || ' ' || synonyms_fold";
+  return {
+    predicate: `rowid IN (SELECT rowid FROM ktru_search WHERE ktru_search MATCH ?) AND ${tokens.map(token => `ktru_token_score(${/[.-]/.test(token) || /^\d{2,}$/.test(token) ? `code || ' ' || ${fields}` : fields},?)>0`).join(" AND ")}`,
+    params: [tokens.map(tokenCandidate).join(" AND "), ...tokens],
+    order: `CASE WHEN code=? THEN 0 WHEN name_fold=? OR official_name_fold=? THEN 1 WHEN instr(name_fold,?)>0 OR instr(official_name_fold,?)>0 THEN 2 ELSE 3 END, (${tokens.map(() => `ktru_token_score(${fields},?)`).join(" + ")}) DESC, status='ACTIVE' DESC, length(name), code`,
+    ranking: [q, q, q, q, q, ...tokens],
+  };
+}
+
+function buildFilterSets(query: string): FilterSets | null {
+  const q = normalizeFilter(query);
+  if ([...q].length < 2) return null;
   const cached = filterCache.get(q);
   if (cached) return cached;
   const data = getCatalog();
   const matches = new Set<string>();
   const visible = new Set<string>();
   let matchCount = 0;
-  let truncated = false;
-
   const markOkpdAncestors = (code: string) => {
     for (const part of okpdChain(code, data.okpdParentOf)) visible.add(`okpd:${part}`);
   };
-
+  const okpdMatches = new Set<string>();
   for (const codes of data.okpdChildCodes.values()) {
     for (const code of codes) {
-      const name = (data.okpdNames.get(code) || "").toLocaleLowerCase("ru-RU");
-      if (code.toLocaleLowerCase("ru-RU").includes(q) || name.includes(q)) {
-        matchCount += 1;
-        if (matches.size < FILTER_MATCH_LIMIT) {
-          const id = `okpd:${code}`;
-          matches.add(id);
-          markOkpdAncestors(code);
-        } else truncated = true;
-      }
+      const text = `${code} ${normalizeFilter(data.okpdNames.get(code) || "")}`;
+      const tokens = lexicalTokens(q);
+      if (!tokens.length || !tokens.every(token => tokenScore(text, token) > 0)) continue;
+      okpdMatches.add(code);
     }
   }
-
-  for (const row of data.byCode.values()) {
-    if (!row.code.toLocaleLowerCase("ru-RU").includes(q) && !row.name.toLocaleLowerCase("ru-RU").includes(q)) continue;
-    matchCount += 1;
-    if (matches.size >= FILTER_MATCH_LIMIT) {
-      truncated = true;
-      continue;
-    }
+  const filter = lexicalFilter(q);
+  if (!filter) return null;
+  const total = (statement(data, `SELECT count(*) AS n FROM ktru WHERE ${filter.predicate}`).get(...filter.params) as { n: number }).n;
+  matchCount += total;
+  const rows = statement(data, `SELECT ${LIGHT_COLUMNS} FROM ktru WHERE ${filter.predicate} ORDER BY ${filter.order} LIMIT ?`)
+    .all(...filter.params, ...filter.ranking, FILTER_MATCH_LIMIT - matches.size) as LightRow[];
+  for (const row of rows) {
     const id = `ktru:${row.code}`;
     matches.add(id);
     visible.add(id);
     let parent = row.parentCode;
     const seen = new Set<string>([row.code]);
-    while (parent && data.byCode.has(parent) && !seen.has(parent)) {
+    while (parent && !seen.has(parent)) {
+      const parentRow = lightRow(parent, data);
+      if (!parentRow) break;
       seen.add(parent);
       visible.add(`ktru:${parent}`);
-      parent = data.byCode.get(parent)!.parentCode;
+      parent = parentRow.parentCode;
     }
     const okpd = row.okpd2 || row.code.split("-", 1)[0];
     if (okpd) markOkpdAncestors(okpd);
   }
-
+  matchCount += okpdMatches.size;
+  for (const code of okpdMatches) {
+    if (matches.size >= FILTER_MATCH_LIMIT) break;
+    matches.add(`okpd:${code}`);
+    markOkpdAncestors(code);
+  }
   for (const id of matches) visible.add(id);
-  const sets = { visible, matches, matchCount, truncated };
-  if (filterCache.size > 32) filterCache.clear();
+  const ktruCodes = JSON.stringify([...visible].filter(id => id.startsWith("ktru:")).map(id => id.slice(5)));
+  const sets = { visible, matches, matchCount, truncated: matchCount > matches.size, ktruCodes };
+  if (filterCache.size >= FILTER_CACHE_LIMIT) filterCache.delete(filterCache.keys().next().value!);
   filterCache.set(q, sets);
   return sets;
 }
 
-function rawChildCodes(parentId: string | null, data: Catalog): { kind: "okpd" | "ktru"; codes: string[] } {
+type ChildSource = { kind: "okpd"; codes: string[] } | { kind: "ktru"; where: string; key: string };
+
+function childSource(parentId: string | null, data: Catalog): ChildSource {
   if (!parentId) return { kind: "okpd", codes: data.okpdChildCodes.get("") ?? [] };
   if (parentId.startsWith("okpd:")) {
     const code = parentId.slice(5);
     const next = data.okpdChildCodes.get(code) ?? [];
     if (next.length) return { kind: "okpd", codes: next };
-    return { kind: "ktru", codes: data.okpdKtruRoots.get(code) ?? [] };
+    return { kind: "ktru", where: "effective_okpd=? AND is_okpd_root=1", key: code };
   }
-  if (parentId.startsWith("ktru:")) return { kind: "ktru", codes: data.ktruChildren.get(parentId.slice(5)) ?? [] };
+  if (parentId.startsWith("ktru:")) {
+    const code = parentId.slice(5);
+    return { kind: "ktru", where: "parent_code=? AND effective_okpd<>'' AND EXISTS (SELECT 1 FROM ktru AS parent WHERE parent.code=ktru.parent_code)", key: code };
+  }
   throw new Error(`Неизвестный узел дерева: ${parentId}`);
 }
 
+function childParams(source: Extract<ChildSource, { kind: "ktru" }>, filter?: FilterSets): string[] {
+  const params = [source.key];
+  if (filter) params.push(filter.ktruCodes);
+  return params;
+}
+
+function childWhere(source: Extract<ChildSource, { kind: "ktru" }>, filter?: FilterSets): string {
+  return source.where + (filter ? " AND code IN (SELECT value FROM json_each(?))" : "");
+}
+
+function ktruChildCount(source: Extract<ChildSource, { kind: "ktru" }>, data: Catalog, filter?: FilterSets): number {
+  return (statement(data, `SELECT count(*) AS n FROM ktru WHERE ${childWhere(source, filter)}`)
+    .get(...childParams(source, filter)) as { n: number }).n;
+}
+
 function filteredChildCount(id: string, data: Catalog, filter: FilterSets): number {
-  const { kind, codes } = rawChildCodes(id, data);
-  let count = 0;
-  for (const code of codes) {
-    if (filter.visible.has(`${kind}:${code}`)) count += 1;
-  }
-  return count;
+  const source = childSource(id, data);
+  return source.kind === "ktru" ? ktruChildCount(source, data, filter)
+    : source.codes.filter(code => filter.visible.has(`okpd:${code}`)).length;
 }
 
 export function ktruStats() {
@@ -334,13 +456,22 @@ export function ktruStats() {
 export function listKtruChildren(parentId: string | null = null, offset = 0, filter = ""): KtruChildrenPage {
   const data = getCatalog();
   const sets = buildFilterSets(filter);
-  const { kind, codes } = rawChildCodes(parentId, data);
-  const filtered = sets ? codes.filter(code => sets.visible.has(`${kind}:${code}`)) : codes;
-  const page = pageSlice(filtered, offset);
+  const source = childSource(parentId, data);
+  const start = Math.max(0, Math.trunc(offset) || 0);
+  const page = source.kind === "okpd"
+    ? pageSlice(sets ? source.codes.filter(code => sets.visible.has(`okpd:${code}`)) : source.codes, start)
+    : (() => {
+      const total = ktruChildCount(source, data, sets ?? undefined);
+      const rows = statement(data, `SELECT code FROM ktru WHERE ${childWhere(source, sets ?? undefined)} ORDER BY code LIMIT ? OFFSET ?`)
+        .all(...childParams(source, sets ?? undefined), CHILDREN_PAGE, start) as { code: string }[];
+      const items = rows.map(row => row.code);
+      return { items, total, offset: start, hasMore: start + items.length < total };
+    })();
+  const pageSpecializations = new Map<string, KtruSpecialization | null>();
   const nodes = page.items.map(code => {
-    const id = `${kind}:${code}`;
+    const id = `${source.kind}:${code}`;
     const childCount = sets ? filteredChildCount(id, data, sets) : undefined;
-    return kind === "okpd" ? okpdNode(code, data, childCount) : ktruNode(code, data, childCount);
+    return source.kind === "okpd" ? okpdNode(code, data, childCount) : ktruNode(code, data, childCount, pageSpecializations);
   });
   return {
     parentId,
@@ -375,12 +506,15 @@ export type KtruCharacteristic = {
 
 export type KtruRecordSummary = {
   code: string;
+  /** Display name (beautiful mirror name when available). */
   name: string;
+  /** Official EIS name from ktru-actual. */
+  officialName: string;
   status: string;
   version: string;
   versionCode: string;
   isTemplate: boolean;
-  noNewFeatures: boolean;
+  noNewFeatures: boolean | null;
   noNewFeaturesReason: string;
   description: string;
   okpd2: { code: string; name: string } | null;
@@ -461,7 +595,7 @@ function formatKtruValueParts(value: {
 }): KtruCharacteristicPart[] {
   const chunks: string[] = [];
   if (Array.isArray(value.concrete_values) && value.concrete_values.length) {
-    chunks.push(value.concrete_values.map(String).join(", "));
+    chunks.push(...value.concrete_values.map(String));
   }
   if (value.text) chunks.push(String(value.text));
   if (Array.isArray(value.ranges)) {
@@ -546,7 +680,9 @@ export function getKtruRecord(code: string): KtruRecordSummary | null {
     return structuredClone(cached);
   }
   const data = getCatalog();
-  const row = data.db.prepare("SELECT payload FROM ktru WHERE code=?").get(code) as { payload: Buffer } | undefined;
+  const row = data.db.prepare("SELECT payload, name, official_name AS officialName FROM ktru WHERE code=?").get(code) as {
+    payload: Buffer; name: string; officialName: string;
+  } | undefined;
   if (!row) return null;
   const raw = parseKtruPayload(row.payload);
   const okpd = raw.okpd2 && typeof raw.okpd2 === "object" ? raw.okpd2 as { code?: string; name?: string } : null;
@@ -579,14 +715,16 @@ export function getKtruRecord(code: string): KtruRecordSummary | null {
   const parentRaw = raw.parent && typeof raw.parent === "object" ? raw.parent as { code?: string; version?: string } : null;
   const cancelRaw = raw.cancellation && typeof raw.cancellation === "object" ? raw.cancellation as { date?: string; reason?: string } : null;
   const printForm = raw.print_form && typeof raw.print_form === "object" ? raw.print_form as { url?: string } : null;
+  const officialName = row.officialName || String(raw.name ?? "");
   const result: KtruRecordSummary = {
     code: String(raw.code ?? code),
-    name: String(raw.name ?? ""),
+    name: row.name || officialName,
+    officialName,
     status: String(raw.status ?? ""),
     version: String(raw.version ?? ""),
     versionCode: String(raw.version_code ?? ""),
     isTemplate: !!raw.is_template,
-    noNewFeatures: !!raw.no_new_features,
+    noNewFeatures: raw.no_new_features == null ? null : !!raw.no_new_features,
     noNewFeaturesReason: String(raw.no_new_features_reason ?? "").trim(),
     description: String(raw.description ?? "").trim(),
     okpd2: okpd?.code ? { code: String(okpd.code), name: String(okpd.name ?? "") } : null,
@@ -616,7 +754,8 @@ export function listKtruByOkpd(okpd: string, limit = 12): { total: number; items
   if (!okpd) return { total: 0, items: [] };
   const data = getCatalog();
   const total = (data.db.prepare("SELECT count(*) AS n FROM ktru WHERE okpd2=?").get(okpd) as { n: number }).n;
-  const items = data.db.prepare("SELECT code, name FROM ktru WHERE okpd2=? ORDER BY code LIMIT ?").all(okpd, limit) as { code: string; name: string }[];
+  const boundedLimit = Math.min(FILTER_MATCH_LIMIT, Math.max(0, Math.trunc(limit) || 0));
+  const items = statement(data, "SELECT code, name FROM ktru WHERE okpd2=? ORDER BY code LIMIT ?").all(okpd, boundedLimit) as { code: string; name: string }[];
   return { total, items };
 }
 
@@ -627,9 +766,10 @@ export function listKtruByOkpd(okpd: string, limit = 12): { total: number; items
 export function getSoleTemplateKtruForOkpd(okpd2: string): { code: string; name: string } | null {
   if (!okpd2) return null;
   const data = getCatalog();
-  const roots = data.okpdKtruRoots.get(okpd2) ?? [];
+  const roots = statement(data, `SELECT ${LIGHT_COLUMNS} FROM ktru WHERE effective_okpd=? AND is_okpd_root=1 ORDER BY code LIMIT 2`)
+    .all(okpd2) as LightRow[];
   if (roots.length !== 1) return null;
-  const row = data.byCode.get(roots[0]!);
+  const row = roots[0];
   if (!row?.isTemplate) return null;
   if (row.status && row.status !== "ACTIVE") return null;
   return { code: row.code, name: row.name };
@@ -668,113 +808,108 @@ function characteristicValueTexts(raw: Record<string, unknown>): Map<string, { v
 }
 
 /**
- * For a template (or a child under a template): find the characteristic that uniquely
- * partitions sibling positions, and map each value → child KTRU code.
+ * For a template (or a child under a template): find the compact characteristic set that
+ * partitions sibling positions, and map each value tuple → child KTRU code.
  */
 export function getKtruSpecialization(code: string): KtruSpecialization | null {
   if (!code || code.length > 64) return null;
   const data = getCatalog();
-  const row = data.byCode.get(code);
+  const row = lightRow(code, data);
   if (!row) return null;
 
   let templateCode = code;
   if (!row.isTemplate) {
-    const parent = row.parentCode ? data.byCode.get(row.parentCode) : undefined;
+    const parent = row.parentCode ? lightRow(row.parentCode, data) : null;
     if (!parent?.isTemplate) return null;
     templateCode = parent.code;
   }
 
   const cached = specializationForTemplate(templateCode, data);
   if (!cached) return null;
+  const clone = structuredClone(cached);
+  const current = clone.options.find(item => item.code === code);
   return {
-    ...structuredClone(cached),
-    currentValue: cached.options.find(item => item.code === code)?.value ?? null,
+    ...clone,
+    currentValues: current ? { ...current.values } : null,
   };
 }
 
 function specializationForTemplate(templateCode: string, data: Catalog): KtruSpecialization | null {
-  if (!specializationCache.has(templateCode)) {
-    specializationCache.set(templateCode, buildKtruSpecialization(templateCode, data));
-  }
-  return specializationCache.get(templateCode)!;
+  if (specializationCache.has(templateCode)) return specializationCache.get(templateCode)!;
+  const specialization = buildKtruSpecialization(templateCode, data);
+  // An API response may contain a whole sibling group, but never retain large groups.
+  if (specialization && specialization.options.length > SPECIALIZATION_CACHE_OPTION_LIMIT) return specialization;
+  if (specializationCache.size >= SPECIALIZATION_CACHE_LIMIT) specializationCache.delete(specializationCache.keys().next().value!);
+  specializationCache.set(templateCode, specialization);
+  return specialization;
 }
 
 function buildKtruSpecialization(templateCode: string, data: Catalog): KtruSpecialization | null {
-  const childCodes = (data.ktruChildren.get(templateCode) ?? []).filter(child => {
-    const childRow = data.byCode.get(child);
-    return childRow && (!childRow.status || childRow.status === "ACTIVE");
-  });
-  if (childCodes.length < 2) return null;
-
-  const children = childCodes.map(childCode => {
-    const rowPayload = data.db.prepare("SELECT payload FROM ktru WHERE code=?").get(childCode) as { payload: Buffer } | undefined;
-    const chars = rowPayload ? characteristicValueTexts(parseKtruPayload(rowPayload.payload)) : new Map();
-    return { code: childCode, name: data.byCode.get(childCode)?.name ?? childCode, chars };
-  });
-
-  const nameScores = new Map<string, {
-    score: number;
-    code: string | null;
-    required: boolean;
-    kind: string;
-    pairs: { value: string; code: string; name: string }[];
-  }>();
-
-  const allNames = new Set<string>();
-  for (const child of children) for (const name of child.chars.keys()) allNames.add(name);
-
-  for (const name of allNames) {
-    const pairs: { value: string; code: string; name: string }[] = [];
-    let required = false;
-    let kind = "";
-    let charCode: string | null = null;
-    let ok = true;
-    const seen = new Set<string>();
-    for (const child of children) {
-      const entry = child.chars.get(name);
-      if (!entry || entry.values.length !== 1) {
-        ok = false;
-        break;
+  const children: SpecChild[] = [];
+  let afterCode = "";
+  // Keyset pages and one decoded payload at a time, even for huge sibling groups.
+  while (true) {
+    const rows = statement(data, "SELECT code, name FROM ktru WHERE parent_code=? AND code>? AND effective_okpd<>'' AND (status IS NULL OR status='' OR status='ACTIVE') ORDER BY code LIMIT ?")
+      .all(templateCode, afterCode, CHILDREN_PAGE) as { code: string; name: string }[];
+    if (!rows.length) break;
+    for (const child of rows) {
+      const rowPayload = statement(data, "SELECT payload FROM ktru WHERE code=?").get(child.code) as { payload: Buffer };
+      const chars = characteristicValueTexts(parseKtruPayload(rowPayload.payload));
+      const values = new Map<string, { value: string; code: string | null; required?: boolean; kind?: string }>();
+      for (const [name, entry] of chars) {
+        if (entry.values.length !== 1) continue;
+        values.set(name, {
+          value: entry.values[0]!,
+          code: entry.code,
+          required: entry.required,
+          kind: entry.kind,
+        });
       }
-      const value = entry.values[0]!;
-      if (seen.has(value)) {
-        ok = false;
-        break;
-      }
-      seen.add(value);
-      required = entry.required;
-      kind = entry.kind;
-      charCode = entry.code;
-      pairs.push({ value, code: child.code, name: child.name });
+      children.push({ code: child.code, name: child.name, values });
     }
-    if (!ok || pairs.length !== children.length) continue;
-    let score = 10;
-    if (required) score += 20;
-    if (kind === "1") score += 10;
-    nameScores.set(name, { score, code: charCode, required, kind, pairs });
+    afterCode = rows[rows.length - 1]!.code;
   }
+  if (children.length < 2) return null;
 
-  const best = [...nameScores.entries()].sort((a, b) => b[1].score - a[1].score || a[0].localeCompare(b[0], "ru"))[0];
-  if (!best) return null;
+  const picked = pickDiscriminatingCharacteristics(children);
+  if (!picked) return null;
 
-  const [characteristicName, meta] = best;
-  const options = [...meta.pairs].sort((a, b) => a.value.localeCompare(b.value, "ru") || a.code.localeCompare(b.code));
-  const templateRow = data.byCode.get(templateCode)!;
+  const characteristics = picked.characteristics.map(({ name, code }) => ({ name, code }));
+  const options: KtruSpecialization["options"] = [];
+  for (const child of children) {
+    const values: Record<string, string> = {};
+    let complete = true;
+    for (const characteristic of characteristics) {
+      const value = child.values.get(characteristic.name)?.value;
+      if (!value) {
+        complete = false;
+        break;
+      }
+      values[characteristic.name] = value;
+    }
+    if (!complete) continue;
+    options.push({ code: child.code, name: child.name, values });
+  }
+  if (options.length < 2) return null;
+  options.sort((a, b) =>
+    specializationOptionLabel(characteristics, a.values)
+      .localeCompare(specializationOptionLabel(characteristics, b.values), "ru")
+    || a.code.localeCompare(b.code));
+  const templateRow = lightRow(templateCode, data)!;
   return {
     templateCode,
     templateName: templateRow.name,
-    characteristicName,
-    characteristicCode: meta.code,
+    characteristics,
     options,
-    currentValue: null,
+    currentValues: null,
   };
 }
 
 export function getKtruNodeByCode(code: string): KtruTreeNode | null {
   if (!code || code.length > 64) return null;
   const data = getCatalog();
-  if (data.byCode.has(code)) return ktruNode(code, data);
-  if (data.okpdNames.has(code) || data.okpdChildCodes.has(code) || data.okpdKtruRoots.has(code)) {
+  if (lightRow(code, data)) return ktruNode(code, data);
+  if (data.okpdNames.has(code) || data.okpdChildCodes.has(code) || data.okpdCodes.has(code)) {
     return okpdNode(code, data);
   }
   return null;
@@ -790,7 +925,7 @@ export function getKtruRevealPath(code: string): { node: KtruTreeNode | null; pa
     for (const part of okpdChain(code, data.okpdParentOf)) pathIds.push(`okpd:${part}`);
     return { node, pathIds };
   }
-  const row = data.byCode.get(code)!;
+  const row = lightRow(code, data)!;
   const okpd = row.okpd2 || code.split("-", 1)[0];
   if (okpd) {
     for (const part of okpdChain(okpd, data.okpdParentOf)) pathIds.push(`okpd:${part}`);
@@ -798,11 +933,12 @@ export function getKtruRevealPath(code: string): { node: KtruTreeNode | null; pa
   const ktruChain: string[] = [];
   const seen = new Set<string>();
   let current: string | null = code;
-  while (current && data.byCode.has(current) && !seen.has(current)) {
+  while (current && !seen.has(current)) {
+    const currentRow = lightRow(current, data);
+    if (!currentRow) break;
     seen.add(current);
     ktruChain.push(current);
-    const parentCode: string | null = data.byCode.get(current)?.parentCode ?? null;
-    current = parentCode && data.byCode.has(parentCode) ? parentCode : null;
+    current = currentRow.parentCode;
   }
   ktruChain.reverse();
   for (const item of ktruChain) pathIds.push(`ktru:${item}`);
@@ -821,68 +957,14 @@ export function ktruFilterMeta(filter: string) {
 }
 
 const SEARCH_LIMIT = 40;
-const SEARCH_STOP = new Set([
-  "и", "или", "для", "из", "на", "по", "со", "во", "от", "до", "при", "без", "под", "над", "это", "как",
-  "the", "and", "with", "from", "шт", "упаковке", "подходит", "также", "данный", "данная", "белая", "белый",
-  "белые", "белое", "документов", "документ", "листов", "листа",
-]);
-
-function searchTokens(query: string): string[] {
-  return [...new Set(
-    query
-      .toLocaleLowerCase("ru-RU")
-      .split(/[^0-9a-zA-Zа-яА-ЯёЁ./№+-]+/u)
-      .map((token) => token.trim())
-      .filter((token) => token.length >= 3 && !SEARCH_STOP.has(token)),
-  )].slice(0, 12);
-}
-
-function tokenStem(token: string): string {
-  if (token.length <= 4) return token;
-  if (token.length <= 6) return token.slice(0, -1);
-  return token.slice(0, -2);
-}
-
-function textHasToken(haystack: string, token: string): boolean {
-  if (haystack.includes(token)) return true;
-  const stem = tokenStem(token);
-  return stem.length >= 4 && haystack.includes(stem);
-}
-
 export function searchKtru(query: string): KtruTreeNode[] {
-  const raw = query.trim();
-  if (raw.length < 2) return [];
+  const q = normalizeFilter(query);
+  if ([...q].length < 2) return [];
+  const filter = lexicalFilter(q);
+  if (!filter) return [];
   const data = getCatalog();
-  const q = raw.toLocaleLowerCase("ru-RU");
-  const tokens = searchTokens(raw);
-  const scored: { node: KtruTreeNode; score: number; hits: number }[] = [];
-
-  for (const row of data.byCode.values()) {
-    const code = row.code.toLocaleLowerCase("ru-RU");
-    const name = row.name.toLocaleLowerCase("ru-RU");
-    let score = 0;
-    let hits = 0;
-    if (code.includes(q) || name.includes(q)) {
-      score += 100;
-      hits = tokens.length || 1;
-    } else if (tokens.length) {
-      for (const token of tokens) {
-        if (!textHasToken(name, token) && !code.includes(token)) continue;
-        hits += 1;
-        score += token.length >= 5 ? 5 : 2;
-      }
-    }
-    if (hits <= 0 && score <= 0) continue;
-    // Prefer more specific positions that cover several description tokens.
-    score += hits * 6;
-    if (hits >= 2) score += 8;
-    if (row.status === "ACTIVE") score += 3;
-    if (!row.isTemplate) score += 1;
-    // Prefer shorter names when scores are close (less over-specific oddities).
-    score -= Math.min(12, Math.floor(name.length / 18));
-    scored.push({ node: ktruNode(row.code, data), score, hits });
-  }
-
-  scored.sort((a, b) => b.score - a.score || b.hits - a.hits || a.node.name.localeCompare(b.node.name, "ru"));
-  return scored.slice(0, SEARCH_LIMIT).map((item) => item.node);
+  const rows = statement(data, `SELECT code FROM ktru WHERE ${filter.predicate} ORDER BY ${filter.order} LIMIT ?`)
+    .all(...filter.params, ...filter.ranking, SEARCH_LIMIT) as { code: string }[];
+  const pageSpecializations = new Map<string, KtruSpecialization | null>();
+  return rows.map(row => ktruNode(row.code, data, undefined, pageSpecializations));
 }

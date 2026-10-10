@@ -2,16 +2,193 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { categories, extractCharacteristics, guessCategory, suggestKtruCategory } from "../src/lib/product-draft";
 import {
+  captureQueryDraft,
+  restoreQueryDraft,
+  clearCategoryDecisions,
+  currentRefineSeq,
+  ktruLocked, setKtruLocked,
+  spgzLocked, setSpgzLocked,
+  okpdKtruDecision, setOkpdKtruDecision,
+  kpgzSpgzDecision, setKpgzSpgzDecision,
+  characteristics, setCharacteristics,
   characteristicEditKey,
   manuallyEditedCharacteristics,
   manuallyEditedCharacteristicValues,
   preserveManualCharacteristics,
 } from "../src/lib/create-product-state";
-import type { DraftCharacteristic } from "../src/lib/types";
+import type { CatalogCharacteristic, CategoryPairDecision, DraftCharacteristic } from "../src/lib/types";
 import { characteristicRangeProblem } from "../src/lib/characteristic-options";
 import { draftFromSpgzCharacteristic } from "../src/lib/spgz-characteristics";
-import { autofillConfidencePresentation, buildDisplayCharacteristics, characteristicSourceLabel, mapOptionProbabilities, retainTemplateCharacteristics } from "../src/lib/merge-characteristics";
+import { appendCatalogCharacteristics, autofillConfidencePresentation, buildDisplayCharacteristics, catalogFrequencyLabel, catalogOptionPopularity, characteristicSourceLabel, retainTemplateCharacteristics, schemaEquivalent } from "../src/lib/merge-characteristics";
 
+
+test("query drafts preserve independent pair decisions, manual locks and edited values", () => {
+  const original = captureQueryDraft();
+  const decision: CategoryPairDecision = {
+    needsChoice: true, reason: "branch_conflict",
+    alternatives: [{
+      okpd2: { code: "25.73", name: "Инструменты", score: 1, source: "classifier" },
+      ktru: { code: "25.73-01", name: "Молоток", score: 1, source: "classifier" },
+      kpgz: null, spgz: null, sources: ["classifier"], reason: "branch_conflict",
+    }],
+  };
+  const second: CategoryPairDecision = {
+    needsChoice: true, reason: "multiple_candidates",
+    alternatives: [{ okpd2: null, ktru: null, kpgz: { code: "01", name: "Инструменты", score: 1 }, spgz: null, sources: ["neighbors"], reason: null }],
+  };
+  const field = { ...draftFromSpgzCharacteristic({ name: "Материал", options: ["Сталь", "Медь"] }), value: "Медь" };
+  try {
+    setKtruLocked(true); setSpgzLocked(false);
+    setOkpdKtruDecision(decision); setKpgzSpgzDecision(second);
+    setCharacteristics([field]);
+    manuallyEditedCharacteristics.add(characteristicEditKey(field));
+    manuallyEditedCharacteristicValues.set(characteristicEditKey(field), field);
+    const saved = captureQueryDraft();
+    setOkpdKtruDecision(null);
+    assert.deepEqual(kpgzSpgzDecision(), second, "choosing the KTRU pair must not clear the SPGZ decision");
+    setKtruLocked(false); setSpgzLocked(true); clearCategoryDecisions(); setCharacteristics([]);
+    manuallyEditedCharacteristics.clear(); manuallyEditedCharacteristicValues.clear();
+    const priorSeq = currentRefineSeq();
+    restoreQueryDraft(saved);
+    assert.equal(ktruLocked(), true); assert.equal(spgzLocked(), false);
+    assert.deepEqual(okpdKtruDecision(), decision); assert.deepEqual(kpgzSpgzDecision(), second);
+    assert.equal(characteristics()[0].value, "Медь");
+    assert.equal(manuallyEditedCharacteristicValues.get(characteristicEditKey(field))?.value, "Медь");
+    assert.ok(currentRefineSeq() > priorSeq, "restoring a query invalidates pending refinement");
+    decision.alternatives[0].ktru!.name = "Changed";
+    assert.equal(saved.okpdKtruDecision?.alternatives[0].ktru?.name, "Молоток", "saved drafts must not share pair objects");
+  } finally { restoreQueryDraft(original); }
+});
+
+test("catalog fields supplement schemas without duplicate names or observed-value restrictions", () => {
+  const schema = draftFromSpgzCharacteristic({ name: "Материал", options: ["Сталь"] });
+  const statistics: CatalogCharacteristic[] = [
+    { id: "catalog:material", name: "  МАТЕРИАЛ  ", unit: "", numeric: false, count: 10, total: 10, frequency: 1, scope: "category" as const, examples: ["Дерево"], numericValueCounts: null, exampleCounts: { "Дерево": 10 } },
+    { id: "catalog:color", name: "Цвет", unit: "", numeric: false, count: 8, total: 10, frequency: 0.8, scope: "adjacent" as const, examples: ["Белый", "Чёрный"], numericValueCounts: null, exampleCounts: { "Белый": 5, "Чёрный": 3 } },
+    { id: "catalog:height", name: "Высота", unit: "мм", numeric: true, count: 7, total: 10, frequency: 0.7, scope: "category" as const, examples: ["100", "200"], numericValueCounts: null, exampleCounts: { "100": 2, "200": 1 } },
+  ];
+  const fields = appendCatalogCharacteristics([schema], statistics);
+  assert.equal(fields.length, 3);
+  assert.deepEqual(fields[0], { ...schema, catalogFrequency: statistics[0] });
+  assert.deepEqual(fields[1].options, []);
+  assert.equal(fields[1].value, "");
+  assert.equal(fields[1].required, false);
+  assert.equal(fields[1].hint, "");
+  assert.deepEqual(fields[1].catalogFrequency?.examples, ["Белый", "Чёрный"]);
+  assert.deepEqual(fields[1].catalogFrequency?.exampleCounts, { "Белый": 5, "Чёрный": 3 });
+  assert.equal(fields[2].numeric, true);
+  assert.equal(characteristicSourceLabel(fields[1].source), "из каталога");
+  assert.match(catalogFrequencyLabel(statistics[1]), /8 из 10.*смежных.*80%/);
+  assert.deepEqual(buildDisplayCharacteristics(fields).map(field => field.source), ["spgz", "catalog", "catalog"]);
+  const edited = { ...fields[1], value: "Зелёный" };
+  const next = appendCatalogCharacteristics(fields, statistics, [edited]);
+  assert.equal(next[1].value, "Зелёный");
+  assert.equal(appendCatalogCharacteristics(fields, []).length, 1);
+  const custom = { ...edited, id: "custom", custom: true, source: "custom" as const };
+  assert.equal(appendCatalogCharacteristics([schema, custom], statistics).length, 3);
+  assert.equal(buildDisplayCharacteristics([...fields, custom]).filter(field => field.name === "Цвет").length, 1);
+});
+
+test("catalog identities preserve distinct units and manual values after display spelling changes", () => {
+  const stats: CatalogCharacteristic[] = [
+    { id: "catalog:kg", name: "Масса", nameKey: "масса", unit: "кг", numeric: true, count: 7, total: 10, frequency: 0.7, scope: "category" as const, examples: ["1", "2"], numericValueCounts: null, exampleCounts: { "1": 4, "2": 3 } },
+    { id: "catalog:g", name: "Масса", nameKey: "масса", unit: "г", numeric: true, count: 3, total: 10, frequency: 0.3, scope: "category" as const, examples: ["100", "200"], numericValueCounts: null, exampleCounts: { "100": 2, "200": 1 } },
+  ];
+  const fields = appendCatalogCharacteristics([], stats);
+  assert.deepEqual(fields.map(item => item.unit), ["кг", "г"]);
+  assert.equal(buildDisplayCharacteristics(fields).length, 2);
+  const previous = [{ ...fields[0], value: "1,5" }];
+  const refreshed = appendCatalogCharacteristics([], [{ ...stats[0], name: "Массы" }], previous);
+  assert.equal(refreshed[0].value, "1,5");
+  const edited = previous[0];
+  const editKey = characteristicEditKey(edited);
+  manuallyEditedCharacteristics.add(editKey);
+  manuallyEditedCharacteristicValues.set(editKey, edited);
+  try {
+    const fields = appendCatalogCharacteristics([], [{ ...stats[0], name: "Массы" }]);
+    assert.equal(preserveManualCharacteristics(fields, [edited])[0].value, "1,5");
+  } finally {
+    manuallyEditedCharacteristics.delete(editKey);
+    manuallyEditedCharacteristicValues.delete(editKey);
+  }
+  const schema = draftFromSpgzCharacteristic({ name: "Материал рукоятки", options: ["Сталь"] });
+  const duplicate = { ...stats[0], name: " МАТЕРИАЛ (рукоятки): ", unit: "", numeric: false };
+  assert.deepEqual(appendCatalogCharacteristics([schema], [duplicate]), [{ ...schema, catalogFrequency: duplicate }]);
+});
+
+test("schema selectors get catalog popularity without changing options or source", () => {
+  const schema = draftFromSpgzCharacteristic({ name: "Форма бойка", options: ["Квадратный", "Круглый", "Клиновидный"] });
+  const stats: CatalogCharacteristic = {
+    id: "catalog:shape", name: "Форма бойка", unit: "", numeric: false,
+    count: 100, total: 120, frequency: 100 / 120, scope: "category",
+    examples: ["квадратная", "круглая"], numericValueCounts: null, exampleCounts: { "квадратная": 70, "круглая": 20 },
+  };
+  const [field] = appendCatalogCharacteristics([schema], [stats]);
+  assert.equal(field.source, "spgz");
+  assert.deepEqual(field.options, schema.options);
+  assert.deepEqual(catalogOptionPopularity(field, "Квадратный"), { count: 70, total: 100, percent: 70 });
+  assert.equal(catalogOptionPopularity(field, "Клиновидный"), undefined);
+  const ktru = { ...schema, id: "ktru:shape", source: "ktru" as const };
+  const enriched = appendCatalogCharacteristics([ktru, schema], [stats]);
+  const [merged] = buildDisplayCharacteristics(enriched);
+  assert.equal(merged.source, "both");
+  assert.deepEqual(catalogOptionPopularity(merged, "Круглый"), { count: 20, total: 100, percent: 20 });
+  assert.equal(appendCatalogCharacteristics([field], [])[0].catalogFrequency, undefined);
+  const differentUnit = { ...stats, unit: "мм" };
+  assert.equal(appendCatalogCharacteristics([schema], [differentUnit])[0].catalogFrequency, undefined);
+  const ambiguous = { ...field, catalogFrequency: { ...stats, numericValueCounts: null, exampleCounts: { "квадратная": 70, "квадратный": 20 } } };
+  assert.equal(catalogOptionPopularity(ambiguous, "Квадратный"), undefined);
+  assert.deepEqual(catalogOptionPopularity(field, "-"), { count: 20, total: 120, percent: 17 });
+  assert.deepEqual(catalogOptionPopularity(merged, "-"), { count: 20, total: 120, percent: 17 });
+  assert.deepEqual(catalogOptionPopularity({ ...field, catalogFrequency: { ...stats, count: 0 } }, "-"), { count: 120, total: 120, percent: 100 });
+  assert.deepEqual(catalogOptionPopularity({ ...field, catalogFrequency: { ...stats, count: 120 } }, "-"), { count: 0, total: 120, percent: 0 });
+  assert.equal(catalogOptionPopularity({ ...field, catalogFrequency: { ...stats, count: 0, total: 0 } }, "-"), undefined);
+  assert.equal(catalogOptionPopularity(schema, "-"), undefined);
+});
+
+test("range selectors aggregate the full numeric distribution with exact boundaries", () => {
+  const field: DraftCharacteristic = {
+    id: "ktru:mass", name: "Масса", value: "", rangeOption: "", unit: "кг", source: "ktru",
+    required: false, badges: [], hint: "", multiple: false, optionLabels: {},
+    options: ["<0.1", ">=0.1<0.2", ">=0.2<0.3", ">=0.3", ">=2"],
+    ranges: [
+      { option: "<0.1", min: null, max: 0.1, minInclusive: false, maxInclusive: false },
+      { option: ">=0.1<0.2", min: 0.1, max: 0.2, minInclusive: true, maxInclusive: false },
+      { option: ">=0.2<0.3", min: 0.2, max: 0.3, minInclusive: true, maxInclusive: false },
+      { option: ">=0.3", min: 0.3, max: null, minInclusive: true, maxInclusive: false },
+      { option: ">=2", min: 2, max: null, minInclusive: true, maxInclusive: false },
+    ],
+    catalogFrequency: {
+      id: "catalog:mass", name: "Масса", unit: "кг", numeric: true, scope: "category",
+      count: 10, total: 12, frequency: 10 / 12,
+      examples: ["0.05"], exampleCounts: { "0.05": 1 },
+      numericValueCounts: { "0.05": 1, "0.1": 2, "0.15": 2, "0.2": 1, "0.25": 1, "0.3": 2, "1": 1 },
+    },
+  };
+  for (const [option, count] of [["<0.1", 1], [">=0.1<0.2", 4], [">=0.2<0.3", 2], [">=0.3", 3], [">=2", 0]] as const) {
+    assert.deepEqual(catalogOptionPopularity(field, option), { count, total: 10, percent: count * 10 });
+  }
+  assert.deepEqual(catalogOptionPopularity(field, "-"), { count: 2, total: 12, percent: 17 });
+  assert.equal(catalogOptionPopularity(field, "unknown"), undefined);
+  assert.equal(catalogOptionPopularity({ ...field, catalogFrequency: { ...field.catalogFrequency!, numericValueCounts: null } }, ">=0.3"), undefined);
+});
+
+test("catalog manual values survive refreshed frequency statistics", () => {
+  const stats = [{ id: "catalog:color", name: "Цвет", unit: "", numeric: false, count: 5, total: 10, frequency: 0.5, scope: "category" as const, examples: ["Белый"], numericValueCounts: null, exampleCounts: { "Белый": 5 } }];
+  const original = { ...appendCatalogCharacteristics([], stats)[0], value: "Зелёный" };
+  const key = characteristicEditKey(original);
+  manuallyEditedCharacteristics.add(key);
+  manuallyEditedCharacteristicValues.set(key, original);
+  try {
+    const fields = preserveManualCharacteristics(appendCatalogCharacteristics([], [{ ...stats[0], examples: ["Чёрный"] }]), []);
+    assert.equal(fields[0].value, "Зелёный");
+    assert.equal(fields[0].hint, "");
+    assert.deepEqual(fields[0].catalogFrequency?.examples, ["Чёрный"]);
+  } finally {
+    manuallyEditedCharacteristics.delete(key);
+    manuallyEditedCharacteristicValues.delete(key);
+  }
+});
 
 test("SPGZ quantitative fields keep their type even without characteristic units", () => {
   const height = draftFromSpgzCharacteristic({ name: "Высота", value: "≥ 1", badges: ["количественная", "не менее"] });
@@ -25,6 +202,15 @@ test("SPGZ quantitative fields keep their type even without characteristic units
   const doors = draftFromSpgzCharacteristic({ name: "Тип дверей шкафа", options: ["Распашные", "Раздвижные (купе)"], badges: ["качественная"] });
   assert.equal(doors.numeric, false);
   assert.equal(doors.value, "");
+});
+
+test("SPGZ selector options are not repeated in generated hints", () => {
+  const options = [">= 0.5 < 0.6", ">= 0.6 < 0.8"];
+  const field = draftFromSpgzCharacteristic({
+    name: "Масса", value: options.join(" · "), options, badges: ["количественная"],
+  });
+  assert.equal(field.hint, "");
+  assert.deepEqual(field.options, options);
 });
 
 test("refined positions retain missing template fields without overriding child constraints", () => {
@@ -110,12 +296,17 @@ test("merged range fields retain out-of-range numbers without inventing a catalo
   assert.equal(characteristicRangeProblem(valid), null);
 });
 
-test("option probabilities follow matching schema options, including zero probabilities", () => {
-  const probabilities = { text: "Молоток", values: { "≥ 0.5 кг": 0.85, "< 0.5 кг": 0, "Сталь": 0.99 } };
-  assert.deepEqual(mapOptionProbabilities(probabilities, [">=0.5", "<0.5", "Медь"]), {
-    text: "Молоток", values: { ">=0.5": 0.85, "<0.5": 0 },
-  });
-  assert.equal(mapOptionProbabilities(undefined, ["Сталь"]), undefined);
+test("schema merge requires compatible units, numeric flags and multiplicity", () => {
+  const ktru: DraftCharacteristic = {
+    id: "ktru:mass", name: "Масса", value: "", rangeOption: "", options: [], optionLabels: {},
+    ranges: [], unit: "кг", numeric: true, source: "ktru", required: false, badges: [], hint: "", multiple: false,
+  };
+  const spgzSame = { ...ktru, id: "spgz:mass", source: "spgz" as const };
+  const spgzDifferentUnit = { ...spgzSame, unit: "г" };
+  assert.equal(schemaEquivalent(ktru, spgzSame), true);
+  assert.equal(schemaEquivalent(ktru, spgzDifferentUnit), false);
+  assert.equal(buildDisplayCharacteristics([ktru, spgzDifferentUnit]).length, 2);
+  assert.equal(buildDisplayCharacteristics([ktru, spgzSame]).length, 1);
 });
 
 test("autofill confidence uses readable levels without presenting it as guaranteed accuracy", () => {

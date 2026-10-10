@@ -30,6 +30,7 @@ def open_index_db(path: Path | None = None, *, readonly: bool = False) -> sqlite
     conn.row_factory = sqlite3.Row
     conn.execute(f"PRAGMA mmap_size={settings.search_mmap_size}")
     conn.execute(f"PRAGMA cache_size=-{settings.search_cache_size_kib}")
+    conn.execute("PRAGMA temp_store=FILE")
     conn.enable_load_extension(True)
     sqlite_vec.load(conn)
     conn.enable_load_extension(False)
@@ -50,15 +51,6 @@ def _check_schema(conn: sqlite3.Connection) -> None:
         )
 
 
-# Keep in sync with search-web/drizzle/meta/_journal.json (sha256 of each .sql file).
-_DRIZZLE_MIGRATIONS = (
-    ("5f560feac82fb379c328af1b7e35443859fd21514135d0e8247894cf83717c5c", 1791387951545),
-    ("15df8921b619004a0fa1e7d7297d5c7ad0cafd58c3c74fa14f7dff714b231dc2", 1791390659568),
-    ("dd9c6ff70d07fc9c0f3ebbe5530a506d787a67b38a112b2b7367e937720d531e", 1791400000000),
-    ("424efb7ee3b4784b450ee26a8c0da02b811ad4ce73ff7ecd29b2b9cf6b9c9aaa", 1791600000000),
-)
-
-
 def _ensure_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(
         """
@@ -72,20 +64,8 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             embedded_hash TEXT,
             category_id INTEGER NOT NULL
         );
-        CREATE TABLE IF NOT EXISTS __drizzle_migrations (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            hash text NOT NULL,
-            created_at numeric
-        );
         """
     )
-    for hash_, created_at in _DRIZZLE_MIGRATIONS:
-        conn.execute(
-            "INSERT INTO __drizzle_migrations (hash, created_at) "
-            "SELECT ?, ? WHERE NOT EXISTS (SELECT 1 FROM __drizzle_migrations WHERE hash = ?)",
-            (hash_, created_at, hash_),
-        )
-
     stored = conn.execute("SELECT value FROM metadata WHERE key='index_schema_version'").fetchone()
     if stored and stored["value"] != settings.index_schema_version:
         raise RuntimeError(

@@ -1,7 +1,9 @@
 import { batch, createSignal } from "solid-js";
 import { schemaEquivalent } from "./merge-characteristics";
 import type {
+  AutofillEvidence,
   CatalogSpecialization,
+  CategoryPairDecision,
   DirTreeNode,
   DraftCharacteristic,
   KtruTreeNode,
@@ -24,6 +26,13 @@ export const [spgz, setSpgz] = createSignal<VotedCode | null>(null);
 export const [ktruVote, setKtruVote] = createSignal<VotedCode | null>(null);
 export const [ktruLocked, setKtruLocked] = createSignal(false);
 export const [spgzLocked, setSpgzLocked] = createSignal(false);
+export const [okpdKtruDecision, setOkpdKtruDecision] = createSignal<CategoryPairDecision | null>(null);
+export const [kpgzSpgzDecision, setKpgzSpgzDecision] = createSignal<CategoryPairDecision | null>(null);
+
+export function clearCategoryDecisions() {
+  setOkpdKtruDecision(null);
+  setKpgzSpgzDecision(null);
+}
 export const [suggesting, setSuggesting] = createSignal(false);
 /** Visible loading time of last successful category suggest, including debounce and category updates, ms. */
 export const [suggestDurationMs, setSuggestDurationMs] = createSignal<number | null>(null);
@@ -33,8 +42,12 @@ export const [lastAutofillKey, setLastAutofillKey] = createSignal("");
 export const manuallyEditedCharacteristics = new Set<string>();
 export const manuallyEditedCharacteristicValues = new Map<string, DraftCharacteristic>();
 export const autofilledCharacteristicValues = new Map<string, { value: string; rangeOption: string }>();
+export const manuallyEditedProductFields = new Set<"model" | "manufacturer" | "article">();
+export const autofilledProductValues = new Map<"model" | "manufacturer" | "article", string>();
+export const autofilledProductEvidence = new Map<"model" | "manufacturer" | "article", AutofillEvidence>();
 
 export function characteristicEditKey(item: DraftCharacteristic): string {
+  if (item.source === "catalog") return `catalog:${item.id}:${item.unit}`;
   const name = item.name.trim().toLocaleLowerCase("ru").replaceAll("ё", "е");
   return `${item.source}:${name}:${item.unit}`;
 }
@@ -47,7 +60,7 @@ export function preserveManualCharacteristics(fields: DraftCharacteristic[], pre
       ?? manuallyEditedCharacteristicValues.get(key);
     return prior && schemaEquivalent(prior, field)
       ? { ...field, value: prior.value, rangeOption: prior.rangeOption, autofill: undefined,
-        optionProbabilities: field.optionProbabilities ?? prior.optionProbabilities } : field;
+        autofillDiagnostics: field.autofillDiagnostics ?? prior.autofillDiagnostics } : field;
   });
 }
 export const [charStandards, setCharStandards] = createSignal<string[]>([]);
@@ -95,6 +108,7 @@ export function captureQueryDraft() {
     name: name(), sku: sku(), model: model(), brand: brand(), selected: selected(),
     okpd2: okpd2(), kpgz: kpgz(), spgz: spgz(), ktruVote: ktruVote(),
     ktruLocked: ktruLocked(), spgzLocked: spgzLocked(), similar: similar(),
+    okpdKtruDecision: okpdKtruDecision(), kpgzSpgzDecision: kpgzSpgzDecision(),
     characteristics: characteristics(), charStandards: charStandards(),
     noNewFeatures: noNewFeatures(), noNewFeaturesReason: noNewFeaturesReason(),
     generatedFor: generatedFor(), catalogSpecialization: catalogSpecialization(),
@@ -103,6 +117,9 @@ export function captureQueryDraft() {
     manuallyEdited: [...manuallyEditedCharacteristics],
     manuallyEditedValues: [...manuallyEditedCharacteristicValues],
     autofilledValues: [...autofilledCharacteristicValues],
+    manuallyEditedProduct: [...manuallyEditedProductFields],
+    autofilledProduct: [...autofilledProductValues],
+    autofilledProductEvidence: [...autofilledProductEvidence],
   });
 }
 
@@ -112,6 +129,8 @@ export function restoreQueryDraft(draft: ReturnType<typeof captureQueryDraft>) {
     setSelected(draft.selected); setOkpd2(draft.okpd2); setKpgz(draft.kpgz);
     setSpgz(draft.spgz); setKtruVote(draft.ktruVote);
     setKtruLocked(draft.ktruLocked); setSpgzLocked(draft.spgzLocked);
+    setOkpdKtruDecision(draft.okpdKtruDecision); setKpgzSpgzDecision(draft.kpgzSpgzDecision);
+    nextRefineSeq();
     setSimilar(draft.similar); setCharacteristics(draft.characteristics);
     setCharStandards(draft.charStandards); setNoNewFeatures(draft.noNewFeatures);
     setNoNewFeaturesReason(draft.noNewFeaturesReason); setGeneratedFor(draft.generatedFor);
@@ -125,5 +144,11 @@ export function restoreQueryDraft(draft: ReturnType<typeof captureQueryDraft>) {
     for (const [key, value] of draft.manuallyEditedValues) manuallyEditedCharacteristicValues.set(key, value);
     autofilledCharacteristicValues.clear();
     for (const [key, value] of draft.autofilledValues) autofilledCharacteristicValues.set(key, value);
+    manuallyEditedProductFields.clear();
+    for (const key of draft.manuallyEditedProduct ?? []) manuallyEditedProductFields.add(key);
+    autofilledProductValues.clear();
+    for (const [key, value] of draft.autofilledProduct ?? []) autofilledProductValues.set(key, value);
+    autofilledProductEvidence.clear();
+    for (const [key, value] of draft.autofilledProductEvidence ?? []) autofilledProductEvidence.set(key, value);
   });
 }

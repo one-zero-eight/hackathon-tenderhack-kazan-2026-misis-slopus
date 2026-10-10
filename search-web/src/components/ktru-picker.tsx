@@ -2,10 +2,10 @@ import { createAsync, revalidate } from "@solidjs/router";
 import Check from "lucide-solid/icons/check";
 import ChevronRight from "lucide-solid/icons/chevron-right";
 import Search from "lucide-solid/icons/search";
-import { createEffect, createMemo, createSignal, For, on, onCleanup, Show, Suspense } from "solid-js";
+import { batch, createEffect, createMemo, createSignal, For, on, onCleanup, Show, Suspense } from "solid-js";
 import { DataBoundary, directoryHref } from "~/components/catalog";
-import { getDirectoryRecord, getKtruChildren, getKtruFilterMeta, getKtruRecord } from "~/lib/rpc";
-import type { KtruChildrenPage, KtruTreeNode } from "~/lib/types";
+import { getDirectoryRecord, getKtruChildren, getKtruFilterMeta, getKtruRecord, getKtruRevealPath, searchClassifiers } from "~/lib/rpc";
+import type { ClassifierPairHit, KtruChildrenPage, KtruTreeNode } from "~/lib/types";
 import { formatNumber } from "~/lib/utils";
 import { Button } from "~/ui-kit";
 import "~/routes/directories.css";
@@ -44,34 +44,52 @@ function TreeBranch(props: {
   const [page, setPage] = createSignal<KtruChildrenPage | undefined>();
   const [loading, setLoading] = createSignal(true);
   const [loadingMore, setLoadingMore] = createSignal(false);
+  const [error, setError] = createSignal("");
+  let generation = 0;
+  onCleanup(() => { generation++; });
   const revealId = () => nextPathId(props.pathIds, props.parentId);
   createEffect(on(() => [props.parentId, props.filter] as const, ([parentId, filter]) => {
     let alive = true;
+    generation++;
     setExtra([]);
+    setPage(undefined);
+    setError("");
+    setLoadingMore(false);
     setLoading(true);
     void getKtruChildren(parentId, 0, filter).then((data) => {
       if (!alive) return;
       setPage(data);
       setLoading(false);
-    }, () => { if (alive) setLoading(false); });
+    }).catch((cause: unknown) => {
+      if (alive) { setError(cause instanceof Error ? cause.message : "Не удалось загрузить дерево."); setLoading(false); }
+    });
     onCleanup(() => { alive = false; });
   }));
   const nodes = createMemo(() => [...(page()?.nodes ?? []), ...extra()]);
   const loadMore = async () => {
-    if (loadingMore()) return;
+    if (loading() || loadingMore()) return;
+    const version = generation;
     setLoadingMore(true);
-    const more = await getKtruChildren(props.parentId, nodes().length, props.filter);
-    setExtra((current) => [...current, ...more.nodes]);
-    setLoadingMore(false);
+    setError("");
+    try {
+      const more = await getKtruChildren(props.parentId, nodes().length, props.filter);
+      if (version !== generation) return;
+      setExtra((current) => [...current, ...more.nodes]);
+    } catch (cause) {
+      if (version === generation) setError(cause instanceof Error ? cause.message : "Не удалось загрузить следующие позиции.");
+    } finally {
+      if (version === generation) setLoadingMore(false);
+    }
   };
   createEffect(on(() => [revealId(), nodes(), page()?.total, loading(), loadingMore()] as const, ([id]) => {
-    if (!id || loading() || loadingMore()) return;
+    if (!id || loading() || loadingMore() || error()) return;
     const total = page()?.total ?? 0;
     if (!total || nodes().some((node) => node.id === id) || nodes().length >= total) return;
     void loadMore();
   }));
-  return <Show when={page()} fallback={<div class="ktru-loading">Загружаем…</div>}>{data =>
+  return <Show when={page()} fallback={<div class="ktru-loading" role={error() ? "alert" : undefined}>{error() || "Загружаем…"}</div>}>{data =>
     <div classList={{ "ktru-tree-pending": loading() }}>
+      <Show when={error()}><p class="dir-search-error" role="alert">{error()}</p></Show>
       <Show when={nodes().length} fallback={<div class="ktru-empty">{props.filter ? "Нет совпадений в этой ветке" : "Нет дочерних позиций"}</div>}>
         <ul class="ktru-tree-list">
           <For each={nodes()}>{node =>
@@ -114,9 +132,10 @@ function TreeNode(props: {
   createEffect(on(() => props.filter, () => setManualOpen(null)));
   createEffect(on(() => [selected(), props.node.id] as const, ([isSelected, id]) => {
     if (!isSelected || typeof document === "undefined") return;
-    requestAnimationFrame(() => {
+    const frame = requestAnimationFrame(() => {
       document.querySelector(`[data-node-id="${CSS.escape(id)}"]`)?.scrollIntoView({ block: "nearest", behavior: "smooth" });
     });
+    onCleanup(() => cancelAnimationFrame(frame));
   }));
   const openDetails = () => {
     props.onSelect(props.node);
@@ -240,6 +259,9 @@ function KtruRecordDetail(props: { code: string }) {
       <dl class="dir-fields">
         <div><dt>Код КТРУ</dt><dd>{data().code}</dd></div>
         <div><dt>Название</dt><dd>{data().name}</dd></div>
+        <Show when={data().officialName && data().officialName !== data().name}>
+          <div><dt>Официальное название</dt><dd>{data().officialName}</dd></div>
+        </Show>
         <div><dt>Статус</dt><dd>{data().status || "—"}{data().isTemplate ? " · шаблон" : ""}{data().noNewFeatures ? " · без новых характеристик" : ""}</dd></div>
         <div><dt>Версия</dt><dd>{data().version || "—"}{data().versionCode ? ` (${data().versionCode})` : ""}</dd></div>
         <Show when={okpd}><div><dt>ОКПД2</dt><dd>{okpd!.code}{okpd!.name ? ` — ${okpd!.name}` : ""}</dd></div></Show>
@@ -291,18 +313,28 @@ export function KtruPickerBody(props: {
   const [matchIds, setMatchIds] = createSignal(new Set<string>());
   const [matchCount, setMatchCount] = createSignal<number | null>(null);
   const [matchTruncated, setMatchTruncated] = createSignal(false);
+  const [ranked, setRanked] = createSignal<ClassifierPairHit[]>([]);
+  const [searchError, setSearchError] = createSignal("");
+  let searchVersion = 0;
+  onCleanup(() => { searchVersion++; });
+  const [revealPath, setRevealPath] = createSignal<string[]>(props.pathIds ?? []);
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const pathIds = () => props.pathIds ?? [];
+  const pathIds = () => revealPath().length ? revealPath() : (props.pathIds ?? []);
   const expandIds = createMemo(() => {
     const path = pathIds();
     return new Set(path.length > 1 ? path.slice(0, -1) : path);
   });
   createEffect(on(() => filter(), (value) => {
     let alive = true;
+    searchVersion++;
+    onCleanup(() => { alive = false; });
+    setSearchError("");
+    setRanked([]);
     if (value.length < 2) {
       setMatchIds(new Set<string>());
       setMatchCount(null);
       setMatchTruncated(false);
+      setRanked([]);
       return;
     }
     void getKtruFilterMeta(value).then((meta) => {
@@ -310,14 +342,38 @@ export function KtruPickerBody(props: {
       setMatchIds(new Set(meta.matchIds));
       setMatchCount(meta.matchCount);
       setMatchTruncated(meta.truncated);
+    }).catch((cause: unknown) => {
+      if (alive) setSearchError(cause instanceof Error ? cause.message : "Не удалось найти позиции в дереве.");
     });
-    onCleanup(() => { alive = false; });
+    void searchClassifiers(value, 8).then((result) => {
+      if (alive) setRanked(result.okpdKtru);
+    }).catch((cause: unknown) => {
+      if (alive) setSearchError(cause instanceof Error ? cause.message : "Не удалось выполнить поиск по справочникам.");
+    });
   }));
+  const pickRanked = async (hit: NonNullable<ClassifierPairHit["ktru"] | ClassifierPairHit["okpd2"]>) => {
+    const version = ++searchVersion;
+    try {
+      const revealed = await getKtruRevealPath(hit.code);
+      if (version !== searchVersion) return;
+      if (!revealed.node) throw new Error("Позиция не найдена в дереве.");
+      clearTimeout(timer);
+      batch(() => {
+        setDraft(""); setFilter(""); setSearchError("");
+        setRevealPath(revealed.pathIds);
+        props.onSelect(revealed.node!);
+      });
+    } catch (cause) {
+      if (version === searchVersion) setSearchError(cause instanceof Error ? cause.message : "Не удалось открыть позицию.");
+    }
+  };
   const onFilterInput = (value: string) => {
+    searchVersion++;
     setDraft(value);
     clearTimeout(timer);
     timer = setTimeout(() => setFilter(value.trim()), 280);
   };
+  onCleanup(() => clearTimeout(timer));
   return <div class="ktru-picker-body">
     <section class="ktru-panel" aria-label="Дерево КТРУ">
       <div class="ktru-panel-head">
@@ -326,7 +382,27 @@ export function KtruPickerBody(props: {
           <span>{formatNumber(matchCount()!)} совп.{matchTruncated() ? "+" : ""}</span>
         </Show>
       </div>
-      <label class="ktru-filter"><Search size={15} /><input type="search" value={draft()} placeholder="Быстрый поиск по коду или названию…" autocomplete="off" onInput={(event) => onFilterInput(event.currentTarget.value)} /></label>
+      <label class="ktru-filter"><Search size={15} /><input type="search" value={draft()} placeholder="Код, название или синоним…" autocomplete="off" onInput={(event) => onFilterInput(event.currentTarget.value)} /></label>
+      <Show when={searchError()}><p class="dir-search-error" role="alert">{searchError()}</p></Show>
+      <Show when={ranked().length}>
+        <div class="create-choice-list ktru-ranked-hits">
+          <For each={ranked().slice(0, 5)}>{pair => {
+            const hit = pair.ktru || pair.okpd2;
+            if (!hit) return null;
+            return <button
+              type="button"
+              class="create-choice-option"
+              onClick={() => void pickRanked(hit)}
+            >
+              <span class="create-vote-code">{hit.code}</span>
+              <span>{hit.name}</span>
+              <Show when={pair.evidence === "synonym" || pair.evidence === "weak_synonym"}>
+                <span class="create-vote-source">синоним</span>
+              </Show>
+            </button>;
+          }}</For>
+        </div>
+      </Show>
       <div class="ktru-tree" role="tree">
         <TreeBranch
           parentId={null}

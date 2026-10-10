@@ -15,6 +15,7 @@ dependencies = [
     "uvicorn[standard]>=0.32",
     "lmdb>=1.5",
     "pysqlite3-binary>=0.5.4.post2",
+    "pymorphy3>=2.0.6",
 ]
 
 [project.scripts]

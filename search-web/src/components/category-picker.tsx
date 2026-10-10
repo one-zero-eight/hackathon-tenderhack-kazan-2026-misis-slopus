@@ -17,9 +17,18 @@ import {
 } from "~/ui-kit";
 import "./category-picker.css";
 
+function searchTokens(value: string): string[] {
+  return value.toLocaleLowerCase("ru").replaceAll("ё", "е").match(/[\p{L}\p{N}]+/gu) ?? [];
+}
+
+function tokenStem(token: string): string {
+  return token.length > 4 ? token.replace(/(?:иями|ами|ями|ого|ему|ому|ая|яя|ое|ее|ые|ие|ый|ий|ой|ов|ев|ом|ем|ах|ях|а|я|ы|и|у|ю|е|о)$/u, "") : token;
+}
+
 function matchesQuery(node: CategoryTreeNode, query: string) {
-  if (!query) return true;
-  return node.name.toLowerCase().includes(query);
+  const tokens = searchTokens(query);
+  const words = searchTokens(node.name);
+  return tokens.every(token => words.some(word => word.startsWith(token) || tokenStem(word).startsWith(tokenStem(token))));
 }
 
 function TreeNode(props: {
@@ -116,7 +125,7 @@ export function CategoryPicker(props: {
     const ids = new Set<number>();
     const parents = new Set<number>();
     for (const node of props.nodes) {
-      if (!matchesQuery(node, query)) continue;
+      if (node.count <= 0 || !matchesQuery(node, query)) continue;
       ids.add(node.id);
       let parent = node.parentId;
       while (parent != null) {

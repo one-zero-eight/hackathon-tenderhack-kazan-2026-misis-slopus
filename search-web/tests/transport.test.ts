@@ -1,41 +1,33 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { createServer } from "node:http";
-import type { AddressInfo } from "node:net";
 import { apiAutofillCharacteristics, apiCatalogStats, apiGetProduct, apiGetSimilarProducts, apiImageUrl, apiSearchProducts } from "../src/lib/api";
-import { apiSearchProducts as serverSearchProducts } from "../src/lib/server/search-api";
+import { apiCatalogCharacteristics, apiSearchProducts as serverSearchProducts } from "../src/lib/server/search-api";
 import { GET, POST } from "../src/routes/api/search/[...path]";
 import type { APIEvent } from "@solidjs/start/server";
 import { suggestFromNeighbors } from "../src/lib/server/neighbor-suggest";
-import { getCatalogSpecialization, getSoleSpgzForKpgz } from "../src/lib/server/classifiers";
-import { getKtruNodeByCode, getKtruRecord } from "../src/lib/server/ktru-tree";
-import { embedTexts } from "../src/lib/server/embeddings";
-import { DIMENSIONS, DOCUMENT_PROMPT, MODEL_ID, QUERY_PROMPT } from "../src/lib/server/config";
-
-test("cabinet gets the sole active SPGZ schema even when STE neighbors have no SPGZ", async () => {
+test("category suggestions delegate voting and schema assembly to Python once", async () => {
   const originalFetch = globalThis.fetch;
+  const description = "Шкаф металлический, 5 полок";
+  const expected = {
+    neighbors: [],
+    spgz: { code: "1241433623", name: "Шкаф", score: 1, source: "neighbors" },
+    characteristics: [{ id: "width", name: "Ширина", numeric: true, source: "spgz" }],
+    okpdKtruDecision: { needsChoice: false, reason: null, alternatives: [] },
+    kpgzSpgzDecision: { needsChoice: false, reason: null, alternatives: [] },
+  };
+  let calls = 0;
   try {
-    globalThis.fetch = async () => Response.json({ items: [{
-      id: 36311645, name: "Шкаф архивный металлический", score: 0.8,
-      okpd2: "31.01.11.122", kpgzCode: "01.16.07.01.01", spgzId: null,
-      characteristics: [],
-    }] });
-    const draft = await suggestFromNeighbors("Шкаф металлический для медицинских карт, 1200х450х1800 мм (ДхШхВ), 5 полок, замок");
-    assert.equal(draft.spgz?.code, "1241433623");
-    assert.equal(draft.ktru?.code, "31.01.11.122-00000002");
-    for (const name of ["Ширина", "Высота", "Количество полок"]) {
-      assert.equal(draft.characteristics.find(field => field.name === name)?.numeric, true);
-    }
-    assert.ok(draft.characteristics.some(field => field.name === "Требования к фурнитуре"));
-    assert.equal(getSoleSpgzForKpgz("nonexistent"), null);
-    assert.deepEqual(draft.ktruNode, getKtruNodeByCode(draft.ktru!.code));
-    assert.deepEqual(draft.specialization, getCatalogSpecialization({
-      ktruCode: draft.ktru?.code, spgzCode: draft.spgz?.code, kpgzCode: draft.kpgz?.code,
-    }));
-    const templateCode = draft.specialization?.templateKtruCode;
-    assert.deepEqual(draft.templateCharacteristics,
-      templateCode && templateCode !== draft.ktru?.code
-        ? getKtruRecord(templateCode)?.characteristics ?? null : null);
+    globalThis.fetch = async (url, init) => {
+      calls++;
+      assert.ok(String(url).endsWith("/categories/suggest"));
+      assert.equal(init?.method, "POST");
+      assert.deepEqual(JSON.parse(String(init?.body)), { description, force: false });
+      return Response.json(expected);
+    };
+    assert.deepEqual(await suggestFromNeighbors(description), expected);
+    assert.equal(calls, 1);
+    globalThis.fetch = async () => Response.json({ detail: "Нет справочников" }, { status: 503 });
+    await assert.rejects(suggestFromNeighbors(description), { message: "Нет справочников" });
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -46,8 +38,14 @@ test("autofill transport sends the actual schema, supports abort and exposes API
   const controller = new AbortController();
   const input = {
     text: "Молоток 500 г",
-    characteristics: [{ id: "mass", name: "Масса", options: [], optionLabels: {}, ranges: [], unit: "кг", multiple: false, hint: "" }],
+    characteristics: [{
+      id: "mass", name: "Масса", options: [], optionLabels: {}, ranges: [], unit: "кг",
+      numeric: true, multiple: false, required: true, hint: "", source: "ktru" as const, examples: ["0.5", "0.6"],
+    }],
     standards: ["ГОСТ Р 58518-2019"],
+    ktruCode: "25.73-01",
+    additionalAllowed: true,
+    excludedNames: ["Цвет"],
   };
   try {
     globalThis.fetch = async (url, init) => {
@@ -56,10 +54,29 @@ test("autofill transport sends the actual schema, supports abort and exposes API
       assert.equal(init?.signal, controller.signal);
       assert.deepEqual(JSON.parse(String(init?.body)), input);
       assert.ok(!JSON.stringify(init).includes("TYPESAFE_API_KEY"));
-      return Response.json({ characteristics: [{ id: "mass", value: "0.5", rangeOption: "", confidence: 0.9, evidence: "500 г" }], optionProbabilities: {}, model: "jev", durationMs: 100, usage: {} });
+      return Response.json({
+        status: "accepted",
+        characteristics: [{
+          id: "mass", value: "0.5", rangeOption: "", status: "accepted", confidence: 0.9,
+          quote: "500 г", errors: [],
+          evidence: { quote: "500 г", start: 8, end: 13, source: "llm", conversion: { from: "г", to: "кг", factor: 0.001, result: 0.5 } },
+        }],
+        additional_fields: [],
+        additional_allowed: true,
+        product: {
+          model: { name: "Модель", value: null, quote: null, status: "missing", source: null, errors: [], evidence: null },
+          manufacturer: { name: "Производитель", value: null, quote: null, status: "missing", source: null, errors: [], evidence: null },
+          article: { name: "Артикул", value: null, quote: null, status: "missing", source: null, errors: [], evidence: null },
+        },
+        issues: [], threshold: 0.85, filled: 1, total: 1,
+        model: "ggml-org/gemma-4-E4B-it-GGUF:Q8_0", durationMs: 100,
+        usage: { input_tokens: 1, output_tokens: 1 },
+      });
     };
     const result = await apiAutofillCharacteristics(input, controller.signal);
     assert.equal(result.characteristics[0].value, "0.5");
+    assert.equal(result.status, "accepted");
+    assert.equal(result.product.article.status, "missing");
     globalThis.fetch = async () => Response.json({ detail: "TypeSafe API: HTTP 429" }, { status: 502 });
     await assert.rejects(apiAutofillCharacteristics(input), { message: "TypeSafe API: HTTP 429" });
   } finally {
@@ -148,6 +165,47 @@ test("Solid proxy forwards requests, errors and binary images to the server-only
       assert.equal((await GET(proxyEvent(path))).status, 404);
     }
     assert.equal((await POST(proxyEvent("catalog/stats", { method: "POST" }))).status, 404);
+
+    globalThis.fetch = async (url) => {
+      assert.equal(url, "http://127.0.0.1:18070/classifiers/search");
+      return Response.json({ okpdKtru: [], kpgzSpgz: [], hits: [], needsChoice: false });
+    };
+    const classifier = await POST(proxyEvent("classifiers/search", {
+      method: "POST", body: JSON.stringify({ query: "молоток" }),
+      headers: { "Content-Type": "application/json" },
+    }));
+    assert.equal(classifier.status, 200);
+    globalThis.fetch = async (url, init) => {
+      assert.equal(url, "http://127.0.0.1:18070/categories/suggest");
+      assert.deepEqual(JSON.parse(String(init?.body)), { description: "молоток" });
+      return Response.json({ neighbors: [], characteristics: [] });
+    };
+    const suggestion = await POST(proxyEvent("categories/suggest", {
+      method: "POST", body: JSON.stringify({ description: "молоток" }),
+      headers: { "Content-Type": "application/json" },
+    }));
+    assert.equal(suggestion.status, 200);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (previousUrl === undefined) delete process.env.SEARCH_API_URL;
+    else process.env.SEARCH_API_URL = previousUrl;
+  }
+});
+
+test("catalog characteristic transport requests the selected category and exposes errors", async () => {
+  const originalFetch = globalThis.fetch;
+  const previousUrl = process.env.SEARCH_API_URL;
+  process.env.SEARCH_API_URL = "http://127.0.0.1:18070";
+  try {
+    globalThis.fetch = async (url) => {
+      assert.equal(url, "http://127.0.0.1:18070/catalog/characteristics?kpgzCode=01.16.07");
+      return Response.json([{ id: "catalog:color", name: "Цвет" }]);
+    };
+    assert.equal((await apiCatalogCharacteristics("01.16.07"))[0].name, "Цвет");
+    globalThis.fetch = async () => { assert.fail("Empty category should not query all products"); };
+    assert.deepEqual(await apiCatalogCharacteristics(""), []);
+    globalThis.fetch = async () => Response.json({ detail: "Нет каталога" }, { status: 503 });
+    await assert.rejects(apiCatalogCharacteristics("01.16.07"), { message: "Нет каталога" });
   } finally {
     globalThis.fetch = originalFetch;
     if (previousUrl === undefined) delete process.env.SEARCH_API_URL;
@@ -170,36 +228,5 @@ test("server-side neighbor search calls FastAPI directly without a Solid proxy r
     globalThis.fetch = originalFetch;
     if (previousUrl === undefined) delete process.env.SEARCH_API_URL;
     else process.env.SEARCH_API_URL = previousUrl;
-  }
-});
-
-test("meow HTTP transport uses EmbeddingGemma retrieval prompts, task routing, and base64 response", async () => {
-  const requests: { dense_model_id: string; dense_task: string; dense_prompt: string; texts: string[] }[] = [];
-  const server = createServer(async (req, res) => {
-    assert.equal(req.url, "/embed");
-    const chunks: Buffer[] = [];
-    for await (const chunk of req) chunks.push(Buffer.from(chunk));
-    const body = JSON.parse(Buffer.concat(chunks).toString());
-    requests.push(body);
-    const bytes = Buffer.alloc(DIMENSIONS * 4 * body.texts.length);
-    for (let i = 0; i < body.texts.length; i++) bytes.writeFloatLE(1, i * DIMENSIONS * 4);
-    res.setHeader("Content-Type", "application/json");
-    res.end(JSON.stringify({ dense: { model_id: MODEL_ID, dtype: "float32", shape: [body.texts.length, DIMENSIONS], data: bytes.toString("base64") } }));
-  });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const previous = process.env.MEOW_EMBED_URL;
-  process.env.MEOW_EMBED_URL = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
-  try {
-    assert.equal((await embedTexts(["title: товар | text: описание", "title: ещё | text: текст"], "document")).length, 2);
-    assert.equal((await embedTexts(["запрос"], "query"))[0].length, DIMENSIONS * 4);
-    assert.equal(requests[0].dense_model_id, "google/embeddinggemma-2");
-    assert.equal(requests[0].dense_prompt, DOCUMENT_PROMPT);
-    assert.equal(requests[0].dense_task, "document");
-    assert.equal(requests[1].dense_prompt, QUERY_PROMPT);
-    assert.deepEqual(requests[1].texts, ["запрос"]);
-  } finally {
-    if (previous === undefined) delete process.env.MEOW_EMBED_URL;
-    else process.env.MEOW_EMBED_URL = previous;
-    await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
   }
 });

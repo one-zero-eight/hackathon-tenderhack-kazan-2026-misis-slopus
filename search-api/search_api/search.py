@@ -212,7 +212,13 @@ async def run_search(
     return finish(hydrate_hits(page_rows), len(ranked))
 
 
+SIMILAR_RETRIEVAL_K = 16
+SIMILAR_RESULT_LIMIT = 6
+
+
 async def find_similar(product_id: int) -> list[dict]:
+    from search_api.jev_rerank import product_query_text, rerank_products
+
     product = find_product(product_id)
     db = get_db()
     if product is None or not has_vectors(db):
@@ -226,15 +232,17 @@ async def find_similar(product_id: int) -> list[dict]:
     neighbors = db.execute(
         """
         SELECT product_id AS id, distance FROM product_vectors
-        WHERE embedding MATCH ? AND k = 7 ORDER BY distance
+        WHERE embedding MATCH ? AND k = ? ORDER BY distance
         """,
-        (vector,),
+        (vector, SIMILAR_RETRIEVAL_K),
     ).fetchall()
     ranked = [
         {"id": int(r["id"]), "score": 1 - float(r["distance"]), "match": "semantic"}
         for r in neighbors if int(r["id"]) != product_id
-    ][:6]
-    return _hydrate_hits(ranked)
+    ][: SIMILAR_RETRIEVAL_K - 1]
+    hits = _hydrate_hits(ranked)
+    hits = await rerank_products(product_query_text(product), hits, truncate=False)
+    return hits[:SIMILAR_RESULT_LIMIT]
 
 
 def catalog_stats() -> dict:

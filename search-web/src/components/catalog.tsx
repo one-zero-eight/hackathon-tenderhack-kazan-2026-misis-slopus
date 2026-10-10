@@ -1,6 +1,7 @@
 import { A } from "@solidjs/router";
 import AlertCircle from "lucide-solid/icons/alert-circle";
 import ArrowRight from "lucide-solid/icons/arrow-right";
+import ExternalLink from "lucide-solid/icons/external-link";
 import ImageOff from "lucide-solid/icons/image-off";
 import Network from "lucide-solid/icons/network";
 import Package from "lucide-solid/icons/package";
@@ -9,6 +10,7 @@ import Search from "lucide-solid/icons/search";
 import { createEffect, createSignal, ErrorBoundary, For, on, Show, type JSX } from "solid-js";
 import { apiImageUrl } from "~/lib/api";
 import type { DirectoryTab, Product, ProductHit } from "~/lib/types";
+import { ktruEisHref } from "~/lib/utils";
 import { Button, Card, Skeleton, StatePanel } from "~/ui-kit";
 
 export function directoryHref(tab: DirectoryTab, code: string) {
@@ -29,12 +31,15 @@ export function ProductClassifierLinks(props: { product: Pick<Product, "ktruCode
           <span class="ktru-link-name">по ОКПД2 {code()}</span>
         </A>
       }</Show>
-    }>{code =>
+    }>{code => <>
       <A class="ktru-link" href={directoryHref("ktru", code())} title="Открыть в справочнике КТРУ">
         <Network size={13} /><span>КТРУ {code()}</span>
         <Show when={props.product.ktruName}><span class="ktru-link-name">{props.product.ktruName}</span></Show>
       </A>
-    }</Show>
+      <a href={ktruEisHref(code())} target="_blank" rel="noopener noreferrer">
+        <ExternalLink size={13} /><span>Страница в госкаталоге ЕИС</span>
+      </a>
+    </>}</Show>
     <Show when={props.product.okpd2}>{code =>
       <A href={directoryHref("okpd", code())} title="Открыть в справочнике ОКПД2">
         ОКПД2 {code()}

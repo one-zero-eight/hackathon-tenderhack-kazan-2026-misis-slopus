@@ -78,8 +78,72 @@ export type VotedCode = {
   name: string;
   score: number;
   isTemplate?: boolean;
-  /** Разделяющая характеристика варианта шаблона, например «Материал: Дерево». */
+  /** Разделяющие характеристики варианта шаблона, например «Материал: Дерево · Размер: 10». */
   variantLabel?: string | null;
+  /** How the code was proposed: product neighbors, classifier search, or both. */
+  source?: "neighbors" | "classifier" | "both";
+};
+
+export type ClassifierEntryHit = {
+  id: number;
+  kind: "okpd" | "ktru" | "kpgz" | "spgz";
+  code: string;
+  name: string;
+  linkCode: string | null;
+  status: string | null;
+  isTemplate: boolean;
+  isExcluded: boolean;
+  score: number | null;
+  match: string;
+  evidence: string;
+  synonyms: string[];
+  weakSynonyms: string[];
+  rank?: number;
+};
+
+export type ClassifierPairHit = {
+  okpd2?: ClassifierEntryHit | null;
+  ktru?: ClassifierEntryHit | null;
+  kpgz?: ClassifierEntryHit | null;
+  spgz?: ClassifierEntryHit | null;
+  rank: number;
+  evidence: string;
+  sources: string[];
+  ambiguous: boolean;
+  confident: boolean;
+  needsChoice: boolean;
+  reason: string | null;
+};
+
+export type ClassifierSearchResult = {
+  query: string;
+  mode: SearchMode;
+  okpdKtru: ClassifierPairHit[];
+  kpgzSpgz: ClassifierPairHit[];
+  hits: ClassifierEntryHit[];
+  needsChoice: boolean;
+  durationMs: number;
+};
+
+export type CategoryChoiceReason =
+  | "branch_conflict"
+  | "ambiguous_classifier"
+  | "weak_neighbors"
+  | "multiple_candidates";
+
+export type CategoryPairCandidate = {
+  okpd2: VotedCode | null;
+  ktru: VotedCode | null;
+  kpgz: VotedCode | null;
+  spgz: VotedCode | null;
+  sources: ("neighbors" | "classifier")[];
+  reason: string | null;
+};
+
+export type CategoryPairDecision = {
+  needsChoice: boolean;
+  reason: string | null;
+  alternatives: CategoryPairCandidate[];
 };
 
 export type CharacteristicRange = {
@@ -88,6 +152,27 @@ export type CharacteristicRange = {
   max: number | null;
   minInclusive: boolean;
   maxInclusive: boolean;
+};
+
+export type AutofillFieldStatus = "accepted" | "rejected" | "missing";
+
+export type AutofillEvidence = {
+  quote: string;
+  start: number;
+  end: number;
+  source: "llm" | "rules";
+  conversion?: { from: string; to: string; factor: number | null; result: number } | null;
+};
+
+export type AutofillDiagnostics = {
+  status: AutofillFieldStatus;
+  confidence?: number | null;
+  quote?: string | null;
+  errors?: string[];
+  conversion?: { from: string; to: string; result: number; sourceValue: number; factor?: number | null } | null;
+  suggestion?: { value: number; unit: string; converted: number; reason: string } | null;
+  evidence?: AutofillEvidence | null;
+  model?: string;
 };
 
 export type DraftCharacteristic = {
@@ -106,13 +191,14 @@ export type DraftCharacteristic = {
   /** Quantitative schema field, including SPGZ fields without a declared unit. */
   numeric?: boolean;
   multiple: boolean;
-  source: "ktru" | "spgz" | "both" | "custom";
+  source: "ktru" | "spgz" | "both" | "catalog" | "custom";
+  catalogFrequency?: CatalogCharacteristic;
   /** Missing from the selected child position, retained from this KTRU template. */
   templateKtruCode?: string;
   /** Confidence for the current model-filled value; removed on manual edits. */
-  autofill?: { confidence: number; model: string };
-  /** Model estimates for schema options, independent of the manually selected value. */
-  optionProbabilities?: { text: string; values: Record<string, number> };
+  autofill?: { confidence: number; model: string; evidence?: AutofillEvidence | null };
+  /** Last autofill diagnostics for this field, independent of the editable value. */
+  autofillDiagnostics?: AutofillDiagnostics;
   custom?: boolean;
   /** Choice partitions siblings and sets refined KTRU / СПГЗ. */
   refinesKtru?: boolean;
@@ -120,33 +206,107 @@ export type DraftCharacteristic = {
   applyPositionRefine?: boolean;
 };
 
+export type CatalogCharacteristic = {
+  id: string;
+  name: string;
+  /** Morphologically normalized backend identity; display name remains readable. */
+  nameKey?: string;
+  unit: string;
+  numeric: boolean;
+  count: number;
+  total: number;
+  frequency: number;
+  scope: "category" | "adjacent";
+  examples: string[];
+  /** Products with each normalized example, counted once per product. */
+  exampleCounts: Record<string, number>;
+  /** Complete numeric distribution for single-valued products; null when aggregation is unsafe. */
+  numericValueCounts: Record<string, number> | null;
+};
+
 export type CharacteristicAutofillInput = {
   text: string;
-  characteristics: Pick<DraftCharacteristic, "id" | "name" | "options" | "optionLabels" | "ranges" | "unit" | "numeric" | "multiple" | "hint">[];
+  characteristics: (Pick<DraftCharacteristic, "id" | "name" | "options" | "optionLabels" | "ranges" | "unit" | "numeric" | "multiple" | "required" | "hint" | "source"> & { examples?: string[] })[];
   standards: string[];
+  ktruCode?: string | null;
+  additionalAllowed?: boolean | null;
+  excludedNames?: string[];
 };
 
 export type CharacteristicAutofillResult = {
-  characteristics: { id: string; value: string; rangeOption: string; confidence: number; evidence: string }[];
-  optionProbabilities: Record<string, Record<string, number>>;
+  status: "accepted" | "needs_review" | "no_match";
+  characteristics: {
+    id: string;
+    name?: string;
+    value: string | null;
+    rangeOption: string;
+    status: AutofillFieldStatus;
+    confidence: number | null;
+    quote: string | null;
+    errors: string[];
+    source?: string | null;
+    conversion?: AutofillDiagnostics["conversion"];
+    suggestion?: AutofillDiagnostics["suggestion"];
+    evidence?: AutofillEvidence | null;
+  }[];
+  additional_fields: {
+    name: string;
+    value: string | number | null;
+    unit: string | null;
+    quote: string | null;
+    status: AutofillFieldStatus;
+    confidence: number | null;
+    errors: string[];
+    evidence?: AutofillEvidence | null;
+    conversion?: AutofillDiagnostics["conversion"];
+  }[];
+  additional_allowed: boolean | null;
+  product: Record<"model" | "manufacturer" | "article", {
+    name: string;
+    value: string | null;
+    quote: string | null;
+    status: AutofillFieldStatus;
+    source: string | null;
+    errors: string[];
+    evidence?: AutofillEvidence | null;
+  }>;
+  issues: string[];
+  threshold: number;
+  filled: number;
+  total: number;
   model: string;
+  jevModel?: string;
   durationMs: number;
-  usage: { input_tokens: number; output_tokens: number };
+  usage: {
+    input_tokens: number;
+    output_tokens: number;
+    llm?: { input_tokens: number; output_tokens: number };
+    jev?: { input_tokens: number; output_tokens: number };
+  };
 };
 
-export type KtruSpecializationOption = { value: string; code: string; name: string };
+export type SpecializationCharacteristic = {
+  name: string;
+  code: string | null;
+};
+
+/** One sibling position keyed by values of every discriminating characteristic. */
+export type KtruSpecializationOption = {
+  values: Record<string, string>;
+  code: string;
+  name: string;
+};
 
 export type KtruSpecialization = {
   templateCode: string;
   templateName: string;
-  characteristicName: string;
-  characteristicCode: string | null;
+  characteristics: SpecializationCharacteristic[];
   options: KtruSpecializationOption[];
-  currentValue: string | null;
+  currentValues: Record<string, string> | null;
 };
 
 export type CatalogSpecializationOption = {
-  value: string;
+  values: Record<string, string>;
   ktruCode: string | null;
   ktruName: string | null;
   spgzCode: string | null;
@@ -154,12 +314,11 @@ export type CatalogSpecializationOption = {
 };
 
 export type CatalogSpecialization = {
-  characteristicName: string;
-  characteristicCode: string | null;
+  characteristics: SpecializationCharacteristic[];
   templateKtruCode: string | null;
   templateKtruName: string | null;
   options: CatalogSpecializationOption[];
-  currentValue: string | null;
+  currentValues: Record<string, string> | null;
 };
 
 export interface DirTreeNode {
@@ -192,7 +351,7 @@ export interface KtruTreeNode {
   isTemplate: boolean;
   childCount: number;
   hasChildren: boolean;
-  /** Разделяющая характеристика варианта шаблона, например «Материал: Дерево». */
+  /** Разделяющие характеристики варианта шаблона, например «Материал: Дерево · Размер: 10». */
   variantLabel?: string | null;
 }
 

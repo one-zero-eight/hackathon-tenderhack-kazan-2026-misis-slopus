@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 import sqlite3
 
 from search_api.normalize import document_hash, embedding_document
-from search_api.ste_catalog import Product, catalog_paths, get_catalog, reset_catalog
+from search_api.ste_catalog import Product, catalog_paths, get_catalog, iterate_products, reset_catalog
 
 
 def _product_index_fields(product: Product) -> tuple[str, dict[str, str]]:
@@ -28,21 +28,21 @@ def import_products(
 ) -> int:
     paths = catalog_paths()
     reset_catalog()
-    by_id, *_ = get_catalog(paths)
-    products = sorted(by_id.values(), key=lambda p: p.id)
+    get_catalog(paths)
+    conn.execute("DROP TABLE IF EXISTS temp.current_products")
+    conn.execute("CREATE TEMP TABLE current_products(product_id INTEGER PRIMARY KEY)")
 
     upsert_fts = """
         INSERT INTO products_fts(rowid,name,manufacturer,part_number,description,category,characteristics)
         VALUES (?,?,?,?,?,?,?)
     """
     imported = 0
-    batch: list[Product] = []
-
     def flush(items: list[Product]) -> None:
         nonlocal imported
         if not items:
             return
         with conn:
+            conn.executemany("INSERT INTO current_products VALUES(?)", [(p.id,) for p in items])
             for product in items:
                 content_hash, fts = _product_index_fields(product)
                 previous = conn.execute(
@@ -108,25 +108,27 @@ def import_products(
         if on_progress:
             on_progress(imported)
 
-    for product in products:
-        batch.append(product)
-        if len(batch) >= 500:
-            flush(batch)
-            batch = []
-    flush(batch)
+    for batch in iterate_products():
+        flush(batch)
 
-    keep = {product.id for product in products}
-    stale = [
-        int(row["product_id"])
-        for row in conn.execute("SELECT product_id FROM index_state").fetchall()
-        if int(row["product_id"]) not in keep
-    ]
-    if stale:
+    last_stale_id = 0
+    while True:
+        stale = conn.execute("""
+            SELECT product_id FROM index_state
+            WHERE product_id>? AND NOT EXISTS (
+                SELECT 1 FROM current_products c WHERE c.product_id=index_state.product_id
+            ) ORDER BY product_id LIMIT 500
+        """, (last_stale_id,)).fetchall()
+        if not stale:
+            break
+        last_stale_id = int(stale[-1]["product_id"])
         with conn:
-            for product_id in stale:
+            for row in stale:
+                product_id = int(row["product_id"])
                 conn.execute("DELETE FROM products_fts WHERE rowid=?", (product_id,))
                 conn.execute("DELETE FROM product_vectors WHERE product_id=?", (product_id,))
                 conn.execute("DELETE FROM index_state WHERE product_id=?", (product_id,))
+    conn.execute("DROP TABLE current_products")
 
     with conn:
         now = datetime.now(timezone.utc).isoformat()

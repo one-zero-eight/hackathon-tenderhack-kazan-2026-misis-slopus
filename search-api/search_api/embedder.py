@@ -130,7 +130,7 @@ async def embed_pending(
             print("Нечего индексировать.")
             return 0
 
-        print(f"{settings.model_id}: загрузка parquet…", flush=True)
+        print(f"{settings.model_id}: открытие mmap-каталога…", flush=True)
         get_catalog()
         print(
             f"Каталог: {product_count():,} · к эмбеддингу: {target:,} · "

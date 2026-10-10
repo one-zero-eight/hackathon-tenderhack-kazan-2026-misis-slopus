@@ -50,6 +50,18 @@ export class QueryQueue<T> {
     return added;
   }
 
+  /** Drop cached result so the next run() reprocesses (e.g. force after quality gate). */
+  invalidate(text: string): void {
+    const query = normalizeQuery(text);
+    let changed = false;
+    this.entries = this.entries.map((item) => {
+      if (normalizeQuery(item.text) !== query || item.status === "pending") return item;
+      changed = true;
+      return { id: item.id, text: item.text, status: "pending" as const };
+    });
+    if (changed) this.changed(this.entries);
+  }
+
   /** The normal queue is serial; an explicitly selected query starts immediately. */
   run(id: string): Promise<T> {
     const item = this.entries.find((entry) => entry.id === id);

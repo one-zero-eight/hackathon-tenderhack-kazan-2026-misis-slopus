@@ -1,15 +1,23 @@
-import { spawnSync } from "node:child_process";
 import { existsSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { gunzipSync } from "node:zlib";
 import Database from "better-sqlite3";
-import pl from "nodejs-polars";
+import {
+  filterSpecializationOptions,
+  normSpecName,
+  pickDiscriminatingCharacteristics,
+  specializationOptionLabel,
+  specializationValuesKey,
+  type SpecChild,
+} from "../specialization";
 import type {
   CatalogSpecialization,
   CatalogSpecializationOption,
   DirChildrenPage,
   DirectoryTab,
   DirTreeNode,
+  SpecializationCharacteristic,
   VotedCode,
 } from "../types";
 import {
@@ -18,12 +26,16 @@ import {
   okpd2ParquetPath,
   okeiParquetPath,
   spgzParquetPath,
+  searchDatabasePath,
 } from "./config";
-import { getDatabase } from "./database";
 import { getKtruNodeByCode, getKtruRecord, getKtruSpecialization, getSoleTemplateKtruForOkpd, listKtruByOkpd } from "./ktru-tree";
 import { getSteCatalog } from "./ste-catalog";
 
-const CLASSIFIERS_SCHEMA = "classifiers-slim-v2";
+const CLASSIFIERS_SCHEMA = "classifiers-full-v4";
+
+function foldQuery(value: string): string {
+  return value.trim().normalize("NFKC").toLocaleLowerCase("ru-RU").replaceAll("ё", "е").replace(/\s+/g, " ");
+}
 
 export type { DirChildrenPage, DirectoryTab, DirTreeNode };
 
@@ -54,6 +66,7 @@ export interface DirListBlock {
   title: string;
   items: { text: string; href?: string; meta?: string }[];
   collapsible?: boolean;
+  inline?: boolean;
 }
 
 export interface DirRecord {
@@ -90,25 +103,40 @@ function repoRoot(): string {
 function ensureDb(): Database.Database {
   if (db) return db;
   const sqlite = classifiersSqlitePath();
-  const sources = ["okpd2-moy-zakupki.parquet", "pp-kpgz.parquet", "spgz.parquet", "okei.parquet"].map(name => resolve(repoRoot(), "data", name));
-  const mtime = String(Math.trunc(Math.max(...sources.filter(existsSync).map(path => statSync(path).mtimeMs))));
+  const sources = [
+    ["okpd", okpd2ParquetPath()],
+    ["kpgz", kpgzParquetPath()],
+    ["spgz", spgzParquetPath()],
+    ["okei", okeiParquetPath()],
+  ] as const;
+  const command = `uv run --with pyarrow python ${resolve(repoRoot(), "scripts/build_classifiers_sqlite.py")} --output ${JSON.stringify(sqlite)} ${sources.map(([key, path]) => `--${key} ${JSON.stringify(path)}`).join(" ")}`;
+  const rebuildError = () => new Error(`Кэш справочников отсутствует, устарел или несовместим. Постройте его явно: ${command}`);
+  if (sources.some(([, path]) => !existsSync(path))) throw rebuildError();
+  const mtime = String(Math.trunc(Math.max(...sources.map(([, path]) => statSync(path).mtimeMs))));
   const needsBuild = !existsSync(sqlite) || (() => {
     try {
       const probe = new Database(sqlite, { readonly: true, fileMustExist: true });
-      const stored = probe.prepare("SELECT value FROM meta WHERE key='source_mtime_ms'").get() as { value: string } | undefined;
-      const schema = probe.prepare("SELECT value FROM meta WHERE key='schema'").get() as { value: string } | undefined;
-      probe.close();
-      return stored?.value !== mtime || schema?.value !== CLASSIFIERS_SCHEMA;
+      try {
+        const meta = probe.prepare("SELECT value FROM meta WHERE key=?");
+        const value = (key: string) => (meta.get(key) as { value: string } | undefined)?.value;
+        return value("source_mtime_ms") !== mtime || value("schema") !== CLASSIFIERS_SCHEMA
+          || value("lexical_schema") !== "folded-grams-v1" || sources.some(([key, path]) => {
+          const source = value(key);
+          return !source || resolve(repoRoot(), source) !== path
+            || value(`${key}_mtime_ms`) !== String(Math.trunc(statSync(path).mtimeMs));
+        });
+      } finally {
+        probe.close();
+      }
     } catch {
       return true;
     }
   })();
-  if (needsBuild) {
-    const script = resolve(repoRoot(), "scripts/build_classifiers_sqlite.py");
-    const result = spawnSync("uv", ["run", "--with", "pyarrow", "python", script, "--output", sqlite], { cwd: repoRoot(), encoding: "utf8" });
-    if (result.status !== 0) throw new Error(`Не удалось построить кэш справочников: ${result.stderr || result.stdout || "unknown error"}`);
-  }
+  if (needsBuild) throw rebuildError();
   db = new Database(sqlite, { readonly: true, fileMustExist: true });
+  db.pragma("mmap_size = 1073741824");
+  db.pragma("cache_size = -2048");
+  db.pragma("temp_store = FILE");
   db.pragma("query_only = ON");
   return db;
 }
@@ -271,8 +299,9 @@ function listDirectoryChildrenRaw(tab: DirectoryTab, parentId: string): DirTreeN
 }
 
 function buildFilter(tab: DirectoryTab, filter: string) {
-  const q = filter.trim().toLocaleLowerCase("ru-RU");
+  const q = foldQuery(filter);
   if (q.length < 2) return null;
+  const tokens = q.split(/[^\p{L}\p{N}.-]+/u).filter(Boolean);
   const key = `${tab}:${q}`;
   const cached = filterCache.get(key);
   if (cached) return cached;
@@ -303,7 +332,22 @@ function buildFilter(tab: DirectoryTab, filter: string) {
     }
   };
 
-  const like = `%${q.replace(/[%_]/g, "")}%`;
+  const tokenClauses = (tab: string, code: string, columns: string[]) => {
+    if (!tokens.length) return { sql: "1=0", params: [] as string[], order: "id", ranking: [] as string[] };
+    const grams = tokens.map(token => {
+      const points = [...token];
+      const terms = new Set<string>();
+      if (points.length === 1) terms.add(`g${points[0]!.codePointAt(0)!.toString(16).padStart(6, "0")}`);
+      for (let i = 1; i < points.length; i++) terms.add(`g${points[i - 1]!.codePointAt(0)!.toString(16).padStart(6, "0")}${points[i]!.codePointAt(0)!.toString(16).padStart(6, "0")}`);
+      return `(${[...terms].join(" AND ")})`;
+    }).join(" AND ");
+    return {
+      sql: `id IN (SELECT rowid FROM ${tab}_search WHERE ${tab}_search MATCH ?) AND ${tokens.map(() => `(${columns.map(column => `instr(${column},?)>0`).join(" OR ")})`).join(" AND ")}`,
+      params: [grams, ...tokens.flatMap(token => columns.map(() => token))],
+      order: `CASE WHEN ${code}=? THEN 0 WHEN name_fold=? THEN 1 ELSE 2 END, length(name), id`,
+      ranking: [q, q],
+    };
+  };
   const addOkeiAncestors = (id: number) => {
     let current: number | null = id;
     const seen = new Set<number>();
@@ -315,7 +359,10 @@ function buildFilter(tab: DirectoryTab, filter: string) {
     }
   };
   if (tab === "okpd") {
-    const rows = database.prepare("SELECT id FROM okpd WHERE lower(code) LIKE ? OR lower(name) LIKE ? LIMIT ?").all(like, like, FILTER_LIMIT + 1) as { id: number }[];
+    const tokenFilter = tokenClauses("okpd", "code", ["code", "name_fold", "synonyms_fold"]);
+    const rows = database.prepare(
+      `SELECT id FROM okpd WHERE ${tokenFilter.sql} ORDER BY ${tokenFilter.order} LIMIT ?`,
+    ).all(...tokenFilter.params, ...tokenFilter.ranking, FILTER_LIMIT + 1) as { id: number }[];
     truncated = rows.length > FILTER_LIMIT;
     matchCount = truncated ? FILTER_LIMIT : rows.length;
     for (const row of rows.slice(0, FILTER_LIMIT)) {
@@ -323,7 +370,10 @@ function buildFilter(tab: DirectoryTab, filter: string) {
       addOkpdAncestors(row.id);
     }
   } else if (tab === "okei") {
-    const rows = database.prepare("SELECT id FROM okei WHERE lower(coalesce(code,'')) LIKE ? OR lower(name) LIKE ? LIMIT ?").all(like, like, FILTER_LIMIT + 1) as { id: number }[];
+    const tokenFilter = tokenClauses("okei", "coalesce(code,'')", ["coalesce(code,'')", "name_fold"]);
+    const rows = database.prepare(
+      `SELECT id FROM okei WHERE ${tokenFilter.sql} ORDER BY ${tokenFilter.order} LIMIT ?`,
+    ).all(...tokenFilter.params, ...tokenFilter.ranking, FILTER_LIMIT + 1) as { id: number }[];
     truncated = rows.length > FILTER_LIMIT;
     matchCount = truncated ? FILTER_LIMIT : rows.length;
     for (const row of rows.slice(0, FILTER_LIMIT)) {
@@ -331,7 +381,10 @@ function buildFilter(tab: DirectoryTab, filter: string) {
       addOkeiAncestors(row.id);
     }
   } else {
-    const kpgzRows = database.prepare("SELECT id FROM kpgz WHERE lower(code) LIKE ? OR lower(name) LIKE ? LIMIT ?").all(like, like, FILTER_LIMIT + 1) as { id: number }[];
+    const tokenFilter = tokenClauses("kpgz", "code", ["code", "name_fold"]);
+    const kpgzRows = database.prepare(
+      `SELECT id FROM kpgz WHERE ${tokenFilter.sql} ORDER BY ${tokenFilter.order} LIMIT ?`,
+    ).all(...tokenFilter.params, ...tokenFilter.ranking, FILTER_LIMIT + 1) as { id: number }[];
     truncated = kpgzRows.length > FILTER_LIMIT;
     matchCount = Math.min(kpgzRows.length, FILTER_LIMIT);
     for (const row of kpgzRows.slice(0, FILTER_LIMIT)) {
@@ -341,7 +394,12 @@ function buildFilter(tab: DirectoryTab, filter: string) {
     if (tab === "spgz" || tab === "kpgz") {
       const remaining = FILTER_LIMIT - matches.size;
       if (remaining > 0) {
-        const spgzRows = database.prepare("SELECT id, kpgz_external_id AS kpgzExternalId FROM spgz WHERE cast(id AS TEXT) LIKE ? OR lower(name) LIKE ? LIMIT ?").all(like, like, remaining + 1) as { id: number; kpgzExternalId: number | null }[];
+        const spgzToken = tokenClauses("spgz", "cast(id AS TEXT)", ["cast(id AS TEXT)", "name_fold"]);
+        const spgzRows = database.prepare(
+          `SELECT id, kpgz_external_id AS kpgzExternalId FROM spgz
+           WHERE ${spgzToken.sql} ORDER BY ${spgzToken.order}
+           LIMIT ?`,
+        ).all(...spgzToken.params, ...spgzToken.ranking, remaining + 1) as { id: number; kpgzExternalId: number | null }[];
         if (spgzRows.length > remaining) truncated = true;
         matchCount += Math.min(spgzRows.length, remaining);
         const kpgzByExternal = database.prepare("SELECT id FROM kpgz WHERE external_id=?");
@@ -706,7 +764,7 @@ export function getDirectoryRecord(tab: DirectoryTab, code: string): DirRecord |
       });
     }
     if (similar.length) {
-      lists.push({ title: "Похожие названия", items: similar.map(text => ({ text })) });
+      lists.push({ title: "Как ещё ищут", inline: true, items: similar.map(text => ({ text })) });
     }
     return {
       tab, code: row.code, name: row.name,
@@ -831,134 +889,80 @@ export function getDirectoryRecord(tab: DirectoryTab, code: string): DirRecord |
   return null;
 }
 
-const rawParquetCache = new Map<string, ReturnType<typeof pl.scanParquet>>();
-const SPGZ_RAW_COLUMNS = [
-  "id", "name", "kpgzId", "okpd2Code", "okpdCode", "ktruId", "isExcluded", "spgzCharacteristics", "okeis", "descriptions",
-  "auctionProduct", "isStandartProduct", "innovationProduct", "niokr", "applyLifecycle", "allowLimited",
-  "allowTwoStage", "allowCall", "regulationRequired", "art", "project",
-];
-
-function rawParquet(path: string, columns: string[]) {
-  const key = `${path}:${columns.join(",")}`;
-  let frame = rawParquetCache.get(key);
-  if (!frame) {
-    // Cache only the query plan; push predicates/projections down before reading rows.
-    frame = pl.scanParquet(path, { cache: false, lowMemory: true, parallel: "none" }).select(...columns);
-    rawParquetCache.set(key, frame);
-  }
-  return frame;
+function decodeRaw(payload: Buffer): Record<string, unknown> {
+  return JSON.parse(gunzipSync(payload).toString("utf8")) as Record<string, unknown>;
 }
 
 export function getDirectoryRaw(tab: DirectoryTab, code: string): Record<string, unknown> | null {
-  // Full source rows live in parquet; sqlite only keeps tree columns.
-  try {
-    if (tab === "okpd") {
-      const rows = rawParquet(okpd2ParquetPath(), [
-        "id", "code", "name", "parent", "level", "is_actual", "children_count", "comment", "visitors_count", "similar_products", "limitations",
-      ]).filter(pl.col("code").eq(pl.lit(code))).collectSync({ engine: "streaming" }).toRecords();
-      return (rows[0] as Record<string, unknown> | undefined) ?? null;
-    }
-    if (tab === "kpgz") {
-      const rows = rawParquet(kpgzParquetPath(), [
-        "id", "code", "name", "parentId", "externalId", "treeLevel", "isLastLevel", "okpd", "treePath", "innovation",
-      ]).filter(pl.col("code").eq(pl.lit(code))).collectSync({ engine: "streaming" }).toRecords();
-      return (rows[0] as Record<string, unknown> | undefined) ?? null;
-    }
-    if (tab === "spgz") {
-      const id = Number(code);
-      if (!Number.isSafeInteger(id)) return null;
-      if (spgzRawByIdCache.has(id)) return spgzRawByIdCache.get(id)!;
-      const rows = rawParquet(spgzParquetPath(), SPGZ_RAW_COLUMNS)
-        .filter(pl.col("id").eq(pl.lit(id))).collectSync({ engine: "streaming" }).toRecords();
-      const row = (rows[0] as Record<string, unknown> | undefined) ?? null;
-      spgzRawByIdCache.set(id, row);
-      return row;
-    }
-    if (tab === "okei") {
-      const rows = pl.readParquet(okeiParquetPath()).toRecords() as Array<Record<string, unknown>>;
-      const unit = rows.find((row) => row.code != null && String(row.code) === code);
-      if (unit) return unit;
-      // Synthetic section/group codes: s:{razdel} / g:{razdel}:{podrazdel}
-      if (code.startsWith("s:")) {
-        const razdel = code.slice(2);
-        return rows.find((row) => row.code == null && String(row.podrazdel) === "0" && String(row.razdel) === razdel) ?? null;
-      }
-      if (code.startsWith("g:")) {
-        const [, razdel, podrazdel] = code.split(":");
-        return rows.find((row) =>
-          row.code == null && String(row.razdel) === razdel && String(row.podrazdel) === podrazdel) ?? null;
-      }
-      return null;
-    }
-  } catch {
-    return null;
+  if (tab === "ktru") return null;
+  if (tab === "spgz") {
+    const id = Number(code);
+    if (!Number.isSafeInteger(id)) return null;
+    code = String(id);
   }
-  return null;
+  const row = ensureDb().prepare("SELECT payload FROM raw_records WHERE tab=? AND code=?").get(tab, code) as
+    | { payload: Buffer }
+    | undefined;
+  return row ? decodeRaw(row.payload) : null;
 }
 
-let indexedIds: Set<number> | undefined;
-let indexedFingerprint = "";
+const attachedSearchIndexes = new WeakMap<Database.Database, { path: string; identity: string }>();
 
-function indexedProductIds(): Set<number> {
-  const { sqlite } = getDatabase();
-  const hasIndex = sqlite.prepare("SELECT 1 AS ok FROM sqlite_master WHERE type='table' AND name='index_state'").get();
-  const table = hasIndex ? "index_state" : "products";
-  const idColumn = hasIndex ? "product_id" : "id";
-  const fingerprint = `${table}:${(sqlite.prepare(`SELECT count(*) AS n FROM ${table}`).get() as { n: number }).n}`;
-  if (!indexedIds || indexedFingerprint !== fingerprint) {
-    indexedIds = new Set(
-      (sqlite.prepare(`SELECT ${idColumn} AS id FROM ${table}`).all() as { id: number }[]).map((row) => row.id),
-    );
-    indexedFingerprint = fingerprint;
+function indexedCatalogDb(): { database: Database.Database; table: string; idColumn: string } | null {
+  const path = searchDatabasePath();
+  if (!existsSync(path)) return null;
+  const { db: database } = getSteCatalog();
+  const stat = statSync(path, { bigint: true });
+  const identity = `${stat.dev}:${stat.ino}`;
+  const attached = attachedSearchIndexes.get(database);
+  if (attached?.path !== path || attached.identity !== identity) {
+    // Module reloads can reset the cache while the shared connection stays open.
+    const existing = (database.pragma("database_list") as { name: string }[])
+      .some(row => row.name === "directory_search_index");
+    if (existing) database.exec("DETACH DATABASE directory_search_index");
+    // ATTACH inherits SQLITE_OPEN_READONLY from the shared catalog connection.
+    // better-sqlite3 disables URI filenames, so pass the actual filesystem path.
+    database.prepare("ATTACH DATABASE ? AS directory_search_index").run(path);
+    database.pragma("directory_search_index.mmap_size = 1073741824");
+    database.pragma("directory_search_index.cache_size = -2048");
+    attachedSearchIndexes.set(database, { path, identity });
   }
-  return indexedIds;
+  const hasIndex = database.prepare("SELECT 1 FROM directory_search_index.sqlite_master WHERE type='table' AND name='index_state'").get();
+  return hasIndex ? { database, table: "index_state", idColumn: "product_id" } : null;
 }
 
 function listIndexedCatalogProducts(
-  match: (frame: ReturnType<typeof getSteCatalog>["frame"]) => ReturnType<typeof getSteCatalog>["frame"],
+  column: "okpd2" | "kpgz_code" | "unit",
+  values: string[],
   limit: number,
 ): { total: number; items: DirProductHit[] } {
-  const indexed = indexedProductIds();
-  const kpgzName = (code: string) => {
-    if (!code) return "";
-    const row = ensureDb().prepare("SELECT name FROM kpgz WHERE code=? LIMIT 1").get(code) as { name: string } | undefined;
-    return row?.name ?? "";
-  };
-  const rows = match(getSteCatalog().frame)
-    .select("id", "name", "okpd2_code", "production_code", "production_name")
-    .sort(["name", "id"])
-    .toRecords() as {
-    id: number;
-    name: string | null;
-    okpd2_code: string | null;
-    production_code: string | null;
-    production_name: string | null;
-  }[];
-  const hits: DirProductHit[] = [];
-  let total = 0;
-  for (const row of rows) {
-    if (!indexed.has(row.id)) continue;
-    total += 1;
-    if (hits.length >= limit) continue;
-    const kpgzCode = (row.production_code ?? "").trim();
-    hits.push({
-      id: row.id,
-      name: (row.name ?? "").trim(),
-      okpd2: (row.okpd2_code ?? "").trim(),
-      kpgzCode,
-      kpgzName: (row.production_name ?? "").trim() || kpgzName(kpgzCode),
-    });
-  }
-  return { total, items: hits };
+  if (!values.length) return { total: 0, items: [] };
+  const index = indexedCatalogDb();
+  if (!index) return { total: 0, items: [] };
+  const { database, table, idColumn } = index;
+  const where = `p.${column} IN (${values.map(() => "?").join(",")})
+    AND EXISTS (SELECT 1 FROM directory_search_index.${table} idx WHERE idx.${idColumn}=p.id)`;
+  return database.transaction(() => {
+    const total = (database.prepare(`SELECT count(*) AS n FROM main.products p WHERE ${where}`).get(...values) as { n: number }).n;
+    const rows = database.prepare(`
+      SELECT p.id, p.name, p.okpd2, p.kpgz_code AS kpgzCode, p.kpgz_name AS kpgzName
+      FROM main.products p WHERE ${where} ORDER BY p.name, p.id LIMIT ?
+    `).all(...values, Math.max(0, Math.ceil(limit))) as DirProductHit[];
+    return {
+      total,
+      items: rows.map(row => ({
+        ...row,
+        kpgzName: row.kpgzName || (row.kpgzCode
+          ? (ensureDb().prepare("SELECT name FROM kpgz WHERE code=? LIMIT 1").get(row.kpgzCode) as { name: string } | undefined)?.name ?? ""
+          : ""),
+      })),
+    };
+  })();
 }
 
 export function listDirectoryProducts(tab: DirectoryTab, code: string, limit = 24): { total: number; items: DirProductHit[] } {
-  if (tab === "okpd") {
-    return listIndexedCatalogProducts((frame) => frame.filter(pl.col("okpd2_code").eq(pl.lit(code))), limit);
-  }
-  if (tab === "kpgz") {
-    return listIndexedCatalogProducts((frame) => frame.filter(pl.col("production_code").eq(pl.lit(code))), limit);
-  }
+  if (tab === "okpd") return listIndexedCatalogProducts("okpd2", [code], limit);
+  if (tab === "kpgz") return listIndexedCatalogProducts("kpgz_code", [code], limit);
   if (tab === "spgz") {
     const record = getDirectoryRecord("spgz", code);
     const okpd2 = record?.fields.find((field) => field.key === "okpd2")?.value;
@@ -969,21 +973,21 @@ export function listDirectoryProducts(tab: DirectoryTab, code: string, limit = 2
     const unit = ensureDb().prepare("SELECT kind, name FROM okei WHERE code=? LIMIT 1").get(code) as { kind: string; name: string } | undefined;
     if (!unit || unit.kind !== "unit") return { total: 0, items: [] };
     const needle = unit.name.toLocaleLowerCase("ru");
-    return listIndexedCatalogProducts(
-      (frame) => frame.filter(pl.col("okei").str.toLowerCase().eq(pl.lit(needle))),
-      limit,
-    );
+    // SQLite lower()/NOCASE only fold ASCII. Stream distinct units through the
+    // covering unit index, then use indexed equality for matching Cyrillic variants.
+    const values: string[] = [];
+    for (const row of getSteCatalog().db.prepare("SELECT DISTINCT unit FROM products ORDER BY unit").iterate() as Iterable<{ unit: string }>) {
+      if (row.unit.toLocaleLowerCase("ru") === needle) values.push(row.unit);
+    }
+    return listIndexedCatalogProducts("unit", values, limit);
   }
-  // STE parquet almost never stores KTRU in characteristics; full-catalog scan blocked the UI.
-  // Directory KTRU card falls back to products by OKPD2 instead.
+  // Directory KTRU cards fall back to products by OKPD2 instead.
   return { total: 0, items: [] };
 }
 
 const SPGZ_SPEC_SIBLING_LIMIT = 80;
 
-/** Convert only matched SPGZ rows — full-file toRecords() hangs the suggest RPC. */
-const spgzRawByIdCache = new Map<number, Record<string, unknown> | null>();
-const spgzSiblingRowsByKpgz = new Map<number, {
+type SpgzSiblingRow = {
   id: number;
   name: string;
   spgzCharacteristics?: {
@@ -993,33 +997,15 @@ const spgzSiblingRowsByKpgz = new Map<number, {
     characteristicSpgzEnums?: { value?: string }[] | null;
     kpgzCharacteristicId?: number | null;
   }[] | null;
-}[]>();
+};
 
-function loadSpgzSiblingRows(kpgzExternalId: number) {
-  const cached = spgzSiblingRowsByKpgz.get(kpgzExternalId);
-  if (cached) return cached;
-  const rows = rawParquet(spgzParquetPath(), SPGZ_RAW_COLUMNS)
-    .filter(pl.col("kpgzId").eq(pl.lit(kpgzExternalId)))
-    .filter(pl.col("isExcluded").eq(pl.lit(0)))
-    .select("id", "name", "kpgzId", "isExcluded", "spgzCharacteristics")
-    .collectSync({ engine: "streaming" })
-    .toRecords() as {
-    id: number;
-    name: string;
-    spgzCharacteristics?: {
-      characteristicName?: string | null;
-      value1?: string | null;
-      value2?: string | null;
-      characteristicSpgzEnums?: { value?: string }[] | null;
-      kpgzCharacteristicId?: number | null;
-    }[] | null;
-  }[];
-  spgzSiblingRowsByKpgz.set(kpgzExternalId, rows);
-  return rows;
-}
-
-function normSpecName(name: string): string {
-  return name.trim().toLocaleLowerCase("ru").replaceAll("ё", "е");
+function* loadSpgzSiblingRows(kpgzExternalId: number): Generator<SpgzSiblingRow> {
+  const records = ensureDb().prepare(`
+    SELECT raw.payload FROM spgz s
+    JOIN raw_records raw ON raw.tab='spgz' AND raw.code=cast(s.id AS TEXT)
+    WHERE s.kpgz_external_id=? AND s.is_excluded=0
+  `).iterate(kpgzExternalId) as Iterable<{ payload: Buffer }>;
+  for (const row of records) yield decodeRaw(row.payload) as SpgzSiblingRow;
 }
 
 function spgzConcreteCharValues(item: {
@@ -1055,18 +1041,17 @@ function spgzConcreteCharValues(item: {
 }
 
 type SpgzSiblingSpec = {
-  characteristicName: string;
-  characteristicCode: string | null;
-  options: { value: string; code: string; name: string }[];
-  currentValue: string | null;
+  characteristics: SpecializationCharacteristic[];
+  options: { values: Record<string, string>; code: string; name: string }[];
+  currentValues: Record<string, string> | null;
   kpgzCode: string | null;
 };
 
-/** Sibling СПГЗ under one КПГЗ, partitioned by a single concrete characteristic value. */
+/** Sibling СПГЗ under one КПГЗ, partitioned by a compact set of concrete characteristic values. */
 export function getSpgzSpecialization(input: {
   spgzCode?: string | null;
   kpgzCode?: string | null;
-  preferredCharName?: string | null;
+  preferredCharNames?: string[] | null;
 }): SpgzSiblingSpec | null {
   const database = ensureDb();
   let kpgzExternalId: number | null = null;
@@ -1099,70 +1084,53 @@ export function getSpgzSpecialization(input: {
   ).get(kpgzExternalId) as { n: number }).n;
   if (count < 2 || count > SPGZ_SPEC_SIBLING_LIMIT) return null;
 
-  const rows = loadSpgzSiblingRows(kpgzExternalId);
+  const rows = [...loadSpgzSiblingRows(kpgzExternalId)];
 
   if (rows.length < 2) return null;
 
-  const children = rows.map((row) => {
-    const chars = new Map<string, { value: string; code: string | null }>();
+  const children: SpecChild[] = rows.map((row) => {
+    const values = new Map<string, { value: string; code: string | null }>();
     for (const item of row.spgzCharacteristics ?? []) {
       const concrete = spgzConcreteCharValues(item);
       if (!concrete) continue;
-      chars.set(concrete.name, { value: concrete.value, code: concrete.code });
+      values.set(concrete.name, { value: concrete.value, code: concrete.code });
     }
-    return { code: String(row.id), name: row.name || String(row.id), chars };
+    return { code: String(row.id), name: row.name || String(row.id), values };
   });
 
-  const preferred = input.preferredCharName?.trim() || "";
-  const allNames = new Set<string>();
-  for (const child of children) for (const name of child.chars.keys()) allNames.add(name);
+  const picked = pickDiscriminatingCharacteristics(children, {
+    preferredNames: input.preferredCharNames ?? [],
+  });
+  if (!picked) return null;
 
-  const ranked: {
-    name: string;
-    code: string | null;
-    score: number;
-    pairs: { value: string; code: string; name: string }[];
-  }[] = [];
-
-  for (const name of allNames) {
-    const pairs: { value: string; code: string; name: string }[] = [];
-    const seen = new Set<string>();
-    let charCode: string | null = null;
-    let ok = true;
-    for (const child of children) {
-      const entry = child.chars.get(name);
-      if (!entry) {
-        ok = false;
+  const characteristics = picked.characteristics.map(({ name, code }) => ({ name, code }));
+  const options: SpgzSiblingSpec["options"] = [];
+  for (const child of children) {
+    const values: Record<string, string> = {};
+    let complete = true;
+    for (const characteristic of characteristics) {
+      const value = child.values.get(characteristic.name)?.value;
+      if (!value) {
+        complete = false;
         break;
       }
-      if (seen.has(entry.value)) {
-        ok = false;
-        break;
-      }
-      seen.add(entry.value);
-      charCode = entry.code;
-      pairs.push({ value: entry.value, code: child.code, name: child.name });
+      values[characteristic.name] = value;
     }
-    if (!ok || pairs.length !== children.length) continue;
-    let score = 10;
-    if (preferred && normSpecName(name) === normSpecName(preferred)) score += 50;
-    if (/^(тип|вид|назначение)\b/i.test(name)) score += 5;
-    ranked.push({ name, code: charCode, score, pairs });
+    if (!complete) continue;
+    options.push({ code: child.code, name: child.name, values });
   }
-
-  ranked.sort((a, b) => b.score - a.score || a.name.localeCompare(b.name, "ru"));
-  const best = ranked[0];
-  if (!best) return null;
-
-  const options = [...best.pairs].sort((a, b) => a.value.localeCompare(b.value, "ru") || a.code.localeCompare(b.code));
+  if (options.length < 2) return null;
+  options.sort((a, b) =>
+    specializationOptionLabel(characteristics, a.values)
+      .localeCompare(specializationOptionLabel(characteristics, b.values), "ru")
+    || a.code.localeCompare(b.code));
   const current = currentSpgzId != null
     ? options.find((item) => item.code === String(currentSpgzId)) ?? null
     : null;
   return {
-    characteristicName: best.name,
-    characteristicCode: best.code,
+    characteristics,
     options,
-    currentValue: current?.value ?? null,
+    currentValues: current ? { ...current.values } : null,
     kpgzCode,
   };
 }
@@ -1178,6 +1146,15 @@ export function getSoleSpgzForKpgz(kpgzCode: string): { code: string; name: stri
   return rows.length === 1 ? { code: String(rows[0].id), name: rows[0].name } : null;
 }
 
+function sameCharacteristicSet(
+  left: SpecializationCharacteristic[],
+  right: SpecializationCharacteristic[],
+): boolean {
+  if (left.length !== right.length) return false;
+  const rightNames = new Set(right.map((item) => normSpecName(item.name)));
+  return left.every((item) => rightNames.has(normSpecName(item.name)));
+}
+
 export function getCatalogSpecialization(input: {
   ktruCode?: string | null;
   spgzCode?: string | null;
@@ -1187,56 +1164,61 @@ export function getCatalogSpecialization(input: {
   const spgz = getSpgzSpecialization({
     spgzCode: input.spgzCode,
     kpgzCode: input.kpgzCode,
-    preferredCharName: ktru?.characteristicName,
+    preferredCharNames: ktru?.characteristics.map((item) => item.name) ?? null,
   });
   if (!ktru && !spgz) return null;
 
-  const characteristicName = ktru?.characteristicName || spgz!.characteristicName;
-  const byValue = new Map<string, CatalogSpecializationOption>();
+  const characteristics = ktru?.characteristics
+    ?? spgz!.characteristics;
+  const byKey = new Map<string, CatalogSpecializationOption>();
 
-  const touch = (value: string) => {
-    let row = byValue.get(value);
+  const touch = (values: Record<string, string>) => {
+    const key = specializationValuesKey(characteristics, values);
+    let row = byKey.get(key);
     if (!row) {
-      row = { value, ktruCode: null, ktruName: null, spgzCode: null, spgzName: null };
-      byValue.set(value, row);
+      row = { values: { ...values }, ktruCode: null, ktruName: null, spgzCode: null, spgzName: null };
+      byKey.set(key, row);
     }
     return row;
   };
 
-  if (ktru && normSpecName(ktru.characteristicName) === normSpecName(characteristicName)) {
+  if (ktru) {
     for (const option of ktru.options) {
-      const row = touch(option.value);
+      const row = touch(option.values);
       row.ktruCode = option.code;
       row.ktruName = option.name;
     }
   }
-  if (spgz && normSpecName(spgz.characteristicName) === normSpecName(characteristicName)) {
+  if (spgz && (!ktru || sameCharacteristicSet(characteristics, spgz.characteristics))) {
     for (const option of spgz.options) {
-      const row = touch(option.value);
-      row.spgzCode = option.code;
-      row.spgzName = option.name;
-    }
-  } else if (spgz && !ktru) {
-    for (const option of spgz.options) {
-      const row = touch(option.value);
+      const aligned: Record<string, string> = {};
+      for (const characteristic of characteristics) {
+        const key = Object.keys(option.values).find((name) =>
+          normSpecName(name) === normSpecName(characteristic.name));
+        if (!key) continue;
+        aligned[characteristic.name] = option.values[key]!;
+      }
+      if (Object.keys(aligned).length !== characteristics.length) continue;
+      const row = touch(aligned);
       row.spgzCode = option.code;
       row.spgzName = option.name;
     }
   }
 
-  const options = [...byValue.values()]
+  const options = [...byKey.values()]
     .filter((item) => item.ktruCode || item.spgzCode)
-    .sort((a, b) => a.value.localeCompare(b.value, "ru"));
+    .sort((a, b) =>
+      specializationOptionLabel(characteristics, a.values)
+        .localeCompare(specializationOptionLabel(characteristics, b.values), "ru"));
   if (options.length < 2) return null;
 
-  const currentValue = ktru?.currentValue || spgz?.currentValue || null;
+  const currentValues = ktru?.currentValues || spgz?.currentValues || null;
   return {
-    characteristicName,
-    characteristicCode: ktru?.characteristicCode ?? spgz?.characteristicCode ?? null,
+    characteristics,
     templateKtruCode: ktru?.templateCode ?? null,
     templateKtruName: ktru?.templateName ?? null,
     options,
-    currentValue,
+    currentValues,
   };
 }
 
@@ -1353,9 +1335,14 @@ export function resolveProductCategoryVotes(input: {
       const byName = new Map(
         (input.characteristics ?? []).map((item) => [normSpecName(item.name), item.value.trim()]),
       );
-      const steValue = byName.get(normSpecName(spec.characteristicName)) ?? "";
-      const match = steValue
-        ? spec.options.find((option) => normSpecName(option.value) === normSpecName(steValue))
+      const selected: Record<string, string> = {};
+      for (const characteristic of spec.characteristics) {
+        const value = byName.get(normSpecName(characteristic.name)) ?? "";
+        if (value) selected[characteristic.name] = value;
+      }
+      const matches = filterSpecializationOptions(spec.options, selected);
+      const match = matches.length === 1 && Object.keys(selected).length === spec.characteristics.length
+        ? matches[0]!
         : null;
       if (match?.spgzCode) {
         spgz = vote(match.spgzCode, match.spgzName || match.spgzCode);

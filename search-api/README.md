@@ -47,6 +47,13 @@ uv run zakupki-search-index embed --sku-embeddings ../data/sku_embeddings.parque
 | `EMBED_CONCURRENCY` | `4` |
 | `HOST` / `PORT` | `127.0.0.1` / `8070` |
 | `CORS_ORIGINS` | `http://127.0.0.1:3000,http://localhost:3000` |
+| `OPENAI_BASE_URL` | `https://api.innohassle.ru/llama/v1` |
+| `OPENAI_MODEL` | `ggml-org/gemma-4-E4B-it-GGUF:Q8_0` |
+| `OPENAI_TIMEOUT` | `120` |
+| `TYPESAFE_API_KEY` | _(или `secrets/typesafe-token`)_ |
+| `TYPESAFE_BASE_URL` | `https://api.typesafe.ai` |
+| `TYPESAFE_MODEL` | `jev-latest` |
+| `TYPESAFE_CONFIDENCE` | `0.85` |
 
 Пример со ste:
 

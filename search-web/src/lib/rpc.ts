@@ -161,8 +161,20 @@ export const searchKtru = query(async (queryText: string) => {
   return search(queryText);
 }, "ktru-search");
 
-export const suggestFromNeighbors = query(async (description: string) => {
+export const getCatalogCharacteristics = query(async (kpgzCode: string) => {
+  "use server";
+  const { apiCatalogCharacteristics } = await import("./server/search-api");
+  return apiCatalogCharacteristics(kpgzCode);
+}, "catalog-characteristics");
+
+export const suggestFromNeighbors = query(async (description: string, options: { force?: boolean } = {}) => {
   "use server";
   const { suggestFromNeighbors: suggest } = await import("./server/neighbor-suggest");
-  return suggest(description);
+  return suggest(description, options);
 }, "neighbor-suggest");
+
+export const searchClassifiers = query(async (queryText: string, limit = 12) => {
+  "use server";
+  const { apiSearchClassifiers } = await import("./server/search-api");
+  return apiSearchClassifiers({ query: queryText, mode: "hybrid", limit });
+}, "classifier-search");

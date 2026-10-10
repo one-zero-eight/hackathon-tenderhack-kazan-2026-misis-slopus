@@ -1,8 +1,74 @@
-import { isRangeCharacteristic, matchNumberToRange, parseCharacteristicNumber } from "./characteristic-options";
-import type { DraftCharacteristic } from "./types";
+import { isRangeCharacteristic, matchCharacteristicOption, matchNumberToRange, parseCharacteristicNumber, shortUnitName } from "./characteristic-options";
+import type { CatalogCharacteristic, DraftCharacteristic } from "./types";
 
 function normName(name: string): string {
-  return name.trim().toLocaleLowerCase("ru").replaceAll("ё", "е");
+  return name.normalize("NFKC").toLocaleLowerCase("ru").replaceAll("ё", "е")
+    .replace(/[\s_,;:!?"'«»„“”()\[\]{}]+/g, " ").trim().replace(/^[ .]+|[ .]+$/g, "");
+}
+
+/** Observed catalog values are examples, not an exhaustive schema or product facts. */
+export function appendCatalogCharacteristics(
+  fields: DraftCharacteristic[], statistics: CatalogCharacteristic[], previous: DraftCharacteristic[] = [],
+): DraftCharacteristic[] {
+  const base = fields.filter((item) => item.source !== "catalog").map((field) => {
+    if (field.custom || field.source === "custom") return field;
+    const stats = statistics.find((item) => normName(item.name) === normName(field.name)
+      && shortUnitName(item.unit) === shortUnitName(field.unit));
+    if (!stats && !field.catalogFrequency) return field;
+    return { ...field, catalogFrequency: stats };
+  });
+  const names = new Set(base.map((item) => normName(item.name)));
+  const identities = new Set<string>();
+  const added: DraftCharacteristic[] = [];
+  for (const item of statistics) {
+    const key = normName(item.name);
+    const identity = `${item.nameKey ?? key}\0${item.unit}`;
+    if (names.has(key) || identities.has(identity)) continue;
+    identities.add(identity);
+    const prior = previous.find((field) => field.source === "catalog"
+      && (field.id === item.id || (normName(field.name) === key && field.unit === item.unit)));
+    added.push({
+      id: item.id, name: item.name, unit: item.unit, numeric: item.numeric,
+      value: prior?.value ?? "", rangeOption: "", required: false, badges: [],
+      options: [], optionLabels: {}, ranges: [], multiple: false, source: "catalog",
+      hint: "", catalogFrequency: item,
+      autofill: prior?.autofill, autofillDiagnostics: prior?.autofillDiagnostics,
+    });
+  }
+  return [...base, ...added];
+}
+
+export function catalogOptionPopularity(field: DraftCharacteristic, option: string): { count: number; total: number; percent: number } | undefined {
+  const stats = field.catalogFrequency;
+  if (!stats) return undefined;
+  if (option === "-") {
+    if (!stats.total) return undefined;
+    const count = stats.total - stats.count;
+    return { count, total: stats.total, percent: Math.round(count / stats.total * 100) };
+  }
+  if (!stats.count) return undefined;
+  if (isRangeCharacteristic(field)) {
+    if (!stats.numericValueCounts) return undefined;
+    const range = field.ranges.find((entry) => entry.option === option);
+    if (!range) return undefined;
+    const count = Object.entries(stats.numericValueCounts).reduce((sum, [value, products]) => {
+      const number = Number(value);
+      return sum + (matchNumberToRange(number, [range]) === option ? products : 0);
+    }, 0);
+    return { count, total: stats.count, percent: Math.round(count / stats.count * 100) };
+  }
+  const labels = field.options.map((value) => field.optionLabels[value] || value);
+  const label = field.optionLabels[option] || option;
+  const matches = Object.entries(stats.exampleCounts).filter(([value]) => matchCharacteristicOption(value, labels) === label);
+  // Multiple distinct catalog values can occur on the same product; don't sum overlapping votes.
+  if (matches.length !== 1) return undefined;
+  const count = matches[0][1];
+  return { count, total: stats.count, percent: Math.round(count / stats.count * 100) };
+}
+
+export function catalogFrequencyLabel(item: CatalogCharacteristic): string {
+  const scope = item.scope === "category" ? "этой категории и её подкатегорий" : "смежных категорий";
+  return `Встречается у ${item.count} из ${item.total} товаров ${scope} (${Math.round(item.frequency * 100)}%).`;
 }
 
 /** Canonical key for option equality (ranges across KTRU/SPGZ formats). */
@@ -32,8 +98,14 @@ export function optionsEquivalent(a: string[], b: string[]): boolean {
 }
 
 export function schemaEquivalent(a: DraftCharacteristic, b: DraftCharacteristic): boolean {
+  if (a.source === "catalog" && b.source === "catalog") return a.id === b.id && a.unit === b.unit;
   if (normName(a.name) !== normName(b.name)) return false;
-  return optionsEquivalent(a.options ?? [], b.options ?? []);
+  if (shortUnitName(a.unit) !== shortUnitName(b.unit)) return false;
+  if (!!a.numeric !== !!b.numeric) return false;
+  if (!!a.multiple !== !!b.multiple) return false;
+  if (!optionsEquivalent(a.options ?? [], b.options ?? [])) return false;
+  if ((a.ranges?.length ?? 0) !== (b.ranges?.length ?? 0)) return false;
+  return true;
 }
 
 export function mapValueToOptions(value: string, options: string[]): string {
@@ -41,18 +113,6 @@ export function mapValueToOptions(value: string, options: string[]): string {
   if (!raw || !options.length) return raw;
   const key = normalizeOptionKey(raw);
   return options.find((option) => normalizeOptionKey(option) === key) ?? raw;
-}
-
-export function mapOptionProbabilities(
-  probabilities: DraftCharacteristic["optionProbabilities"], options: string[],
-): DraftCharacteristic["optionProbabilities"] {
-  if (!probabilities) return undefined;
-  const values: Record<string, number> = {};
-  for (const option of options) {
-    const match = Object.keys(probabilities.values).find((value) => normalizeOptionKey(value) === normalizeOptionKey(option));
-    if (match !== undefined) values[option] = probabilities.values[match];
-  }
-  return { text: probabilities.text, values };
 }
 
 export type DisplayCharacteristic = DraftCharacteristic & {
@@ -83,11 +143,12 @@ function mergePair(ktru: DraftCharacteristic, spgz: DraftCharacteristic): Displa
     value,
     rangeOption,
     autofill: ktru.value.trim() || ktru.rangeOption.trim() ? ktru.autofill : spgz.autofill,
-    optionProbabilities: mapOptionProbabilities(ktru.optionProbabilities ?? spgz.optionProbabilities, ktru.options),
+    autofillDiagnostics: ktru.autofillDiagnostics ?? spgz.autofillDiagnostics,
     required: ktru.required || spgz.required,
     multiple: ktru.multiple || spgz.multiple,
     numeric: ktru.numeric || spgz.numeric,
     source: "both",
+    catalogFrequency: ktru.catalogFrequency ?? spgz.catalogFrequency,
     hint: ktru.hint || spgz.hint,
     linkedIds: [ktru.id, spgz.id],
   };
@@ -126,6 +187,10 @@ export function buildDisplayCharacteristics(items: DraftCharacteristic[]): Displ
 
   const ordered = [
     ...catalog,
+    ...items.filter((item) => item.source === "catalog" && !item.custom
+      && !catalog.some((field) => normName(field.name) === normName(item.name))
+      && !custom.some((field) => normName(field.name) === normName(item.name)))
+      .map((item) => ({ ...item, linkedIds: [item.id] })),
     ...custom.map((item) => ({ ...item, linkedIds: [item.id] })),
   ];
   return [
@@ -162,6 +227,7 @@ export function characteristicSourceLabel(source: DraftCharacteristic["source"],
   switch (source) {
     case "both": return "из КТРУ, СПГЗ";
     case "spgz": return "из СПГЗ";
+    case "catalog": return "из каталога";
     case "custom": return "доп.";
     default: return "из КТРУ";
   }

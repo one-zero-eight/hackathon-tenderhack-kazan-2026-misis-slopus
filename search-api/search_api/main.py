@@ -5,12 +5,13 @@ import logging
 import time
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from pydantic import BaseModel
 
 from search_api import search as search_mod
+from search_api.catalog_characteristics import frequent_catalog_characteristics
 from search_api.characteristic_autofill import (
     AutofillConfigError, AutofillError, AutofillRequest, autofill_characteristics,
 )
@@ -74,6 +75,14 @@ def catalog_category_diagnostics():
         raise HTTPException(503, str(exc)) from exc
 
 
+@app.get("/catalog/characteristics")
+def catalog_characteristics(kpgzCode: str = Query(min_length=1, max_length=100)):
+    try:
+        return frequent_catalog_characteristics(kpgzCode)
+    except FileNotFoundError as exc:
+        raise HTTPException(503, str(exc)) from exc
+
+
 @app.post("/catalog/search")
 async def catalog_search(body: SearchBody):
     try:
@@ -83,6 +92,43 @@ async def catalog_search(body: SearchBody):
             page=body.page,
             category_id=body.categoryId,
         )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(503, str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(503, str(exc)) from exc
+
+
+class CategorySuggestionBody(BaseModel):
+    description: str
+    force: bool = False
+
+
+@app.post("/categories/suggest")
+async def categories_suggest(body: CategorySuggestionBody):
+    from search_api.category_suggestion import suggest_categories
+
+    try:
+        return await suggest_categories(body.description, force=body.force)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except (FileNotFoundError, RuntimeError) as exc:
+        raise HTTPException(503, str(exc)) from exc
+
+
+class ClassifierSearchBody(BaseModel):
+    query: str = ""
+    mode: str = "hybrid"
+    limit: int = 20
+
+
+@app.post("/classifiers/search")
+async def classifiers_search(body: ClassifierSearchBody):
+    from search_api.classifier_search import search_classifiers
+
+    try:
+        return await search_classifiers(query=body.query, mode=body.mode, limit=body.limit)  # type: ignore[arg-type]
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     except FileNotFoundError as exc:

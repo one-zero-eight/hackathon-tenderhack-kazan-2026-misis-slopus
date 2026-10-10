@@ -97,7 +97,7 @@ def test_missing_sku_fails(tmp_path):
                 cached_sku_vectors(transaction, [1])
 
 
-def test_parquet_sku_store_roundtrip(tmp_path):
+def test_parquet_sku_store_roundtrip(tmp_path, monkeypatch):
     import pyarrow as pa
     import pyarrow.parquet as pq
 
@@ -110,5 +110,19 @@ def test_parquet_sku_store_roundtrip(tmp_path):
         }),
         path,
     )
+    monkeypatch.setattr(settings, "catalog_database", tmp_path / "catalog.sqlite")
     store = ParquetSkuVectorStore.load(path)
-    assert store.get_vectors([7]) == [vector.astype("<f4").tobytes()]
+    try:
+        assert len(store) == 1
+        assert store._db.execute("PRAGMA mmap_size").fetchone()[0] > 0
+        assert store.get_vectors([7, 7]) == [vector.astype("<f4").tobytes()] * 2
+        with pytest.raises(RuntimeError, match="Нет эмбеддинга"):
+            store.get_vectors([8])
+    finally:
+        store.close()
+    monkeypatch.setattr(pq, "ParquetFile", lambda *a, **kw: pytest.fail("cached vectors must not reread parquet"))
+    store = ParquetSkuVectorStore.load(path)
+    try:
+        assert store.get_vectors([7]) == [vector.astype("<f4").tobytes()]
+    finally:
+        store.close()

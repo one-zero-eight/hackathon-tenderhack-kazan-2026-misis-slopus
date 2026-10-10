@@ -1,12 +1,40 @@
 import { A } from "@solidjs/router";
 import ClipboardList from "lucide-solid/icons/clipboard-list";
-import { Show } from "solid-js";
+import { For, Show } from "solid-js";
 import { directoryHref } from "~/components/catalog";
-import type { VotedCode } from "~/lib/types";
+import type { CategoryPairCandidate, CategoryPairDecision, VotedCode } from "~/lib/types";
 import { Button } from "~/ui-kit";
 import "~/routes/create-product.css";
 
-function VoteRow(props: { label: string; tab: "okpd" | "ktru" | "kpgz" | "spgz"; vote: VotedCode | null | undefined; highlighted?: boolean; previousVote?: VotedCode | null }) {
+function sourceLabel(source: VotedCode["source"] | undefined): string | null {
+  if (source === "neighbors") return "по товарам";
+  if (source === "classifier") return "по названию/синонимам";
+  if (source === "both") return "обе ветки";
+  return null;
+}
+
+function choiceMessage(reason: string | null | undefined): string {
+  switch (reason) {
+    case "branch_conflict":
+      return "Ветки поиска предложили разные коды — выберите подходящий вариант.";
+    case "ambiguous_classifier":
+      return "По справочникам несколько близких вариантов — выберите один.";
+    case "weak_neighbors":
+      return "Похожие товары слабо релевантны — подтвердите категорию.";
+    case "multiple_candidates":
+      return "Несколько равноправных вариантов — выберите категорию.";
+    default:
+      return "Выберите категорию из предложенных вариантов.";
+  }
+}
+
+function VoteRow(props: {
+  label: string;
+  tab: "okpd" | "ktru" | "kpgz" | "spgz";
+  vote: VotedCode | null | undefined;
+  highlighted?: boolean;
+  previousVote?: VotedCode | null;
+}) {
   return <Show when={props.vote} fallback={
     <div>
       <dt>{props.label}</dt>
@@ -25,6 +53,9 @@ function VoteRow(props: { label: string; tab: "okpd" | "ktru" | "kpgz" | "spgz";
             {vote().name}
             <Show when={props.tab === "ktru" && vote().isTemplate}>{" "}(Шаблон)</Show>
           </span>
+          <Show when={sourceLabel(vote().source)}>{label =>
+            <span class="create-vote-source">{label()}</span>
+          }</Show>
         </div>
         <Show when={props.tab === "ktru" && vote().variantLabel}>
           <div class="create-vote-value-meta">
@@ -48,6 +79,34 @@ function VoteRow(props: { label: string; tab: "okpd" | "ktru" | "kpgz" | "spgz";
   }</Show>;
 }
 
+function PairChoices(props: {
+  decision?: CategoryPairDecision | null;
+  parent: "okpd2" | "kpgz";
+  child: "ktru" | "spgz";
+  onPick?: (pair: CategoryPairCandidate) => void;
+}) {
+  const labels = { okpd2: "ОКПД2", ktru: "КТРУ", kpgz: "КПГЗ", spgz: "СПГЗ" };
+  return <Show when={props.decision?.needsChoice}>
+    <p class="create-live-hint create-choice-hint" role="status">{choiceMessage(props.decision?.reason)}</p>
+    <div class="create-choice-list">
+      <For each={props.decision?.alternatives ?? []}>{pair =>
+        <button type="button" class="create-choice-option create-choice-pair" onClick={() => props.onPick?.(pair)}>
+          <For each={[props.parent, props.child]}>{key =>
+            <span class="create-choice-pair-row">
+              <span class="create-choice-pair-label">{labels[key]}</span>
+              <span class="create-vote-code">{pair[key]?.code ?? "—"}</span>
+              <span>{pair[key]?.name ?? "Без позиции"}</span>
+            </span>
+          }</For>
+          <Show when={pair.sources.length}>
+            <span class="create-vote-source">{pair.sources.map(source => sourceLabel(source)).join(" · ")}</span>
+          </Show>
+        </button>
+      }</For>
+    </div>
+  </Show>;
+}
+
 export function CategoryPairs(props: {
   okpd2: VotedCode | null;
   ktru: VotedCode | null;
@@ -59,6 +118,10 @@ export function CategoryPairs(props: {
   previousSpgz?: VotedCode | null;
   onEditKtru?: () => void;
   onEditSpgz?: () => void;
+  okpdKtruDecision?: CategoryPairDecision | null;
+  kpgzSpgzDecision?: CategoryPairDecision | null;
+  onPickOkpdKtru?: (pair: CategoryPairCandidate) => void;
+  onPickKpgzSpgz?: (pair: CategoryPairCandidate) => void;
   class?: string;
 }) {
   return <div class={`create-vote-card ${props.class ?? ""}`.trim()}>
@@ -73,10 +136,11 @@ export function CategoryPairs(props: {
         <VoteRow label="ОКПД2" tab="okpd" vote={props.okpd2} />
         <VoteRow label="КТРУ" tab="ktru" vote={props.ktru} highlighted={props.highlightedKtru} previousVote={props.previousKtru} />
       </dl>
+      <PairChoices decision={props.okpdKtruDecision} parent="okpd2" child="ktru" onPick={props.onPickOkpdKtru} />
     </div>
     <div class="create-vote-group">
       <div class="create-vote-group-head">
-        <h3>КПГЗ и СПГЗ</h3>
+        <h3>Из каталога Портала Поставщиков</h3>
         <Show when={props.onEditSpgz}>{(edit) =>
           <Button type="button" variant="outline" size="xs" onClick={edit()}><ClipboardList size={12} />Изменить</Button>
         }</Show>
@@ -85,6 +149,7 @@ export function CategoryPairs(props: {
         <VoteRow label="КПГЗ" tab="kpgz" vote={props.kpgz} />
         <VoteRow label="СПГЗ" tab="spgz" vote={props.spgz} highlighted={props.highlightedSpgz} previousVote={props.previousSpgz} />
       </dl>
+      <PairChoices decision={props.kpgzSpgzDecision} parent="kpgz" child="spgz" onPick={props.onPickKpgzSpgz} />
     </div>
   </div>;
 }

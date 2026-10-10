@@ -26,7 +26,7 @@ export function draftFromSpgzCharacteristic(
     rangeOption: "",
     required,
     badges,
-    hint: item.value && item.value !== "—" ? `Ограничение СПГЗ: ${item.value}` : "",
+    hint: !options.length && item.value && item.value !== "—" ? `Ограничение СПГЗ: ${item.value}` : "",
     options,
     optionLabels: {},
     ranges: [],
