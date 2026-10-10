@@ -35,13 +35,16 @@ export const getKtruRecord = query(async (code: string) => {
   const record = load(code);
   if (!record) return null;
   const reverse = reverseLinksFor("ktru", code, record.okpd2?.code ?? "");
-  return {
-    ...record,
-    links: record.okpd2
+  const links = [
+    ...(record.okpd2
       ? [{ tab: "okpd" as const, code: record.okpd2.code, label: `ОКПД2 ${record.okpd2.code}${record.okpd2.name ? ` — ${record.okpd2.name}` : ""}` }]
-      : [],
-    ...reverse,
-  };
+      : []),
+    ...(record.parent
+      ? [{ tab: "ktru" as const, code: record.parent.code, label: `КТРУ (родитель) ${record.parent.code}${record.parent.version ? ` · v${record.parent.version}` : ""}` }]
+      : []),
+    ...record.units.map(unit => ({ tab: "okei" as const, code: unit.code, label: `ОКЕИ ${unit.code} — ${unit.name}` })),
+  ];
+  return { ...record, links, ...reverse };
 }, "ktru-record");
 
 export const getKtruRaw = query(async (code: string) => {

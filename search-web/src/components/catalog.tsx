@@ -6,7 +6,8 @@ import type { DirectoryTab, Product, ProductHit } from "~/lib/types";
 import { Badge, Button, Card, Skeleton, StatePanel } from "~/ui-kit";
 
 export function directoryHref(tab: DirectoryTab, code: string) {
-  return `/directories?tab=${tab}&code=${encodeURIComponent(code)}`;
+  const resolved = tab === "spgz" ? "kpgz" : tab === "okpd" ? "ktru" : tab;
+  return `/directories?tab=${resolved}&code=${encodeURIComponent(code)}`;
 }
 
 export function ktruTreeHref(code: string) {

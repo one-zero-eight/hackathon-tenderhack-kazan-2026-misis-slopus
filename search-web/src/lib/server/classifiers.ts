@@ -26,11 +26,35 @@ export interface DirCrossLink {
   label: string;
 }
 
+export interface DirCharacteristicPart {
+  text: string;
+  okeiCode?: string;
+  okeiName?: string;
+}
+
+export interface DirCharacteristic {
+  name: string;
+  value: string;
+  required?: boolean;
+  badges?: string[];
+  code?: string;
+  parts?: DirCharacteristicPart[];
+}
+
+export interface DirListBlock {
+  title: string;
+  items: { text: string; href?: string; meta?: string }[];
+  collapsible?: boolean;
+}
+
 export interface DirRecord {
   tab: DirectoryTab;
   code: string;
   name: string;
-  fields: { key: string; label: string; value: string }[];
+  fields: { key: string; label: string; value: string; href?: string }[];
+  description?: string;
+  characteristics: DirCharacteristic[];
+  lists?: DirListBlock[];
   links: DirCrossLink[];
   backlinks: DirCrossLink[];
   backlinksMore: number;
@@ -337,8 +361,9 @@ export function getDirectoryNode(tab: DirectoryTab, code: string): DirTreeNode |
   }
   if (tab === "kpgz") {
     const row = database.prepare("SELECT id, code, name FROM kpgz WHERE code=? LIMIT 1").get(code) as { id: number; code: string; name: string } | undefined;
-    if (!row) return null;
-    return { id: `kpgz:${row.id}`, code: row.code, name: row.name, kind: "kpgz", childCount: 1, hasChildren: true };
+    if (row) return { id: `kpgz:${row.id}`, code: row.code, name: row.name, kind: "kpgz", childCount: 1, hasChildren: true };
+    // Unified КПГЗ/СПГЗ tab: numeric codes are SPGZ ids.
+    return getDirectoryNode("spgz", code);
   }
   if (tab === "spgz") {
     const id = Number(code);
@@ -379,6 +404,7 @@ export function getDirectoryRevealPath(tab: DirectoryTab, code: string): { node:
   if (tab === "kpgz") {
     const pathIds: string[] = [];
     let current = database.prepare("SELECT id, parent_id AS parentId FROM kpgz WHERE code=? LIMIT 1").get(code) as { id: number; parentId: number | null } | undefined;
+    if (!current) return getDirectoryRevealPath("spgz", code);
     const seen = new Set<number>();
     while (current && !seen.has(current.id)) {
       seen.add(current.id);
@@ -472,6 +498,167 @@ export function reverseLinksFor(tab: DirectoryTab, code: string, okpdCode = ""):
   return { backlinks, backlinksMore: more.n };
 }
 
+/** EAIST numeric math-notation ids used in SPGZ characteristics. */
+function spgzMathOp(code: string | number | null | undefined): string {
+  switch (Number(code)) {
+    case 3: return ">";
+    case 4: return "<";
+    case 6: return "≥";
+    case 7: return "≤";
+    default: return "";
+  }
+}
+
+/** Short national labels for common OKEI codes (full names stay in the ОКЕИ field). */
+const OKEI_SHORT: Record<string, string> = {
+  "003": "мм", "004": "см", "005": "дм", "006": "м", "008": "км",
+  "055": "м²", "059": "га",
+  "111": "мл", "112": "л", "113": "м³", "116": "мл",
+  "161": "мг", "163": "г", "166": "кг", "168": "т", "206": "ц",
+  "214": "Вт", "215": "кВт", "222": "В", "226": "А",
+  "356": "ч", "359": "сут", "362": "мес", "366": "г",
+  "796": "шт", "778": "упак", "839": "компл",
+};
+
+function okeiShort(code: string, fullName?: string): string {
+  if (OKEI_SHORT[code]) return OKEI_SHORT[code];
+  const base = (fullName || "").split(";")[0].trim().toLocaleLowerCase("ru-RU");
+  return base || code;
+}
+
+type SpgzOkeiRef = { id?: number; code?: string | number | null };
+
+function resolveSpgzOkeis(refs: SpgzOkeiRef[] | null | undefined): { code: string; name: string; short: string }[] {
+  if (!Array.isArray(refs) || !refs.length) return [];
+  const database = ensureDb();
+  const out: { code: string; name: string; short: string }[] = [];
+  const seen = new Set<string>();
+  for (const ref of refs) {
+    const code = String(ref?.code ?? "").trim();
+    if (!code || seen.has(code)) continue;
+    seen.add(code);
+    const row = database.prepare("SELECT name FROM okei WHERE code=? AND kind='unit' LIMIT 1").get(code) as { name: string } | undefined;
+    const name = row?.name?.split(";")[0].trim() || code;
+    out.push({ code, name, short: okeiShort(code, name) });
+  }
+  return out;
+}
+
+/** Pick position OKEI only when it matches the characteristic dimension (per-char units are absent in SPGZ export). */
+function unitForSpgzCharacteristic(name: string, okeis: { code: string; short: string }[]): string {
+  if (!okeis.length) return "";
+  const n = name.toLocaleLowerCase("ru-RU");
+  const mass = /масс|вес|нетто|брутто/.test(n);
+  const length = /длин|ширин|высот|толщин|диаметр|глубин|радиус|пролёт|пролет/.test(n);
+  const area = /площад/.test(n);
+  const volume = /объ[её]м|ёмкост|емкост/.test(n);
+  const power = /мощност/.test(n);
+  const time = /время|срок|продолжительн|возраст/.test(n);
+  const count = /количество|число|кол-во/.test(n);
+  const pick = (allowed: string[]) => okeis.find(item => allowed.includes(item.code))?.short || "";
+  if (mass) return pick(["161", "163", "166", "168", "206"]);
+  if (length) return pick(["003", "004", "005", "006", "008", "018"]);
+  if (area) return pick(["055", "059", "058", "061"]);
+  if (volume) return pick(["111", "112", "113", "116", "118"]);
+  if (power) return pick(["214", "215", "216"]);
+  if (time) return pick(["354", "355", "356", "359", "360", "362", "366"]);
+  if (count) return pick(["796", "778", "839", "868", "875", "876"]);
+  return "";
+}
+
+function spgzConditionLabel(conditionTypeId: number | null | undefined): string {
+  switch (Number(conditionTypeId)) {
+    case 1: return "без ограничения значения";
+    case 3: return "больше";
+    case 4: return "меньше";
+    case 5: return "диапазон";
+    case 6: return "не менее";
+    case 7: return "не более";
+    case 8: return "перечень значений";
+    default: return "";
+  }
+}
+
+function formatSpgzCharacteristic(item: {
+  characteristicName?: string;
+  value1?: string | null;
+  value2?: string | null;
+  valueTypeId?: number | null;
+  conditionTypeId?: number | null;
+  catalogTypeId?: number | null;
+  catalogVariantId?: number | null;
+  minMathNotation?: string | number | null;
+  maxMathNotation?: string | number | null;
+  characteristicSpgzEnums?: { value?: string }[] | null;
+  codeCharKTRU?: string | null;
+  kpgzCharacteristicId?: number | null;
+}, okeis: { code: string; name: string; short: string }[] = []): DirCharacteristic | null {
+  const name = String(item.characteristicName ?? "").trim();
+  if (!name) return null;
+  const badges: string[] = [];
+  if (item.valueTypeId === 1) badges.push("количественная");
+  if (item.valueTypeId === 5) badges.push("качественная");
+  const condition = spgzConditionLabel(item.conditionTypeId);
+  if (condition) badges.push(condition);
+  if (item.catalogVariantId === 1) badges.push("обязательная для описания");
+  if (item.catalogVariantId === 2) badges.push("выбираемая");
+  if (item.codeCharKTRU) badges.push(`КТРУ ${item.codeCharKTRU}`);
+
+  const unitCode = (() => {
+    const short = unitForSpgzCharacteristic(name, okeis);
+    return okeis.find(item => item.short === short)?.code || "";
+  })();
+  const unitMeta = unitCode ? okeis.find(item => item.code === unitCode) : undefined;
+  const unitShort = unitMeta?.short || "";
+  const withUnit = (value: string) => (unitShort ? `${value} ${unitShort}` : value);
+
+  const enums = (item.characteristicSpgzEnums ?? []).map(entry => String(entry.value ?? "").trim()).filter(Boolean);
+  if (enums.length) {
+    return {
+      name,
+      value: enums.join(" · "),
+      badges,
+      parts: enums.map(text => ({ text })),
+      code: item.kpgzCharacteristicId != null ? String(item.kpgzCharacteristicId) : undefined,
+    };
+  }
+
+  const v1 = item.value1 != null && String(item.value1).trim() ? String(item.value1).trim() : "";
+  const v2 = item.value2 != null && String(item.value2).trim() ? String(item.value2).trim() : "";
+  const minOp = spgzMathOp(item.minMathNotation);
+  const maxOp = spgzMathOp(item.maxMathNotation);
+
+  let value = "";
+  if (v1 && v2 && v1 !== v2) {
+    const left = minOp ? `${minOp}${v1}` : v1;
+    const right = maxOp ? `${maxOp}${v2}` : v2;
+    value = withUnit(`${left} … ${right}`);
+  } else if (v1 || v2) {
+    const num = v1 || v2;
+    const op = v1 ? minOp : maxOp;
+    value = withUnit(op ? `${op} ${num}` : num);
+  } else if (minOp || maxOp) {
+    value = [minOp, maxOp].filter(Boolean).join(" … ") || "—";
+  } else {
+    value = "—";
+  }
+  return {
+    name,
+    value,
+    badges,
+    code: item.kpgzCharacteristicId != null ? String(item.kpgzCharacteristicId) : undefined,
+    parts: value === "—" ? [] : [{
+      text: value,
+      okeiCode: unitMeta?.code,
+      okeiName: unitMeta?.name,
+    }],
+  };
+}
+
+function flagYes(value: unknown): boolean {
+  return value === 1 || value === true || value === "1";
+}
+
 export function getDirectoryRecord(tab: DirectoryTab, code: string): DirRecord | null {
   const database = ensureDb();
   if (tab === "okpd") {
@@ -479,26 +666,50 @@ export function getDirectoryRecord(tab: DirectoryTab, code: string): DirRecord |
       code: string; name: string; level: number | null; isActual: number;
     } | undefined;
     if (!row) return null;
+    const raw = getDirectoryRaw("okpd", row.code) ?? {};
     const reverse = reverseLinksFor("okpd", row.code);
+    const limitations = Array.isArray(raw.limitations) ? raw.limitations as {
+      name?: string; shortname?: string; description?: string; section?: string; link?: string; is_expired?: boolean; recommendation?: { annotation?: string; link?: string };
+    }[] : [];
+    const similar = Array.isArray(raw.similar_products) ? raw.similar_products.map(String).filter(Boolean) : [];
+    const lists: DirListBlock[] = [];
+    if (limitations.length) {
+      lists.push({
+        title: "Ограничения и примечания",
+        collapsible: true,
+        items: limitations.map(item => ({
+          text: [item.shortname || item.name, item.description].filter(Boolean).join(" — ") || "—",
+          href: item.link || item.recommendation?.link || undefined,
+          meta: [item.section, item.is_expired ? "не действует" : "", item.recommendation?.annotation].filter(Boolean).join(" · ") || undefined,
+        })),
+      });
+    }
+    if (similar.length) {
+      lists.push({ title: "Похожие названия", items: similar.map(text => ({ text })) });
+    }
     return {
       tab, code: row.code, name: row.name,
       fields: [
-        { key: "code", label: "Код", value: row.code },
+        { key: "code", label: "Код ОКПД2", value: row.code },
         { key: "name", label: "Название", value: row.name },
         { key: "level", label: "Уровень", value: String(row.level ?? "") },
         { key: "actual", label: "Актуальность", value: row.isActual ? "да" : "нет" },
+        ...(raw.visitors_count != null ? [{ key: "visitors", label: "Просмотры", value: String(raw.visitors_count) }] : []),
       ],
+      characteristics: [],
+      lists,
       links: [],
       ...reverse,
     };
   }
   if (tab === "kpgz") {
     const row = database.prepare(
-      "SELECT code, name, okpd_code AS okpdCode, okpd_name AS okpdName, tree_level AS treeLevel, is_last AS isLast FROM kpgz WHERE code=? LIMIT 1",
+      "SELECT code, name, okpd_code AS okpdCode, okpd_name AS okpdName, tree_level AS treeLevel, is_last AS isLast, external_id AS externalId FROM kpgz WHERE code=? LIMIT 1",
     ).get(code) as {
-      code: string; name: string; okpdCode: string | null; okpdName: string | null; treeLevel: number | null; isLast: number;
+      code: string; name: string; okpdCode: string | null; okpdName: string | null; treeLevel: number | null; isLast: number; externalId: number | null;
     } | undefined;
-    if (!row) return null;
+    if (!row) return getDirectoryRecord("spgz", code);
+    const raw = getDirectoryRaw("kpgz", row.code) ?? {};
     const links: DirCrossLink[] = [];
     if (row.okpdCode) links.push({ tab: "okpd", code: row.okpdCode, label: `ОКПД2 ${row.okpdCode}${row.okpdName ? ` — ${row.okpdName}` : ""}` });
     const reverse = reverseLinksFor("kpgz", row.code, row.okpdCode || "");
@@ -509,7 +720,10 @@ export function getDirectoryRecord(tab: DirectoryTab, code: string): DirRecord |
         { key: "name", label: "Название", value: row.name },
         { key: "level", label: "Уровень", value: String(row.treeLevel ?? "") },
         { key: "last", label: "Последний уровень", value: row.isLast ? "да" : "нет" },
+        { key: "innovation", label: "Инновация", value: flagYes(raw.innovation) ? "да" : "нет" },
+        ...(row.externalId != null ? [{ key: "external", label: "External ID", value: String(row.externalId) }] : []),
       ],
+      characteristics: [],
       links,
       ...reverse,
     };
@@ -518,26 +732,56 @@ export function getDirectoryRecord(tab: DirectoryTab, code: string): DirRecord |
     const id = Number(code);
     if (!Number.isSafeInteger(id)) return null;
     const row = database.prepare(
-      "SELECT id, name, kpgz_external_id AS kpgzExternalId, okpd2_code AS okpd2, is_excluded AS excluded FROM spgz WHERE id=?",
+      "SELECT id, name, kpgz_external_id AS kpgzExternalId, okpd2_code AS okpd2, ktru_id AS ktruId, is_excluded AS excluded FROM spgz WHERE id=?",
     ).get(id) as {
-      id: number; name: string; kpgzExternalId: number | null; okpd2: string | null; excluded: number;
+      id: number; name: string; kpgzExternalId: number | null; okpd2: string | null; ktruId: number | null; excluded: number;
     } | undefined;
     if (!row) return null;
+    const raw = getDirectoryRaw("spgz", String(row.id)) ?? {};
+    const okeis = resolveSpgzOkeis(raw.okeis as SpgzOkeiRef[] | undefined);
     const links: DirCrossLink[] = [];
     if (row.okpd2) links.push({ tab: "okpd", code: row.okpd2, label: `ОКПД2 ${row.okpd2}` });
     if (row.kpgzExternalId) {
       const kpgz = database.prepare("SELECT code, name FROM kpgz WHERE external_id=?").get(row.kpgzExternalId) as { code: string; name: string } | undefined;
       if (kpgz) links.push({ tab: "kpgz", code: kpgz.code, label: `КПГЗ ${kpgz.code} — ${kpgz.name}` });
     }
+    for (const unit of okeis) {
+      links.push({ tab: "okei", code: unit.code, label: `ОКЕИ ${unit.code} — ${unit.name}` });
+    }
+    const chars = Array.isArray(raw.spgzCharacteristics)
+      ? (raw.spgzCharacteristics as Parameters<typeof formatSpgzCharacteristic>[0][]).flatMap(item => {
+        const parsed = formatSpgzCharacteristic(item, okeis);
+        return parsed ? [parsed] : [];
+      })
+      : [];
     const reverse = reverseLinksFor("spgz", String(row.id), row.okpd2 || "");
+    const activeFlags = [
+      flagYes(raw.auctionProduct) && "аукционный товар",
+      flagYes(raw.isStandartProduct) && "стандартный продукт",
+      flagYes(raw.innovationProduct) && "инновационный",
+      flagYes(raw.niokr) && "НИОКР",
+      flagYes(raw.applyLifecycle) && "жизненный цикл",
+      flagYes(raw.allowLimited) && "ограниченное участие",
+      flagYes(raw.allowTwoStage) && "двухэтапная",
+      flagYes(raw.allowCall) && "запрос предложений",
+      flagYes(raw.regulationRequired) && "нужно нормирование",
+      flagYes(raw.art) && "произведение искусства",
+      flagYes(raw.project) && "проект",
+    ].filter(Boolean) as string[];
+    const description = String(raw.descriptions ?? "").trim();
     return {
       tab, code: String(row.id), name: row.name,
+      description: description && description !== row.name ? description : undefined,
       fields: [
         { key: "id", label: "ID СПГЗ", value: String(row.id) },
         { key: "name", label: "Название", value: row.name },
         { key: "okpd2", label: "ОКПД2", value: row.okpd2 || "—" },
+        { key: "okei", label: "Ед. изм. позиции", value: okeis.length ? okeis.map(unit => `${unit.name} (${unit.code})`).join(", ") : "—" },
+        ...(row.ktruId != null ? [{ key: "ktruId", label: "КТРУ (id ЕАИСТ)", value: String(row.ktruId) }] : []),
+        { key: "flags", label: "Признаки", value: activeFlags.length ? activeFlags.join(", ") : "—" },
         { key: "excluded", label: "Исключён", value: row.excluded ? "да" : "нет" },
       ],
+      characteristics: chars,
       links,
       ...reverse,
     };
@@ -557,6 +801,7 @@ export function getDirectoryRecord(tab: DirectoryTab, code: string): DirRecord |
         { key: "razdel", label: "Раздел", value: row.razdel },
         { key: "podrazdel", label: "Подраздел", value: row.podrazdel },
       ],
+      characteristics: [],
       links: [],
       backlinks: [],
       backlinksMore: 0,
@@ -570,7 +815,7 @@ export function getDirectoryRaw(tab: DirectoryTab, code: string): Record<string,
   try {
     if (tab === "okpd") {
       const rows = pl.readParquet(okpd2ParquetPath(), {
-        columns: ["id", "code", "name", "parent", "level", "is_actual", "children_count", "comment"],
+        columns: ["id", "code", "name", "parent", "level", "is_actual", "children_count", "comment", "visitors_count", "similar_products", "limitations"],
       }).filter(pl.col("code").eq(pl.lit(code))).toRecords();
       return (rows[0] as Record<string, unknown> | undefined) ?? null;
     }
@@ -584,7 +829,11 @@ export function getDirectoryRaw(tab: DirectoryTab, code: string): Record<string,
       const id = Number(code);
       if (!Number.isSafeInteger(id)) return null;
       const rows = pl.readParquet(spgzParquetPath(), {
-        columns: ["id", "name", "kpgzId", "okpd2Code", "okpdCode", "ktruId", "isExcluded", "spgzCharacteristics"],
+        columns: [
+          "id", "name", "kpgzId", "okpd2Code", "okpdCode", "ktruId", "isExcluded", "spgzCharacteristics", "okeis", "descriptions",
+          "auctionProduct", "isStandartProduct", "innovationProduct", "niokr", "applyLifecycle", "allowLimited",
+          "allowTwoStage", "allowCall", "regulationRequired", "art", "project",
+        ],
       }).filter(pl.col("id").eq(pl.lit(id))).toRecords();
       return (rows[0] as Record<string, unknown> | undefined) ?? null;
     }
@@ -687,6 +936,21 @@ export function listDirectoryProducts(tab: DirectoryTab, code: string, limit = 2
       (frame) => frame.filter(pl.col("okei").str.toLowerCase().eq(pl.lit(needle))),
       limit,
     );
+  }
+  if (tab === "ktru") {
+    const { sqlite } = getDatabase();
+    const total = (sqlite.prepare("SELECT count(*) AS n FROM products WHERE ktru_code = ?").get(code) as { n: number }).n;
+    if (!total) return { total: 0, items: [] };
+    const items = sqlite.prepare(`
+      SELECT id, name,
+        coalesce(okpd2, '') AS okpd2,
+        coalesce(kpgz_code, '') AS kpgzCode,
+        coalesce(kpgz_name, '') AS kpgzName
+      FROM products
+      WHERE ktru_code = ?
+      ORDER BY name LIMIT ?
+    `).all(code, limit) as DirProductHit[];
+    return { total, items };
   }
   return { total: 0, items: [] };
 }

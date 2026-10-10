@@ -20,10 +20,8 @@ function writeDirectoryUrl(tab: DirectoryTab, code: string) {
 }
 
 const TABS: { id: DirectoryTab; label: string; hint: string }[] = [
-  { id: "ktru", label: "КТРУ", hint: "Каталог товаров, работ и услуг" },
-  { id: "kpgz", label: "КПГЗ", hint: "Каталог предметов госзаказа" },
-  { id: "spgz", label: "СПГЗ", hint: "Стандартные позиции госзаказа" },
-  { id: "okpd", label: "ОКПД", hint: "ОКПД 2" },
+  { id: "ktru", label: "ОКПД2 и КТРУ", hint: "ОКПД 2 и каталог товаров, работ и услуг" },
+  { id: "kpgz", label: "КПГЗ и СПГЗ", hint: "Каталог предметов госзаказа и стандартные позиции" },
   { id: "okei", label: "ОКЕИ", hint: "Общероссийский классификатор единиц измерения" },
 ];
 
@@ -31,10 +29,42 @@ function param(value: string | string[] | undefined) {
   return (Array.isArray(value) ? value[0] : value)?.trim() || "";
 }
 
+function normalizeTab(value: string): DirectoryTab {
+  if (value === "spgz") return "kpgz";
+  if (value === "okpd") return "ktru";
+  return TABS.some(item => item.id === value) ? value as DirectoryTab : "ktru";
+}
+
+/** Tree/filter source: unified КПГЗ/СПГЗ tab uses SPGZ mode (KPGZ tree + SPGZ leaves + joint filter). */
+function treeTab(tab: DirectoryTab): DirectoryTab {
+  return tab === "kpgz" ? "spgz" : tab;
+}
+
 function directoryHref(tab: DirectoryTab, code?: string) {
-  const query = new URLSearchParams({ tab });
+  const resolved = tab === "spgz" ? "kpgz" : tab === "okpd" ? "ktru" : tab;
+  const query = new URLSearchParams({ tab: resolved });
   if (code) query.set("code", code);
   return `/directories?${query}`;
+}
+
+function nodeKindLabel(kind: string): string {
+  switch (kind) {
+    case "okpd": return "ОКПД2";
+    case "ktru": return "КТРУ";
+    case "kpgz": return "КПГЗ";
+    case "spgz": return "СПГЗ";
+    case "okei": return "ОКЕИ";
+    case "okei-group": return "группа ОКЕИ";
+    case "okei-section": return "раздел ОКЕИ";
+    default: return kind.toUpperCase();
+  }
+}
+
+function nodeCodeLabel(node: { kind: string; code: string }): string {
+  const kind = nodeKindLabel(node.kind);
+  const code = node.code?.trim();
+  if (!code || code === "—" || code.startsWith("s:") || code.startsWith("g:")) return kind;
+  return `${kind} ${code}`;
 }
 
 function statusBadge(status: string | null) {
@@ -161,13 +191,16 @@ function TreeNode(props: {
         <ChevronRight size={15} />
       </button>
       <button type="button" class="ktru-node-main" onClick={openDetails}>
-        <span class="ktru-node-code">{props.node.code}<Show when={props.node.childCount > 0}><span class="ktru-count"> · {formatNumber(props.node.childCount)}</span></Show></span>
+        <span class="ktru-node-code">{nodeCodeLabel(props.node)}</span>
         <span class="ktru-node-name">{props.node.name}</span>
         <span class="ktru-node-meta">
-          <Show when={isKtru()}>{statusBadge((props.node as KtruTreeNode).status)}</Show>
+          <Show when={isKtru() && (props.node as KtruTreeNode).kind === "ktru"}>{statusBadge((props.node as KtruTreeNode).status)}</Show>
           <Show when={isKtru() && (props.node as KtruTreeNode).isTemplate}><span class="ktru-badge template">шаблон</span></Show>
         </span>
       </button>
+      <Show when={props.node.childCount > 0}>
+        <span class="ktru-count" aria-label={`${formatNumber(props.node.childCount)} дочерних`}>{formatNumber(props.node.childCount)}</span>
+      </Show>
     </div>
     <Show when={open() && props.node.hasChildren}>
       <TreeBranch
@@ -199,57 +232,182 @@ function LazyRawJson(props: { load: () => Promise<Record<string, unknown> | null
   </details>;
 }
 
-function CrossLinks(props: {
-  links: { tab: DirectoryTab; code: string; label: string }[];
+function DirForwardLinks(props: { links: { tab: DirectoryTab; code: string; label: string }[] }) {
+  return <Show when={props.links.length}>
+    <div class="dir-links dir-links-top">
+      <h3>Связанные справочники</h3>
+      <div class="dir-links-list">
+        <For each={props.links}>{link => <A href={directoryHref(link.tab, link.code)}>{link.label}</A>}</For>
+      </div>
+    </div>
+  </Show>;
+}
+
+function DirBacklinks(props: {
   backlinks: { tab: DirectoryTab; code: string; label: string }[];
   backlinksMore: number;
 }) {
-  return <>
-    <Show when={props.links.length}>
-      <div class="dir-links">
-        <h3>Связанные справочники</h3>
-        <For each={props.links}>{link => <A href={directoryHref(link.tab, link.code)}>{link.label}</A>}</For>
-      </div>
-    </Show>
-    <Show when={props.backlinks.length}>
-      <div class="dir-links">
-        <h3>Обратные ссылки</h3>
+  return <Show when={props.backlinks.length}>
+    <div class="dir-links dir-links-bottom">
+      <h3>Обратные ссылки</h3>
+      <div class="dir-links-list">
         <For each={props.backlinks}>{link => <A href={directoryHref(link.tab, link.code)}>{link.label}</A>}</For>
-        <Show when={props.backlinksMore > 0}>
-          <p class="dir-products-note">и ещё {formatNumber(props.backlinksMore)}</p>
-        </Show>
       </div>
+      <Show when={props.backlinksMore > 0}>
+        <p class="dir-products-note">и ещё {formatNumber(props.backlinksMore)}</p>
+      </Show>
+    </div>
+  </Show>;
+}
+
+function CharacteristicTable(props: {
+  items: {
+    name: string;
+    value?: string;
+    values?: string;
+    required?: boolean;
+    badges?: string[];
+    code?: string;
+    parts?: { text: string; okeiCode?: string; okeiName?: string }[];
+  }[];
+}) {
+  return <div class="dir-characteristics">
+    <h3>Характеристики <span>{formatNumber(props.items.length)}</span></h3>
+    <Show when={props.items.length} fallback={<p class="ktru-empty">Характеристики не указаны.</p>}>
+      <dl class="characteristics-table dir-characteristics-table">
+        <For each={props.items}>{item => {
+          const badges = [
+            ...(item.required ? ["обязательная"] : []),
+            ...(item.badges ?? []),
+          ].filter((value, index, all) => all.indexOf(value) === index);
+          const parts = item.parts?.length
+            ? item.parts
+            : [{ text: item.values || item.value || "—" }];
+          return <div>
+            <dt>
+              <span class="dir-char-name">{item.name}</span>
+              <Show when={badges.length}>
+                <span class="dir-char-badges">
+                  <For each={badges}>{badge => <span class="dir-char-required">{badge}</span>}</For>
+                </span>
+              </Show>
+              <Show when={item.code}><span class="dir-char-code">{item.code}</span></Show>
+            </dt>
+            <dd>
+              <ul class="dir-char-parts">
+                <For each={parts}>{part =>
+                  <li>
+                    <span>{part.text}</span>
+                    <Show when={part.okeiCode}>
+                      <A class="dir-char-okei" href={directoryHref("okei", part.okeiCode!)} title={part.okeiName || part.okeiCode}>
+                        ОКЕИ {part.okeiCode}{part.okeiName ? ` · ${part.okeiName}` : ""}
+                      </A>
+                    </Show>
+                  </li>
+                }</For>
+              </ul>
+            </dd>
+          </div>;
+        }}</For>
+      </dl>
     </Show>
-  </>;
+  </div>;
+}
+
+function ListBlocks(props: { lists?: { title: string; collapsible?: boolean; items: { text: string; href?: string; meta?: string }[] }[] }) {
+  return <Show when={props.lists?.length}>
+    <For each={props.lists}>{block =>
+      <ListBlock title={block.title} items={block.items} collapsible={block.collapsible} />
+    }</For>
+  </Show>;
+}
+
+function ListBlock(props: {
+  title: string;
+  collapsible?: boolean;
+  items: { text: string; href?: string; meta?: string }[];
+}) {
+  const [open, setOpen] = createSignal(false);
+  const folded = () => !!props.collapsible && props.items.length > 0 && !open();
+  const visibleItems = () => (folded() && props.items.length > 1 ? props.items.slice(0, 1) : props.items);
+  return <div class="dir-lists" classList={{ "dir-lists-folded": folded() }}>
+    <div class="dir-lists-head">
+      <h3>{props.title}</h3>
+      <Show when={props.collapsible && props.items.length}>
+        <button
+          type="button"
+          class="dir-lists-toggle"
+          classList={{ open: open() }}
+          aria-expanded={open()}
+          aria-label={open() ? "Свернуть" : "Развернуть"}
+          onClick={() => setOpen(value => !value)}
+        >
+          <ChevronRight size={14} />
+        </button>
+      </Show>
+    </div>
+    <ul>
+      <For each={visibleItems()}>{item =>
+        <li>
+          <Show when={item.href} fallback={<span class="dir-list-text">{item.text}</span>}>
+            <a class="dir-list-text" href={item.href} target="_blank" rel="noreferrer">{item.text}</a>
+          </Show>
+          <Show when={item.meta && !folded()}><span class="dir-list-meta">{item.meta}</span></Show>
+        </li>
+      }</For>
+    </ul>
+    <Show when={folded() && props.items.length > 1}>
+      <p class="dir-products-note">ещё {formatNumber(props.items.length - 1)}</p>
+    </Show>
+  </div>;
 }
 
 function KtruDetail(props: { code: string }) {
   const record = createAsync(() => getKtruRecord(props.code));
+  const exactProducts = createAsync(() => getDirectoryProducts("ktru", props.code));
   return <Show when={record()} fallback={<div class="ktru-empty">Запись не найдена</div>}>{data => {
     const okpd = data().okpd2;
     return <>
       <dl class="dir-fields">
         <div><dt>Код КТРУ</dt><dd>{data().code}</dd></div>
         <div><dt>Название</dt><dd>{data().name}</dd></div>
-        <div><dt>Статус</dt><dd>{data().status || "—"}</dd></div>
-        <div><dt>Версия</dt><dd>{data().version || "—"}</dd></div>
+        <div><dt>Статус</dt><dd>{data().status || "—"}{data().isTemplate ? " · шаблон" : ""}{data().noNewFeatures ? " · без новых характеристик" : ""}</dd></div>
+        <div><dt>Версия</dt><dd>{data().version || "—"}{data().versionCode ? ` (${data().versionCode})` : ""}</dd></div>
         <Show when={okpd}><div><dt>ОКПД2</dt><dd>{okpd!.code}{okpd!.name ? ` — ${okpd!.name}` : ""}</dd></div></Show>
-      </dl>
-      <div class="dir-characteristics">
-        <h3>Характеристики <span>{formatNumber(data().characteristics.length)}</span></h3>
-        <Show when={data().characteristics.length} fallback={<p class="ktru-empty">Характеристики не указаны.</p>}>
-          <dl class="characteristics-table dir-characteristics-table">
-            <For each={data().characteristics}>{item =>
-              <div>
-                <dt>{item.name}{item.required ? <span class="dir-char-required">обязательная</span> : null}</dt>
-                <dd>{item.values}</dd>
-              </div>
-            }</For>
-          </dl>
+        <Show when={data().units.length}>
+          <div><dt>Ед. измерения</dt><dd>{data().units.map(unit => `${unit.name} (${unit.code})`).join(", ")}</dd></div>
         </Show>
-      </div>
-      <CrossLinks links={data().links} backlinks={data().backlinks} backlinksMore={data().backlinksMore} />
-      <Show when={okpd}><KtruProducts code={props.code} okpdCode={okpd!.code} /></Show>
+        <Show when={data().rubricators.length}>
+          <div><dt>Рубрикатор</dt><dd>{data().rubricators.map(item => `${item.name || item.code}${item.code ? ` (${item.code})` : ""}`).join(", ")}</dd></div>
+        </Show>
+        <For each={data().dates}>{item => <div><dt>{item.label}</dt><dd>{item.value}</dd></div>}</For>
+        <Show when={data().cancellation}>
+          <div><dt>Отмена</dt><dd>{[data().cancellation!.date, data().cancellation!.reason].filter(Boolean).join(" — ") || "—"}</dd></div>
+        </Show>
+        <Show when={data().printFormUrl}>
+          <div><dt>Печатная форма</dt><dd><a href={data().printFormUrl!} target="_blank" rel="noreferrer">Открыть на zakupki.gov.ru</a></dd></div>
+        </Show>
+      </dl>
+      <Show when={data().description}><p class="dir-description">{data().description}</p></Show>
+      <DirForwardLinks links={data().links} />
+      <ListBlocks lists={data().standards.length ? [{ title: "Стандарты и нормы", items: data().standards.map(text => ({ text })) }] : []} />
+      <CharacteristicTable items={data().characteristics} />
+      <Suspense fallback={<div class="ktru-loading">Товары…</div>}>
+        <Show when={exactProducts()}>{(exact) =>
+          <Show when={exact().total > 0} fallback={
+            <Show when={okpd}><KtruProducts code={props.code} okpdCode={okpd!.code} /></Show>
+          }>
+            <div class="dir-products">
+              <h3>Товары каталога</h3>
+              <p class="dir-products-note">По коду КТРУ · {formatNumber(exact().total)}</p>
+              <For each={exact().items}>{item =>
+                <A class="dir-product-link" href={`/products/${item.id}?from=${encodeURIComponent(directoryHref("ktru", props.code))}`}>{item.name}<span>СТЕ {item.id}{item.kpgzCode ? ` · КПГЗ ${item.kpgzCode}` : ""}</span></A>
+              }</For>
+            </div>
+          </Show>
+        }</Show>
+      </Suspense>
+      <DirBacklinks backlinks={data().backlinks} backlinksMore={data().backlinksMore} />
       <LazyRawJson label="Исходный JSON" load={() => getKtruRaw(props.code)} />
     </>;
   }}</Show>;
@@ -257,19 +415,17 @@ function KtruDetail(props: { code: string }) {
 
 function KtruProducts(props: { code: string; okpdCode: string }) {
   const products = createAsync(() => getDirectoryProducts("okpd", props.okpdCode));
-  return <Suspense fallback={<div class="ktru-loading">Товары…</div>}>
-    <Show when={products()}>{list =>
-      <div class="dir-products">
-        <h3>Товары каталога</h3>
-        <p class="dir-products-note">По ОКПД2 позиции КТРУ · {formatNumber(list().total)}</p>
-        <Show when={list().items.length} fallback={<p class="ktru-empty">В загруженном каталоге СТЕ совпадений нет.</p>}>
-          <For each={list().items}>{item =>
-            <A class="dir-product-link" href={`/products/${item.id}?from=${encodeURIComponent(directoryHref("ktru", props.code))}`}>{item.name}<span>СТЕ {item.id}{item.kpgzCode ? ` · КПГЗ ${item.kpgzCode}` : ""}</span></A>
-          }</For>
-        </Show>
-      </div>
-    }</Show>
-  </Suspense>;
+  return <Show when={products()}>{list =>
+    <div class="dir-products">
+      <h3>Товары каталога</h3>
+      <p class="dir-products-note">По ОКПД2 позиции КТРУ · {formatNumber(list().total)}</p>
+      <Show when={list().items.length} fallback={<p class="ktru-empty">В загруженном каталоге СТЕ совпадений нет.</p>}>
+        <For each={list().items}>{item =>
+          <A class="dir-product-link" href={`/products/${item.id}?from=${encodeURIComponent(directoryHref("ktru", props.code))}`}>{item.name}<span>СТЕ {item.id}{item.kpgzCode ? ` · КПГЗ ${item.kpgzCode}` : ""}</span></A>
+        }</For>
+      </Show>
+    </div>
+  }</Show>;
 }
 
 function DirectoryDetail(props: { tab: DirectoryTab; code: string }) {
@@ -277,7 +433,12 @@ function DirectoryDetail(props: { tab: DirectoryTab; code: string }) {
   const products = createAsync(() => getDirectoryProducts(props.tab, props.code));
   return <Show when={record()} fallback={<div class="ktru-empty">Запись не найдена</div>}>{data => <>
     <dl class="dir-fields"><For each={data().fields}>{field => <div><dt>{field.label}</dt><dd>{field.value}</dd></div>}</For></dl>
-    <CrossLinks links={data().links} backlinks={data().backlinks} backlinksMore={data().backlinksMore} />
+    <Show when={data().description}><p class="dir-description">{data().description}</p></Show>
+    <DirForwardLinks links={data().links} />
+    <ListBlocks lists={data().lists} />
+    <Show when={data().characteristics.length}>
+      <CharacteristicTable items={data().characteristics} />
+    </Show>
     <Suspense fallback={<div class="ktru-loading">Товары…</div>}>
       <Show when={products()}>{list =>
         <div class="dir-products">
@@ -293,6 +454,7 @@ function DirectoryDetail(props: { tab: DirectoryTab; code: string }) {
         </div>
       }</Show>
     </Suspense>
+    <DirBacklinks backlinks={data().backlinks} backlinksMore={data().backlinksMore} />
     <LazyRawJson label="Исходный JSON" load={() => getDirectoryRaw(props.tab, props.code)} />
   </>}</Show>;
 }
@@ -302,9 +464,9 @@ function DetailPanel(props: { tab: DirectoryTab; selected: DirTreeNode | KtruTre
   const showDir = () => {
     if (!props.selected) return false;
     if (props.tab === "ktru") return props.selected.kind === "okpd";
-    if (props.tab === "spgz") return props.selected.kind === "spgz" || props.selected.kind === "kpgz";
+    if (props.tab === "kpgz") return props.selected.kind === "spgz" || props.selected.kind === "kpgz";
     if (props.tab === "okei") return props.selected.kind === "okei" || props.selected.kind === "okei-group" || props.selected.kind === "okei-section";
-    return props.selected.kind === props.tab || (props.tab === "kpgz" && props.selected.kind === "spgz");
+    return props.selected.kind === props.tab;
   };
   const detailTab = (): DirectoryTab => {
     if (!props.selected) return props.tab;
@@ -317,7 +479,7 @@ function DetailPanel(props: { tab: DirectoryTab; selected: DirTreeNode | KtruTre
   return <section class="ktru-panel" aria-label="Карточка позиции справочника">
     <div class="ktru-panel-head">
       <h2>Карточка</h2>
-      <Show when={props.selected} fallback={<span>Выберите позицию</span>}><span>{props.selected!.code}</span></Show>
+      <Show when={props.selected} fallback={<span>Выберите позицию</span>}><span>{nodeCodeLabel(props.selected!)}</span></Show>
     </div>
     <Show when={props.selected} fallback={<div class="ktru-json-placeholder"><div><strong>Выберите позицию</strong>Параметры, связи и товары каталога появятся здесь.</div></div>}>
       <Show when={showKtru()}>
@@ -336,10 +498,8 @@ function DetailPanel(props: { tab: DirectoryTab; selected: DirTreeNode | KtruTre
 
 export default function DirectoriesPage() {
   const [searchParams] = useSearchParams();
-  const tab = (): DirectoryTab => {
-    const value = param(searchParams.tab);
-    return TABS.some(item => item.id === value) ? value as DirectoryTab : "ktru";
-  };
+  const tab = (): DirectoryTab => normalizeTab(param(searchParams.tab));
+  const sourceTab = () => treeTab(tab());
   const codeParam = () => param(searchParams.code);
   const [selected, setSelected] = createSignal<DirTreeNode | KtruTreeNode | null>(null);
   const [pathIds, setPathIds] = createSignal<string[]>([]);
@@ -381,7 +541,7 @@ export default function DirectoriesPage() {
     setPathIds([]);
   }, { defer: true }));
 
-  createEffect(on(() => [tab(), filter()] as const, ([currentTab, value]) => {
+  createEffect(on(() => [sourceTab(), filter()] as const, ([currentTab, value]) => {
     let alive = true;
     if (value.length < 2) {
       setMatchIds(new Set<string>());
@@ -414,7 +574,7 @@ export default function DirectoriesPage() {
 
   return <main id="main-content" class="page-width ktru-main">
     <Title>Справочники — каталог</Title>
-    <Meta name="description" content="Справочники КТРУ, КПГЗ, СПГЗ, ОКПД2 и ОКЕИ со связями и товарами каталога." />
+    <Meta name="description" content="Справочники ОКПД2, КТРУ, КПГЗ, СПГЗ и ОКЕИ со связями и товарами каталога." />
     <section class="ktru-hero">
       <h1><BookOpen size={34} strokeWidth={1.4} style={{ "vertical-align": "-6px", "margin-right": "10px", color: "var(--green)" }} />Справочники</h1>
       <p>{current().hint}. Дерево, параметры позиции, кросс-ссылки и связанные товары из каталога СТЕ.</p>
@@ -446,7 +606,7 @@ export default function DirectoriesPage() {
         <label class="ktru-filter"><Search size={15} /><input type="search" value={draft()} placeholder="Фильтр по коду или названию…" autocomplete="off" onInput={event => onFilterInput(event.currentTarget.value)} /></label>
         <div class="ktru-tree" role="tree">
           <TreeBranch
-            tab={tab()}
+            tab={sourceTab()}
             parentId={null}
             selectedId={selected()?.id ?? null}
             filter={filter()}
