@@ -24,6 +24,8 @@ class Settings(BaseSettings):
     search_database: Path = ROOT / "search-web" / "data" / "search-index.sqlite"
     # Disk cache for portal images; default: <SEARCH_DATABASE>/../images
     image_cache_dir: Path | None = None
+    # sku_id → float16[768]: .parquet (Git LFS) or LMDB dir; preferred over text meow cache
+    sku_embeddings: Path = DATA / "sku_embeddings.parquet"
     meow_embed_url: str = "https://api.innohassle.ru/meow-embed"
     model_id: str = "google/embeddinggemma-2"
     dimensions: int = 768

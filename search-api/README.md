@@ -25,6 +25,13 @@ uv run zakupki-search-index              # import + embed
 uv run zakupki-search-index import
 uv run zakupki-search-index embed \
   --limit 1000 --batch 256 --concurrency 4
+
+# Старые эмбеддинги по sku id (Git LFS: data/sku_embeddings.parquet):
+# uv run scripts/export_sku_embeddings.py --data-dir ../data \
+#   --meow-cache /path/to/embedding-cache.lmdb --output ../data/sku_embeddings.lmdb
+# uv run scripts/pack_sku_embeddings_parquet.py \
+#   --input ../data/sku_embeddings.lmdb --output ../data/sku_embeddings.parquet
+uv run zakupki-search-index embed --sku-embeddings ../data/sku_embeddings.parquet
 ```
 
 ## Env

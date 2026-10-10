@@ -45,6 +45,7 @@ def _cmd_embed(args: argparse.Namespace) -> int:
             batch_size=args.batch,
             concurrency=args.concurrency,
             cache_path=args.cache,
+            sku_embeddings=args.sku_embeddings,
         )
         return 0
     finally:
@@ -76,6 +77,12 @@ def main(argv: list[str] | None = None) -> None:
     p_embed.add_argument("--batch", type=int, default=None)
     p_embed.add_argument("--concurrency", type=int, default=None)
     p_embed.add_argument("--cache", type=Path, help="Load vectors only from an existing meow-embed LMDB cache")
+    p_embed.add_argument(
+        "--sku-embeddings",
+        type=Path,
+        default=None,
+        help="Load vectors by product_id from .parquet or LMDB (default: data/sku_embeddings.parquet if present)",
+    )
     p_embed.set_defaults(func=_cmd_embed)
 
     p_all = sub.add_parser("all", help="import then embed")
@@ -83,6 +90,12 @@ def main(argv: list[str] | None = None) -> None:
     p_all.add_argument("--batch", type=int, default=None)
     p_all.add_argument("--concurrency", type=int, default=None)
     p_all.add_argument("--cache", type=Path, help="Load vectors only from an existing meow-embed LMDB cache")
+    p_all.add_argument(
+        "--sku-embeddings",
+        type=Path,
+        default=None,
+        help="Load vectors by product_id from .parquet or LMDB (default: data/sku_embeddings.parquet if present)",
+    )
     p_all.set_defaults(func=_cmd_index)
 
     args = parser.parse_args(argv)

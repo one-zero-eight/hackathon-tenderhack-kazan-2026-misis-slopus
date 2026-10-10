@@ -14,7 +14,12 @@ import lmdb
 from tqdm import tqdm
 
 from search_api.config import settings
-from search_api.embeddings import cached_document_vectors, embed_client, embed_texts
+from search_api.embeddings import (
+    cached_document_vectors,
+    embed_client,
+    embed_texts,
+    open_sku_vector_store,
+)
 from search_api.normalize import document_hash, embedding_document
 from search_api.ste_catalog import find_product, get_catalog, product_count
 
@@ -23,23 +28,31 @@ from search_api.ste_catalog import find_product, get_catalog, product_count
 class _ReadyBatch:
     rows: list[sqlite3.Row]
     documents: list[str]
+    product_ids: list[int]
 
 
-def _prepare_batch(rows: list[sqlite3.Row]) -> _ReadyBatch | None:
+def _prepare_batch(rows: list[sqlite3.Row], *, by_sku: bool) -> _ReadyBatch | None:
     documents: list[str] = []
+    product_ids: list[int] = []
     ready: list[sqlite3.Row] = []
     for row in rows:
         product = find_product(int(row["id"]))
         if product is None:
             continue
+        if by_sku:
+            ready.append(row)
+            product_ids.append(int(row["id"]))
+            documents.append("")
+            continue
         document = embedding_document(product)
         if document_hash(document) != row["hash"]:
             continue
         documents.append(document)
+        product_ids.append(int(row["id"]))
         ready.append(row)
     if not ready:
         return None
-    return _ReadyBatch(rows=ready, documents=documents)
+    return _ReadyBatch(rows=ready, documents=documents, product_ids=product_ids)
 
 
 async def embed_pending(
@@ -49,6 +62,7 @@ async def embed_pending(
     batch_size: int | None = None,
     concurrency: int | None = None,
     cache_path: Path | None = None,
+    sku_embeddings: Path | None = None,
 ) -> int:
     batch_size = batch_size or settings.embed_batch_size
     concurrency = concurrency or settings.embed_concurrency
@@ -129,6 +143,15 @@ async def embed_pending(
         embed_ms = 0.0
         database_ms = 0.0
 
+        sku_path = sku_embeddings if sku_embeddings is not None else (
+            settings.sku_embeddings if settings.sku_embeddings.exists() else None
+        )
+        by_sku = sku_path is not None
+        if by_sku and cache_path is not None:
+            raise ValueError("Задайте либо --sku-embeddings, либо --cache, не оба")
+        if by_sku:
+            print(f"SKU-эмбеддинги: {sku_path}", flush=True)
+
         with tqdm(
             total=target,
             unit="шт",
@@ -137,7 +160,11 @@ async def embed_pending(
             bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]",
         ) as bar, ExitStack() as resources:
             cache_transaction = None
-            if cache_path is not None:
+            sku_store = None
+            if by_sku:
+                assert sku_path is not None
+                sku_store = open_sku_vector_store(sku_path, resources)
+            elif cache_path is not None:
                 cache = lmdb.open(str(cache_path.resolve()), readonly=True, lock=False, create=False)
                 resources.callback(cache.close)
                 cache_transaction = resources.enter_context(cache.begin())
@@ -164,7 +191,7 @@ async def embed_pending(
                     chunks: list[list[sqlite3.Row]] = [
                         rows[i : i + batch_size] for i in range(0, len(rows), batch_size)
                     ]
-                    prepared = [_prepare_batch(chunk) for chunk in chunks]
+                    prepared = [_prepare_batch(chunk, by_sku=by_sku) for chunk in chunks]
                     prepared = [b for b in prepared if b is not None]
                     if not prepared:
                         continue
@@ -173,7 +200,9 @@ async def embed_pending(
 
                     async def run_one(batch: _ReadyBatch) -> tuple[_ReadyBatch, list[bytes], float]:
                         t0 = time.perf_counter()
-                        if cache_transaction is not None:
+                        if sku_store is not None:
+                            vectors = sku_store.get_vectors(batch.product_ids)
+                        elif cache_transaction is not None:
                             vectors = cached_document_vectors(cache_transaction, batch.documents)
                         else:
                             vectors = await embed_texts(batch.documents, "document", client=client)
@@ -219,7 +248,15 @@ def embed_pending_sync(
     batch_size: int | None = None,
     concurrency: int | None = None,
     cache_path: Path | None = None,
+    sku_embeddings: Path | None = None,
 ) -> int:
     return asyncio.run(
-        embed_pending(conn, limit=limit, batch_size=batch_size, concurrency=concurrency, cache_path=cache_path)
+        embed_pending(
+            conn,
+            limit=limit,
+            batch_size=batch_size,
+            concurrency=concurrency,
+            cache_path=cache_path,
+            sku_embeddings=sku_embeddings,
+        )
     )

@@ -3,16 +3,27 @@ from __future__ import annotations
 import base64
 import hashlib
 import struct
-from contextlib import asynccontextmanager
-from typing import AsyncIterator
+from contextlib import ExitStack, asynccontextmanager
+from pathlib import Path
+from typing import AsyncIterator, Mapping, Protocol
 
 import httpx
 import lmdb
 import numpy as np
+import pyarrow.parquet as pq
 
 from search_api.config import settings
 
 _query_cache: dict[str, bytes] = {}
+
+
+def _float16_to_sqlite(raw: bytes) -> bytes:
+    if len(raw) != settings.dimensions * 2:
+        raise RuntimeError(f"Неверная размерность вектора: {len(raw)} байт")
+    vector = np.frombuffer(raw, dtype="<f2").astype("<f4")
+    if not np.isfinite(vector).all():
+        raise RuntimeError("Нечисловой вектор в кэше эмбеддингов")
+    return vector.tobytes()
 
 
 def cached_document_vectors(transaction: lmdb.Transaction, texts: list[str]) -> list[bytes]:
@@ -29,13 +40,82 @@ def cached_document_vectors(transaction: lmdb.Transaction, texts: list[str]) -> 
         raw = transaction.get(key)
         if raw is None:
             raise RuntimeError(f"Нет эмбеддинга в LMDB-кеше: {text[:160]}")
-        if len(raw) != settings.dimensions * 2:
-            raise RuntimeError(f"Неверная размерность вектора в LMDB: {len(raw)} байт")
-        vector = np.frombuffer(raw, dtype="<f2").astype("<f4")
-        if not np.isfinite(vector).all():
-            raise RuntimeError("Нечисловой вектор в LMDB-кеше")
-        vectors.append(vector.tobytes())
+        vectors.append(_float16_to_sqlite(raw))
     return vectors
+
+
+def sku_embedding_key(product_id: int) -> bytes:
+    return struct.pack("<Q", int(product_id))
+
+
+class SkuVectorStore(Protocol):
+    def get_vectors(self, product_ids: list[int]) -> list[bytes]: ...
+
+
+class LmdbSkuVectorStore:
+    def __init__(self, transaction: lmdb.Transaction):
+        self._txn = transaction
+
+    def get_vectors(self, product_ids: list[int]) -> list[bytes]:
+        vectors = []
+        for product_id in product_ids:
+            raw = self._txn.get(sku_embedding_key(product_id))
+            if raw is None:
+                raise RuntimeError(f"Нет эмбеддинга в SKU LMDB: product_id={product_id}")
+            vectors.append(_float16_to_sqlite(raw))
+        return vectors
+
+
+class ParquetSkuVectorStore:
+    """In-memory map loaded once from Git-LFS parquet (id + float16 bytes)."""
+
+    def __init__(self, by_id: Mapping[int, bytes]):
+        self._by_id = by_id
+
+    def __len__(self) -> int:
+        return len(self._by_id)
+
+    @classmethod
+    def load(cls, path: Path) -> ParquetSkuVectorStore:
+        table = pq.read_table(path, columns=["id", "embedding"])
+        expected = settings.dimensions * 2
+        by_id: dict[int, bytes] = {}
+        for batch in table.to_batches():
+            ids = batch.column(0).to_pylist()
+            embeddings = batch.column(1).to_pylist()
+            for product_id, raw in zip(ids, embeddings, strict=True):
+                blob = bytes(raw) if not isinstance(raw, (bytes, bytearray)) else bytes(raw)
+                if len(blob) != expected:
+                    raise RuntimeError(f"Неверная размерность в parquet для id={product_id}: {len(blob)}")
+                by_id[int(product_id)] = blob
+        return cls(by_id)
+
+    def get_vectors(self, product_ids: list[int]) -> list[bytes]:
+        vectors = []
+        for product_id in product_ids:
+            raw = self._by_id.get(int(product_id))
+            if raw is None:
+                raise RuntimeError(f"Нет эмбеддинга в SKU parquet: product_id={product_id}")
+            vectors.append(_float16_to_sqlite(raw))
+        return vectors
+
+
+def cached_sku_vectors(transaction: lmdb.Transaction, product_ids: list[int]) -> list[bytes]:
+    return LmdbSkuVectorStore(transaction).get_vectors(product_ids)
+
+
+def open_sku_vector_store(path: Path, resources: ExitStack) -> SkuVectorStore:
+    resolved = path.resolve()
+    if resolved.is_file() and resolved.suffix == ".parquet":
+        print(f"SKU parquet: загрузка {resolved}…", flush=True)
+        store = ParquetSkuVectorStore.load(resolved)
+        print(f"SKU parquet: {len(store):,} векторов", flush=True)
+        return store
+
+    cache = lmdb.open(str(resolved), readonly=True, lock=False, create=False)
+    resources.callback(cache.close)
+    txn = resources.enter_context(cache.begin())
+    return LmdbSkuVectorStore(txn)
 
 
 def _endpoint() -> str:
