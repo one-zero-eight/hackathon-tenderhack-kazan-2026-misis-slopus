@@ -1,4 +1,4 @@
-import { createSignal } from "solid-js";
+import { batch, createSignal } from "solid-js";
 import { schemaEquivalent } from "./merge-characteristics";
 import type {
   CatalogSpecialization,
@@ -87,4 +87,43 @@ export function clearCharMeta() {
   setNoNewFeaturesReason("");
   setCatalogSpecialization(null);
   setInitialTemplateKtruCode(null);
+}
+
+/** Keep editable results independent when switching between batch/history requests. */
+export function captureQueryDraft() {
+  return structuredClone({
+    name: name(), sku: sku(), model: model(), brand: brand(), selected: selected(),
+    okpd2: okpd2(), kpgz: kpgz(), spgz: spgz(), ktruVote: ktruVote(),
+    ktruLocked: ktruLocked(), spgzLocked: spgzLocked(), similar: similar(),
+    characteristics: characteristics(), charStandards: charStandards(),
+    noNewFeatures: noNewFeatures(), noNewFeaturesReason: noNewFeaturesReason(),
+    generatedFor: generatedFor(), catalogSpecialization: catalogSpecialization(),
+    initialTemplateKtruCode: initialTemplateKtruCode(), lastSuggestQuery: lastSuggestQuery(),
+    suggestDurationMs: suggestDurationMs(), lastAutofillKey: lastAutofillKey(),
+    manuallyEdited: [...manuallyEditedCharacteristics],
+    manuallyEditedValues: [...manuallyEditedCharacteristicValues],
+    autofilledValues: [...autofilledCharacteristicValues],
+  });
+}
+
+export function restoreQueryDraft(draft: ReturnType<typeof captureQueryDraft>) {
+  batch(() => {
+    setName(draft.name); setSku(draft.sku); setModel(draft.model); setBrand(draft.brand);
+    setSelected(draft.selected); setOkpd2(draft.okpd2); setKpgz(draft.kpgz);
+    setSpgz(draft.spgz); setKtruVote(draft.ktruVote);
+    setKtruLocked(draft.ktruLocked); setSpgzLocked(draft.spgzLocked);
+    setSimilar(draft.similar); setCharacteristics(draft.characteristics);
+    setCharStandards(draft.charStandards); setNoNewFeatures(draft.noNewFeatures);
+    setNoNewFeaturesReason(draft.noNewFeaturesReason); setGeneratedFor(draft.generatedFor);
+    setCatalogSpecialization(draft.catalogSpecialization);
+    setInitialTemplateKtruCode(draft.initialTemplateKtruCode);
+    setLastSuggestQuery(draft.lastSuggestQuery); setSuggestDurationMs(draft.suggestDurationMs);
+    setLastAutofillKey(draft.lastAutofillKey); setSuggesting(false);
+    manuallyEditedCharacteristics.clear();
+    for (const key of draft.manuallyEdited) manuallyEditedCharacteristics.add(key);
+    manuallyEditedCharacteristicValues.clear();
+    for (const [key, value] of draft.manuallyEditedValues) manuallyEditedCharacteristicValues.set(key, value);
+    autofilledCharacteristicValues.clear();
+    for (const [key, value] of draft.autofilledValues) autofilledCharacteristicValues.set(key, value);
+  });
 }

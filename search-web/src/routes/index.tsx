@@ -7,6 +7,8 @@ import LoaderCircle from "lucide-solid/icons/loader-circle";
 import FileText from "lucide-solid/icons/file-text";
 import ImagePlus from "lucide-solid/icons/image-plus";
 import Lightbulb from "lucide-solid/icons/lightbulb";
+import History from "lucide-solid/icons/history";
+import Upload from "lucide-solid/icons/upload";
 import Pencil from "lucide-solid/icons/pencil";
 import Plus from "lucide-solid/icons/plus";
 import RotateCcw from "lucide-solid/icons/rotate-ccw";
@@ -16,6 +18,7 @@ import X from "lucide-solid/icons/x";
 import { batch, createEffect, createMemo, createSignal, For, Index, on, onCleanup, onMount, Show } from "solid-js";
 import { directoryHref, ProductCard } from "~/components/catalog";
 import { CategoryPairs } from "~/components/category-pairs";
+import { QueryDropdown } from "~/components/query-dropdown";
 import { KtruPickerActions, KtruPickerBody } from "~/components/ktru-picker";
 import { SpgzPickerActions, SpgzPickerBody } from "~/components/spgz-picker";
 import { apiAutofillCharacteristics } from "~/lib/api";
@@ -40,6 +43,8 @@ import {
 } from "~/lib/merge-characteristics";
 import {
   autofilledCharacteristicValues,
+  captureQueryDraft,
+  restoreQueryDraft,
   brand,
   catalogSpecialization,
   initialTemplateKtruCode,
@@ -111,6 +116,7 @@ import {
   suggesting,
 } from "~/lib/create-product-state";
 import { draftFromSpgzCharacteristic } from "~/lib/spgz-characteristics";
+import { normalizeQuery, parseQueryFile, parseQueryHistory, QUERY_HISTORY_KEY, QueryQueue, rememberQuery, type QueuedQuery, type QueryHistoryItem, type QueryStatus } from "~/lib/query-queue";
 import type { CatalogSpecialization, DirTreeNode, DraftCharacteristic, KtruTreeNode, VotedCode } from "~/lib/types";
 import { checkSpelling, highlightSpellingErrors, spellerErrorLabel, type SpellerError } from "~/lib/yandex-speller";
 import { Badge, Button, Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, Select, SelectContent, SelectItem, SelectTrigger, SelectValue, Skeleton, TextField, TextFieldInput, TextFieldLabel, TextFieldTextarea } from "~/ui-kit";
@@ -526,6 +532,55 @@ function SimilarSuggestSkeleton() {
 }
 
 export default function NewProduct() {
+  type Suggestion = Awaited<ReturnType<typeof suggestFromNeighbors>>;
+  const [queuedQueries, setQueuedQueries] = createSignal<QueuedQuery<Suggestion>[]>([]);
+  const [batchIds, setBatchIds] = createSignal<string[]>([]);
+  const [activeQueryId, setActiveQueryId] = createSignal<string | null>(null);
+  const [querySelectionSeq, setQuerySelectionSeq] = createSignal(0);
+  const [queryHistory, setQueryHistory] = createSignal<QueryHistoryItem[]>([]);
+  const [queryFileError, setQueryFileError] = createSignal("");
+  const [historyError, setHistoryError] = createSignal("");
+  const [suggestError, setSuggestError] = createSignal("");
+  const [readingQueries, setReadingQueries] = createSignal(false);
+  const queryDrafts = new Map<string, {
+    draft: ReturnType<typeof captureQueryDraft>;
+    autofillCompletedText: string | null;
+    autofillDurationMs: number | null;
+  }>();
+  let queryFileInput: HTMLInputElement | undefined;
+  let mounted = true;
+  const saveHistory = (text: string) => {
+    if (!mounted) return;
+    const next = rememberQuery(queryHistory(), text);
+    setQueryHistory(next);
+    try {
+      localStorage.setItem(QUERY_HISTORY_KEY, JSON.stringify(next));
+      setHistoryError("");
+    } catch {
+      setHistoryError("Не удалось сохранить историю: localStorage недоступен или переполнен.");
+    }
+  };
+  const queryQueue = new QueryQueue<Suggestion>(async (text) => {
+    if (normalizeQuery(text).length < 12) throw new Error("Для поиска нужно не менее 12 символов.");
+    return suggestFromNeighbors(normalizeQuery(text));
+  }, (items) => { if (mounted) setQueuedQueries(items); }, saveHistory);
+  onMount(() => {
+    try { setQueryHistory(parseQueryHistory(localStorage.getItem(QUERY_HISTORY_KEY))); }
+    catch { setHistoryError("Не удалось прочитать историю запросов."); }
+  });
+  onCleanup(() => { mounted = false; queryQueue.stop(); });
+  const batchQueries = createMemo(() => {
+    const ids = new Set(batchIds());
+    return queuedQueries().filter((item) => ids.has(item.id));
+  });
+  const batchCompleted = () => batchQueries().filter((item) => item.status === "done").length;
+  const historyQueries = createMemo(() => queryHistory().map((item) => {
+    const query = queuedQueries().find((entry) => normalizeQuery(entry.text) === normalizeQuery(item.text));
+    return {
+      id: item.text, text: item.text, status: query?.status ?? "pending" as QueryStatus,
+      detail: new Date(item.requestedAt).toLocaleString("ru-RU"),
+    };
+  }));
   const [ktruPickerOpen, setKtruPickerOpen] = createSignal(false);
   const [spgzPickerOpen, setSpgzPickerOpen] = createSignal(false);
   const [photoDragging, setPhotoDragging] = createSignal(false);
@@ -1060,6 +1115,8 @@ export default function NewProduct() {
   };
 
   const fillExample = () => {
+    saveActiveQueryDraft();
+    setActiveQueryId(null);
     clearAutofill();
     batch(() => {
       setName("");
@@ -1085,6 +1142,9 @@ export default function NewProduct() {
   };
 
   const reset = () => {
+    saveActiveQueryDraft();
+    setActiveQueryId(null);
+    setSuggestError("");
     clearAutofill();
     batch(() => {
       setName(""); setSku(""); setModel(""); setBrand(""); setDescription("");
@@ -1094,6 +1154,67 @@ export default function NewProduct() {
       setCharacteristics([]); clearCharMeta(); setGeneratedFor("");
       clearPhotos();
     });
+  };
+
+  const saveActiveQueryDraft = () => {
+    const id = activeQueryId();
+    const item = queryQueue.items.find((entry) => entry.id === id);
+    if (!id || !item || suggesting() || lastSuggestQuery() !== normalizeQuery(item.text)) return;
+    queryDrafts.set(id, {
+      draft: captureQueryDraft(),
+      autofillCompletedText: autofillCompletedText(),
+      autofillDurationMs: autofillDurationMs(),
+    });
+  };
+
+  const selectQuery = (id: string) => {
+    const item = queryQueue.items.find((entry) => entry.id === id);
+    if (!item) return;
+    saveActiveQueryDraft();
+    const saved = queryDrafts.get(id);
+    batch(() => {
+      reset();
+      setActiveQueryId(id);
+      setDescription(item.text);
+      setQuerySelectionSeq((seq) => seq + 1);
+      if (saved && item.status === "done") {
+        restoreQueryDraft(saved.draft);
+        setAutofillCompletedText(saved.autofillCompletedText);
+        setAutofillDurationMs(saved.autofillDurationMs);
+      }
+    });
+  };
+
+  const selectHistoryQuery = (text: string) => {
+    const item = queryQueue.find(text) ?? queryQueue.add([text])[0]!;
+    selectQuery(item.id);
+  };
+
+  const editDescription = (text: string) => {
+    saveActiveQueryDraft();
+    batch(() => {
+      setActiveQueryId(null);
+      setDescription(text);
+    });
+  };
+
+  const importQueries = async (file: File | undefined) => {
+    if (!file) return;
+    setReadingQueries(true);
+    setQueryFileError("");
+    try {
+      const texts = parseQueryFile(await file.text());
+      if (!mounted) return;
+      if (!texts.length) throw new Error("Файл пуст: добавьте по одному запросу на строку.");
+      const added = queryQueue.add(texts);
+      setBatchIds((ids) => [...ids, ...added.map((item) => item.id)]);
+      if (!activeQueryId()) selectQuery(added[0]!.id);
+      queryQueue.resume();
+    } catch (error) {
+      if (mounted) setQueryFileError(error instanceof Error ? error.message : "Не удалось прочитать файл.");
+    } finally {
+      if (mounted) setReadingQueries(false);
+    }
   };
 
   createEffect(on(description, (text) => {
@@ -1161,7 +1282,7 @@ export default function NewProduct() {
     if (!err || !describeTextarea) return;
     const text = description();
     const next = `${text.slice(0, err.pos)}${suggestion}${text.slice(err.pos + err.len)}`;
-    setDescription(next);
+    editDescription(next);
     setSpellTip(null);
     const caret = err.pos + suggestion.length;
     queueMicrotask(() => {
@@ -1183,9 +1304,16 @@ export default function NewProduct() {
 
   onCleanup(() => clearTimeout(spellTipHideTimer));
 
-  createEffect(on(description, (text) => {
-    const query = text.trim().replace(/\s+/g, " ");
+  createEffect(on([description, querySelectionSeq], ([text]) => {
+    const query = normalizeQuery(text);
+    const entry = queryQueue.items.find((item) => item.id === activeQueryId());
+    const queued = entry && normalizeQuery(entry.text) === query ? entry : undefined;
+    setSuggestError("");
     if (query.length < 12) {
+      if (queued) {
+        setSuggestError("Для поиска нужно не менее 12 символов.");
+        void queryQueue.run(queued.id).catch(() => {});
+      }
       batch(() => {
         setSimilar([]);
         setSuggesting(false);
@@ -1217,8 +1345,14 @@ export default function NewProduct() {
       setSuggesting(true);
     });
     let alive = true;
+    const queuedRequest = queued ? queryQueue.run(queued.id) : undefined;
+    // Observe rejection immediately, even if the user switches before the render timer fires.
+    if (queuedRequest) void queuedRequest.catch(() => {});
     const timer = setTimeout(() => {
-      void suggestFromNeighbors(query).then(async (draft) => {
+      const requestEntry = queued ?? queryQueue.find(query) ?? queryQueue.add([text])[0]!;
+      if (!queued) setActiveQueryId(requestEntry.id);
+      const request = queuedRequest ?? queryQueue.run(requestEntry.id);
+      void request.then(async (draft) => {
         if (!alive) return;
         try {
           const wantSpec = (!ktruLocked() || !spgzLocked()) && !!(draft.ktru || draft.spgz || draft.kpgz);
@@ -1314,14 +1448,25 @@ export default function NewProduct() {
           if (!alive) return;
           batch(() => {
             setLastSuggestQuery(query);
-            setSuggestDurationMs(Math.round(performance.now() - started));
+            setSuggestDurationMs(queued
+              ? queryQueue.items.find((item) => item.id === queued.id)?.durationMs ?? Math.round(performance.now() - started)
+              : Math.round(performance.now() - started));
             setSuggesting(false);
           });
-        } catch {
-          if (alive) setSuggesting(false);
+          saveActiveQueryDraft();
+        } catch (error) {
+          if (alive) {
+            setSuggestError(error instanceof Error ? error.message : "Не удалось показать результаты запроса.");
+            setSuggesting(false);
+          }
         }
-      }, () => { if (alive) setSuggesting(false); });
-    }, 200);
+      }, (error: unknown) => {
+        if (alive) {
+          setSuggestError(error instanceof Error ? error.message : "Не удалось обработать запрос.");
+          setSuggesting(false);
+        }
+      });
+    }, queued ? 0 : 200);
     onCleanup(() => { alive = false; clearTimeout(timer); });
   }));
 
@@ -1581,7 +1726,32 @@ export default function NewProduct() {
           <Button variant="secondary" size="sm" class="create-example-button" type="button" onClick={fillExample}><Lightbulb size={15} />Пример</Button>
         </div>
       </div>
-      <TextField class="create-describe-field" name="product-description" value={description()} onChange={setDescription}>
+      <div class="create-query-actions">
+        <input ref={queryFileInput} type="file" accept=".csv,.txt,text/csv,text/plain" class="sr-only" tabindex={-1} aria-label="Файл с запросами"
+          onChange={(event) => {
+            const file = event.currentTarget.files?.[0];
+            event.currentTarget.value = "";
+            void importQueries(file);
+          }} />
+        <Button variant="secondary" size="sm" type="button" disabled={readingQueries()} onClick={() => queryFileInput?.click()}>
+          <Upload size={14} />{readingQueries() ? "Загрузка…" : "Загрузить CSV"}
+        </Button>
+        <QueryDropdown button hidePendingStatus label={<><History size={14} />История запросов</>} items={historyQueries()}
+          selectedId={description().trim()} onSelect={selectHistoryQuery} emptyLabel="История пока пуста" />
+      </div>
+      <Show when={batchQueries().length}>
+        <div class="create-query-batch">
+          <QueryDropdown class="query-dropdown-batch" label={<>
+            <span class="query-dropdown-current">{batchQueries().find((item) => item.id === activeQueryId())?.text ?? "Выбрать запрос из файла"}</span>
+            <span class="query-dropdown-progress">{batchCompleted()} / {batchQueries().length}</span>
+          </>} items={batchQueries().map((item) => ({ ...item, detail: item.error }))} selectedId={activeQueryId()} onSelect={selectQuery} />
+          <p class="create-live-hint">Запросы обрабатываются по очереди. Выберите ожидающий запрос, чтобы запустить его сразу.</p>
+        </div>
+      </Show>
+      <Show when={queryFileError() || historyError()}>
+        <p class="create-query-error" role="alert">{queryFileError() || historyError()}</p>
+      </Show>
+      <TextField class="create-describe-field" name="product-description" value={description()} onChange={editDescription}>
         <TextFieldLabel class="sr-only">Описание товара</TextFieldLabel>
         <div class="create-describe-spell" ref={spellWrap}>
           <TextFieldTextarea
@@ -1589,7 +1759,6 @@ export default function NewProduct() {
             ref={(el) => { describeTextarea = el; }}
             rows={5}
             placeholder="Опишите товар своими словами: назначение, материал, размеры, комплектацию…"
-            maxlength={3000}
             spellcheck={false}
             onScroll={syncSpellScroll}
           />
@@ -1637,7 +1806,17 @@ export default function NewProduct() {
           </Show>
         </div>
       </TextField>
-      <div class="create-describe-meta"><span>Начните с типа товара, затем отличительные признаки: материал, размер, назначение. Без рекламных формулировок.</span><span>{description().length} / 3000</span></div>
+      <div class="create-describe-meta"><span>Начните с типа товара, затем отличительные признаки: материал, размер, назначение. Без рекламных формулировок.</span><span>{description().length} символов</span></div>
+      <Show when={suggestError()}>
+        <div class="create-autofill-error" role="alert">
+          <span>{suggestError()}</span>
+          <Button type="button" variant="outline" size="sm" onClick={() => {
+            const id = activeQueryId();
+            if (id) selectQuery(id);
+            else setQuerySelectionSeq((seq) => seq + 1);
+          }}>Повторить</Button>
+        </div>
+      </Show>
       <div class="create-describe-actions">
         <Button
           type="button"
