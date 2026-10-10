@@ -1,29 +1,20 @@
 import { query } from "@solidjs/router";
+import { apiCatalogStats, apiGetProduct, apiGetSimilarProducts, apiSearchProducts } from "./api";
 import type { DirectoryTab, SearchInput } from "./types";
 
-export const getCatalogStats = query(async () => {
-  "use server";
-  const { catalogStats } = await import("./server/search");
-  return catalogStats();
-}, "catalog-stats");
+export const getCatalogStats = query(async () => apiCatalogStats(), "catalog-stats");
 
-export const searchProducts = query(async (input: SearchInput) => {
-  "use server";
-  const { runSearch } = await import("./server/search");
-  return runSearch(input);
-}, "search-products");
+export const searchProducts = query(async (input: SearchInput) => apiSearchProducts(input), "search-products");
 
 export const getProduct = query(async (id: number) => {
-  "use server";
-  const { findProduct } = await import("./server/search");
-  return findProduct(id);
+  try {
+    return await apiGetProduct(id);
+  } catch {
+    return null;
+  }
 }, "product-detail");
 
-export const getSimilarProducts = query(async (id: number) => {
-  "use server";
-  const { findSimilarProducts } = await import("./server/search");
-  return findSimilarProducts(id);
-}, "similar-products");
+export const getSimilarProducts = query(async (id: number) => apiGetSimilarProducts(id), "similar-products");
 
 export const getKtruStats = query(async () => {
   "use server";
@@ -124,3 +115,9 @@ export const getDirectoryProducts = query(async (tab: DirectoryTab, code: string
   const { listDirectoryProducts } = await import("./server/classifiers");
   return listDirectoryProducts(tab, code);
 }, "directory-products");
+
+export const searchKtru = query(async (queryText: string) => {
+  "use server";
+  const { searchKtru: search } = await import("./server/ktru-tree");
+  return search(queryText);
+}, "ktru-search");

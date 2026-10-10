@@ -1,4 +1,4 @@
-import { DIMENSIONS, meowEmbedUrl, MODEL_ID } from "./config";
+import { DIMENSIONS, DOCUMENT_PROMPT, meowEmbedUrl, MODEL_ID, QUERY_PROMPT } from "./config";
 
 interface EmbedResponse {
   dense?: { model_id: string; dtype: string; shape: number[]; data: string };
@@ -18,17 +18,23 @@ export function decodeDense(response: EmbedResponse, count: number): Buffer[] {
   return Array.from({ length: count }, (_, index) => Buffer.from(bytes.subarray(index * vectorBytes, (index + 1) * vectorBytes)));
 }
 
+function embedEndpoint(): string {
+  return `${meowEmbedUrl().replace(/\/+$/, "")}/embed`;
+}
+
 export async function embedTexts(texts: string[], task: "query" | "document"): Promise<Buffer[]> {
   if (!texts.length) return [];
+  const dense_prompt = task === "query" ? QUERY_PROMPT : DOCUMENT_PROMPT;
   let response: Response;
   try {
-    response = await fetch(new URL("/embed", meowEmbedUrl()), {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ dense_model_id: MODEL_ID, dense_task: task, dense_prompt: task === "query" ? "search_query: " : "search_document: ", texts }),
+    response = await fetch(embedEndpoint(), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ dense_model_id: MODEL_ID, dense_task: task, dense_prompt, texts }),
       signal: AbortSignal.timeout(task === "query" ? 60000 : 300000),
     });
   } catch (error) {
-    throw new Error(`meow-embed недоступен (${meowEmbedUrl()}). Запустите сервис с ${MODEL_ID}.`, { cause: error });
+    throw new Error(`meow-embed недоступен (${meowEmbedUrl()}). Нужна модель ${MODEL_ID}.`, { cause: error });
   }
   if (!response.ok) {
     const detail = (await response.text()).slice(0, 500);

@@ -3,9 +3,9 @@ import { test } from "node:test";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { embedTexts } from "../src/lib/server/embeddings";
-import { DIMENSIONS, MODEL_ID } from "../src/lib/server/config";
+import { DIMENSIONS, DOCUMENT_PROMPT, MODEL_ID, QUERY_PROMPT } from "../src/lib/server/config";
 
-test("meow HTTP transport uses BERTA retrieval prefixes, task routing, and base64 response", async () => {
+test("meow HTTP transport uses EmbeddingGemma retrieval prompts, task routing, and base64 response", async () => {
   const requests: { dense_model_id: string; dense_task: string; dense_prompt: string; texts: string[] }[] = [];
   const server = createServer(async (req, res) => {
     assert.equal(req.url, "/embed");
@@ -22,12 +22,12 @@ test("meow HTTP transport uses BERTA retrieval prefixes, task routing, and base6
   const previous = process.env.MEOW_EMBED_URL;
   process.env.MEOW_EMBED_URL = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   try {
-    assert.equal((await embedTexts(["товар", "ещё товар"], "document")).length, 2);
+    assert.equal((await embedTexts(["title: товар | text: описание", "title: ещё | text: текст"], "document")).length, 2);
     assert.equal((await embedTexts(["запрос"], "query"))[0].length, DIMENSIONS * 4);
-    assert.equal(requests[0].dense_model_id, "sergeyzh/BERTA");
-    assert.equal(requests[0].dense_prompt, "search_document: ");
+    assert.equal(requests[0].dense_model_id, "google/embeddinggemma-2");
+    assert.equal(requests[0].dense_prompt, DOCUMENT_PROMPT);
     assert.equal(requests[0].dense_task, "document");
-    assert.equal(requests[1].dense_prompt, "search_query: ");
+    assert.equal(requests[1].dense_prompt, QUERY_PROMPT);
     assert.deepEqual(requests[1].texts, ["запрос"]);
   } finally {
     if (previous === undefined) delete process.env.MEOW_EMBED_URL;

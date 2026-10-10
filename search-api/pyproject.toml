@@ -1,0 +1,23 @@
+[project]
+name = "zakupki-search-api"
+version = "0.1.0"
+description = "FastAPI search backend for STE / KTRU (parquet catalogs + FTS/vec index)"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "httpx>=0.27",
+    "numpy>=2",
+    "pydantic-settings>=2.6",
+    "pyarrow>=18",
+    "sqlite-vec>=0.1.6",
+    "tqdm>=4.66",
+    "uvicorn[standard]>=0.32",
+]
+
+[project.scripts]
+zakupki-search-api = "search_api.__main__:main"
+zakupki-search-index = "search_api.cli:main"
+
+[dependency-groups]
+dev = ["pytest>=8", "httpx>=0.27"]

@@ -9,4 +9,8 @@ export { Skeleton } from "./skeleton";
 export type { SkeletonProps } from "./skeleton";
 export { StatePanel } from "./state-panel";
 export type { StatePanelProps } from "./state-panel";
+export {
+  Dialog, DialogTrigger, DialogClose, DialogPortal, DialogOverlay,
+  DialogContent, DialogHeader, DialogFooter, DialogTitle, DialogDescription,
+} from "./dialog";
 export { cn } from "./utils";

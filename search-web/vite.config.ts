@@ -6,5 +6,5 @@ import { arch, platform } from "node:process";
 
 export default defineConfig({
   plugins: [solidStart({ devOverlay: false }), tailwindcss(), nitro({ traceDeps: [`sqlite-vec-${platform === "win32" ? "windows" : platform}-${arch}*`] })],
-  ssr: { external: ["better-sqlite3", "sqlite-vec"] },
+  ssr: { external: ["better-sqlite3", "sqlite-vec", "nodejs-polars"] },
 });

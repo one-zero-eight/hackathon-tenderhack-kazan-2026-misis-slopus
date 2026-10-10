@@ -51,12 +51,23 @@ export interface SearchResult {
   mode: SearchMode;
 }
 
+export interface CategoryTreeNode {
+  id: number;
+  name: string;
+  parentId: number | null;
+  count: number;
+  hasChildren: boolean;
+  reconstructed: boolean;
+  nameResolved: boolean;
+}
+
 export interface CatalogStats {
   products: number;
   embedded: number;
   model: string;
   dimensions: number;
   categories: { id: number; name: string; count: number }[];
+  categoryTree: CategoryTreeNode[];
   lastImportedAt: string | null;
 }
 

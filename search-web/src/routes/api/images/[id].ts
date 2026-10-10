@@ -1,8 +1,8 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { APIEvent } from "@solidjs/start/server";
-import { getDatabase } from "../../../lib/server/database";
 import { searchDatabasePath } from "../../../lib/server/config";
+import { steHasImageId } from "../../../lib/server/ste-catalog";
 
 const inFlight = new Map<number, Promise<Uint8Array>>();
 const unavailable = new Map<number, number>();
@@ -18,9 +18,8 @@ export async function GET({ params }: APIEvent): Promise<Response> {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
   if ((unavailable.get(id) ?? 0) > Date.now()) return new Response("Image unavailable", { status: 404 });
-  // Accept only image identifiers actually present in the local catalog, not arbitrary URLs.
-  const known = getDatabase().sqlite.prepare("SELECT 1 FROM products,json_each(products.image_ids) image WHERE image.value=? LIMIT 1").get(id);
-  if (!known) return new Response("Not found", { status: 404 });
+  // Accept only image identifiers actually present in the parquet catalog, not arbitrary URLs.
+  if (!steHasImageId(id)) return new Response("Not found", { status: 404 });
   let request = inFlight.get(id);
   if (!request) {
     request = downloadImage(id, cachedPath).finally(() => inFlight.delete(id));

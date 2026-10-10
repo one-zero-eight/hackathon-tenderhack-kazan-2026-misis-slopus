@@ -84,6 +84,14 @@ export function normalizeProduct(raw: SourceCard): Product {
   };
 }
 
+const MAX_CHARACTERISTICS = 24;
+const MAX_CHAR_VALUE_LEN = 120;
+
+function formatCharacteristic(c: { name: string; value: string; unit?: string }): string {
+  const value = c.value.length > MAX_CHAR_VALUE_LEN ? `${c.value.slice(0, MAX_CHAR_VALUE_LEN - 1)}…` : c.value;
+  return `${c.name}: ${value}${c.unit ? ` ${c.unit}` : ""}`;
+}
+
 export function embeddingDocument(product: Product): string {
   const content = [
     `Категория: ${product.category}`,
@@ -91,13 +99,13 @@ export function embeddingDocument(product: Product): string {
     product.partNumber && `Артикул: ${product.partNumber}`,
     product.okpd2 && `ОКПД2: ${product.okpd2}`,
     product.ktruCode && `КТРУ: ${product.ktruCode}${product.ktruName ? ` ${product.ktruName}` : ""}`,
-    ...product.characteristics.map((c) => `${c.name}: ${c.value}${c.unit ? ` ${c.unit}` : ""}`),
+    ...product.characteristics.slice(0, MAX_CHARACTERISTICS).map(formatCharacteristic),
     product.description.slice(0, 2000),
   ].filter(Boolean).join("\n");
-  // BERTA has a 512-token context: keep the title and structured properties first.
-  return `${product.name}\n${content}`;
+  // EmbeddingGemma SearchQuery/Document: titled docs as `title: … | text: …`.
+  return `title: ${product.name} | text: ${content}`;
 }
 
 export function documentHash(document: string): string {
-  return createHash("sha256").update("berta:768:search_document:document-v1\0").update(document).digest("hex");
+  return createHash("sha256").update("embeddinggemma-2:768:search-result:document-v2\0").update(document).digest("hex");
 }

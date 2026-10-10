@@ -1,6 +1,7 @@
 import { A } from "@solidjs/router";
 import { AlertCircle, ArrowRight, ImageOff, Network, Package, RotateCcw, Search, Sparkles } from "lucide-solid";
 import { createEffect, createSignal, ErrorBoundary, For, on, Show, type JSX } from "solid-js";
+import { apiImageUrl } from "~/lib/api";
 import type { DirectoryTab, Product, ProductHit } from "~/lib/types";
 import { Badge, Button, Card, Skeleton, StatePanel } from "~/ui-kit";
 
@@ -72,7 +73,7 @@ export function ProductImage(props: { id: number; name: string; eager?: boolean 
   const [failed, setFailed] = createSignal(false);
   createEffect(on(() => props.id, () => setFailed(false), { defer: true }));
   return <Show when={!failed()} fallback={<ImagePlaceholder unavailable />}>
-    <img src={`/api/images/${props.id}`} alt={props.name} loading={props.eager ? "eager" : "lazy"} decoding="async" onError={() => setFailed(true)} />
+    <img src={apiImageUrl(props.id)} alt={props.name} loading={props.eager ? "eager" : "lazy"} decoding="async" onError={() => setFailed(true)} />
   </Show>;
 }
 

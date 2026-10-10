@@ -1,7 +1,7 @@
 import { Meta, Title } from "@solidjs/meta";
 import { A, createAsync, revalidate, useParams, useSearchParams } from "@solidjs/router";
 import { HttpStatusCode } from "@solidjs/start";
-import { ArrowLeft, ArrowUpRight, ChevronRight, FileText, Globe2, Info, Package, Sparkles, Tags } from "lucide-solid";
+import { ArrowLeft, ArrowUpRight, ChevronRight, FileText, Globe2, Package, Sparkles, Tags } from "lucide-solid";
 import { createSignal, For, Show, Suspense } from "solid-js";
 import { DataBoundary, ImagePlaceholder, ProductCard, ProductClassifierLinks, ProductImage, ResultsSkeleton } from "~/components/catalog";
 import { buttonVariants, Skeleton } from "~/ui-kit";
@@ -11,7 +11,7 @@ import { formatDate, formatNumber } from "~/lib/utils";
 
 function Gallery(props: { product: Product }) {
   const [selected, setSelected] = createSignal(0);
-  return <div class="product-gallery"><div class="gallery-main"><Show when={props.product.imageIds.length} fallback={<ImagePlaceholder />}><ProductImage id={props.product.imageIds[selected()] ?? props.product.imageIds[0]} name={props.product.name} eager /></Show><span class="gallery-caption">СТЕ {props.product.id}</span></div><Show when={props.product.imageIds.length > 1}><div class="gallery-thumbnails" aria-label="Изображения товара"><For each={props.product.imageIds}>{(id, index) => <button classList={{ selected: selected() === index() }} type="button" aria-label={`Изображение ${index() + 1}`} aria-pressed={selected() === index()} onClick={() => setSelected(index())}><ProductImage id={id} name={`${props.product.name}, изображение ${index() + 1}`} /></button>}</For></div></Show><p class="gallery-note"><Info size={14} />Изображения из карточки первоисточника</p></div>;
+  return <div class="product-gallery"><div class="gallery-main"><Show when={props.product.imageIds.length} fallback={<ImagePlaceholder />}><ProductImage id={props.product.imageIds[selected()] ?? props.product.imageIds[0]} name={props.product.name} eager /></Show><span class="gallery-caption">СТЕ {props.product.id}</span></div><Show when={props.product.imageIds.length > 1}><div class="gallery-thumbnails" aria-label="Изображения товара"><For each={props.product.imageIds}>{(id, index) => <button classList={{ selected: selected() === index() }} type="button" aria-label={`Изображение ${index() + 1}`} aria-pressed={selected() === index()} onClick={() => setSelected(index())}><ProductImage id={id} name={`${props.product.name}, изображение ${index() + 1}`} /></button>}</For></div></Show></div>;
 }
 
 function SimilarProducts(props: { id: number; back: string }) {

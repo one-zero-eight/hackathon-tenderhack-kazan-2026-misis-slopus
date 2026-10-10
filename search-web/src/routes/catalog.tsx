@@ -1,7 +1,8 @@
 import { Meta, Title } from "@solidjs/meta";
 import { createAsync, revalidate, useIsRouting, useLocation, useSearchParams } from "@solidjs/router";
-import { ArrowDown, ArrowLeft, ArrowRight, Check, ChevronDown, Layers3, Search, SlidersHorizontal, Sparkles, TextSearch } from "lucide-solid";
+import { ArrowDown, ArrowLeft, ArrowRight, Check, Layers3, Search, Sparkles, TextSearch } from "lucide-solid";
 import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show, Suspense } from "solid-js";
+import { CategoryPicker } from "~/components/category-picker";
 import { DataBoundary, EmptyState, ProductCard, ResultsSkeleton } from "~/components/catalog";
 import { Badge, Button, TextField, TextFieldInput, TextFieldLabel } from "~/ui-kit";
 import { getCatalogStats, searchProducts } from "~/lib/rpc";
@@ -16,6 +17,11 @@ const modes: { value: SearchMode; label: string; description: string; icon: type
 ];
 const param = (value: string | string[] | undefined) => Array.isArray(value) ? value[0] || "" : value || "";
 const positiveInt = (value: string) => /^\d+$/.test(value) && Number.isSafeInteger(Number(value)) && Number(value) > 0 ? Number(value) : undefined;
+/** Category id from URL: source category, or -1 (unresolved hierarchy). */
+const categoryIdParam = (value: string) => {
+  if (value === "-1") return -1;
+  return positiveInt(value);
+};
 
 function CatalogNumbers() {
   const stats = createAsync(() => getCatalogStats());
@@ -24,9 +30,11 @@ function CatalogNumbers() {
   </>}</Show>;
 }
 
-function CategorySelect(props: { value: string; onChange: (value: string) => void }) {
+function CategorySelect(props: { value: number | undefined; onChange: (value: number | undefined) => void }) {
   const stats = createAsync(() => getCatalogStats());
-  return <div class="category-select"><SlidersHorizontal size={16} /><select aria-label="Категория товаров" value={props.value} onChange={event => props.onChange(event.currentTarget.value)}><option value="">Все категории</option><For each={stats()?.categories}>{category => <option value={category.id}>{category.name} ({formatNumber(category.count)})</option>}</For></select><ChevronDown size={15} /></div>;
+  return <Show when={stats()}>{data =>
+    <CategoryPicker nodes={data().categoryTree ?? []} value={props.value} onChange={props.onChange} />
+  }</Show>;
 }
 
 function Results(props: { input: SearchInput; returnTo: string; reset: () => void; setPage: (page: number) => void }) {
@@ -47,8 +55,8 @@ export default function Home() {
     onCleanup(() => clearInterval(timer));
   });
   const query = () => param(params.q).trim();
-  const mode = (): SearchMode => ["hybrid", "semantic", "text"].includes(param(params.mode)) ? param(params.mode) as SearchMode : "hybrid";
-  const category = () => positiveInt(param(params.category));
+  const mode = (): SearchMode => ["hybrid", "semantic", "text"].includes(param(params.mode)) ? param(params.mode) as SearchMode : "text";
+  const category = () => categoryIdParam(param(params.category));
   const [draft, setDraft] = createSignal(query());
   createEffect(() => setDraft(query()));
   const input = createMemo<SearchInput>(() => ({ query: query(), mode: mode(), categoryId: category(), page: positiveInt(param(params.page)) ?? 1 }));
@@ -74,7 +82,7 @@ export default function Home() {
     </section>
     <section class="catalog-section" id="results" aria-label="Каталог товаров" aria-busy={isRouting()}>
       <div class="catalog-toolbar"><fieldset class="search-modes"><legend class="sr-only">Режим поиска</legend><For each={modes}>{option => <label classList={{ selected: mode() === option.value }} title={option.description}><input type="radio" name="mode" value={option.value} checked={mode() === option.value} onChange={() => setParams({ mode: option.value, page: undefined })} /><option.icon size={16} /><span>{option.label}</span><Show when={mode() === option.value}><Check size={13} class="mode-check" /></Show></label>}</For></fieldset>
-        <DataBoundary retry={() => revalidate(getCatalogStats.key)}><Suspense fallback={<span class="filter-loading">Загружаем категории…</span>}><CategorySelect value={category() ? String(category()) : ""} onChange={value => setParams({ category: value || undefined, page: undefined })} /></Suspense></DataBoundary>
+        <DataBoundary retry={() => revalidate(getCatalogStats.key)}><Suspense fallback={<span class="filter-loading">Загружаем категории…</span>}><CategorySelect value={category()} onChange={value => setParams({ category: value != null ? String(value) : undefined, page: undefined })} /></Suspense></DataBoundary>
       </div>
       <div class="mode-explanation"><Sparkles size={14} /><span>{mode() === "hybrid" ? "Два способа поиска вместе: точные совпадения и близость по смыслу." : mode() === "semantic" ? "Опишите назначение или свойства — поиск найдёт близкие по смыслу товары." : "Поиск по словам в названии, описании и характеристиках."}</span><Show when={isRouting()}><Badge variant="secondary" class="pending-badge">Обновляем…</Badge></Show></div>
       <DataBoundary resetKey={JSON.stringify(input())} retry={() => revalidate(searchProducts.key)}><Suspense fallback={<ResultsSkeleton />}><Results input={input()} returnTo={returnTo()} reset={reset} setPage={page => { setParams({ page: page === 1 ? undefined : page }); document.getElementById("results")?.scrollIntoView({ behavior: "smooth", block: "start" }); }} /></Suspense></DataBoundary>

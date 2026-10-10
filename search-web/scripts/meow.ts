@@ -1,8 +1,14 @@
 import { spawn } from "node:child_process";
 
 const executable = process.env.MEOW_EMBED_BIN ?? "meow-embed";
+// Text-only EmbeddingGemma 2 (~270M): omit vision/audio encoders.
+const modelOptions = JSON.stringify({
+  device: "cuda",
+  model_kwargs: { torch_dtype: "float32" },
+  config_kwargs: { vision_config: null, audio_config: null },
+});
 const child = spawn(executable, [
-  "--SentenceTransformer", "sergeyzh/BERTA", '{"device":"cuda","model_kwargs":{"torch_dtype":"float32"}}',
+  "--SentenceTransformer", "google/embeddinggemma-2", modelOptions,
   "--host", "127.0.0.1", "--port", "8067",
 ], {
   stdio: "inherit",

@@ -1,0 +1,99 @@
+from __future__ import annotations
+
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
+from pydantic import BaseModel
+
+from search_api import search as search_mod
+from search_api.config import settings
+from search_api.images import get_image
+from search_api.ste_catalog import category_diagnostics, find_product, product_to_dict
+
+app = FastAPI(title="zakupki-search-api", version="0.1.0")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[o.strip() for o in settings.cors_origins.split(",") if o.strip()],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+class SearchBody(BaseModel):
+    query: str = ""
+    mode: str = "hybrid"
+    page: int = 1
+    categoryId: int | None = None
+
+
+@app.get("/health")
+def health():
+    return {"ok": True, "model": settings.model_id}
+
+
+@app.get("/catalog/stats")
+def catalog_stats():
+    try:
+        return search_mod.catalog_stats()
+    except FileNotFoundError as exc:
+        raise HTTPException(503, str(exc)) from exc
+
+
+@app.get("/catalog/categories/diagnostics")
+def catalog_category_diagnostics():
+    try:
+        return category_diagnostics()
+    except FileNotFoundError as exc:
+        raise HTTPException(503, str(exc)) from exc
+
+
+@app.post("/catalog/search")
+async def catalog_search(body: SearchBody):
+    try:
+        return await search_mod.run_search(
+            query=body.query,
+            mode=body.mode,  # type: ignore[arg-type]
+            page=body.page,
+            category_id=body.categoryId,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(503, str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(503, str(exc)) from exc
+
+
+@app.get("/catalog/products/{product_id}")
+def product_detail(product_id: int):
+    product = find_product(product_id)
+    if product is None:
+        raise HTTPException(404, "Товар не найден")
+    return product_to_dict(product)
+
+
+@app.get("/catalog/products/{product_id}/similar")
+async def product_similar(product_id: int):
+    try:
+        return await search_mod.find_similar(product_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(503, str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(503, str(exc)) from exc
+
+
+@app.get("/images/{image_id}")
+async def image_proxy(image_id: int):
+    """Serve catalog images with on-disk cache. On FastAPI because Nitro/Vite
+    returns 404 for `<img>` → `/api/images/*` when Sec-Fetch-Dest: image."""
+    try:
+        data, media_type = await get_image(image_id)
+    except FileNotFoundError:
+        raise HTTPException(404, "Not found") from None
+    except (RuntimeError, ValueError):
+        raise HTTPException(502, "Image unavailable") from None
+    return Response(
+        content=data,
+        media_type=media_type,
+        headers={"Cache-Control": "public, max-age=604800", "X-Content-Type-Options": "nosniff"},
+    )

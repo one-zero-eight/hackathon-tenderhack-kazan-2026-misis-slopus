@@ -4,7 +4,7 @@ import Database from "better-sqlite3";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { migrate } from "drizzle-orm/better-sqlite3/migrator";
 import * as sqliteVec from "sqlite-vec";
-import { DIMENSIONS, MODEL_ID, searchDatabasePath } from "./config";
+import { DIMENSIONS, INDEX_SCHEMA_VERSION, MODEL_ID, searchDatabasePath } from "./config";
 import * as schema from "./schema";
 
 export function openDatabase(path = searchDatabasePath()) {
@@ -16,7 +16,19 @@ export function openDatabase(path = searchDatabasePath()) {
   sqliteVec.load(sqlite);
   const db = drizzle(sqlite, { schema });
   migrate(db, { migrationsFolder: resolve("drizzle") });
-  // Virtual tables are not represented by Drizzle's schema DSL.
+
+  const stored = sqlite.prepare("SELECT value FROM metadata WHERE key='index_schema_version'").get() as { value: string } | undefined;
+  if (stored && stored.value !== INDEX_SCHEMA_VERSION) {
+    sqlite.close();
+    throw new Error(`Устаревшая SEARCH_DATABASE (ожидается ${INDEX_SCHEMA_VERSION}). Удалите ${path} и выполните uv run zakupki-search-index в search-api`);
+  }
+
+  // Drop legacy FTS shapes (content-synced products table or older column lists).
+  const ftsSql = (sqlite.prepare("SELECT sql FROM sqlite_master WHERE name='products_fts'").get() as { sql: string } | undefined)?.sql ?? "";
+  if (ftsSql && (!ftsSql.includes("content=''") || ftsSql.includes("category_id"))) {
+    sqlite.exec("DROP TABLE IF EXISTS products_fts");
+  }
+
   sqlite.exec(`
     CREATE VIRTUAL TABLE IF NOT EXISTS product_vectors USING vec0(
       product_id INTEGER PRIMARY KEY,
@@ -25,31 +37,19 @@ export function openDatabase(path = searchDatabasePath()) {
     );
     CREATE VIRTUAL TABLE IF NOT EXISTS products_fts USING fts5(
       name, manufacturer, part_number, description, category, characteristics,
-      content='products', content_rowid='id', tokenize='unicode61 remove_diacritics 2'
+      content='', contentless_delete=1,
+      tokenize='unicode61 remove_diacritics 2'
     );
-    CREATE TRIGGER IF NOT EXISTS products_fts_insert AFTER INSERT ON products BEGIN
-      INSERT INTO products_fts(rowid,name,manufacturer,part_number,description,category,characteristics)
-      VALUES(new.id,new.name,new.manufacturer,new.part_number,new.description,new.category,new.characteristics);
-    END;
-    CREATE TRIGGER IF NOT EXISTS products_fts_delete AFTER DELETE ON products BEGIN
-      INSERT INTO products_fts(products_fts,rowid,name,manufacturer,part_number,description,category,characteristics)
-      VALUES('delete',old.id,old.name,old.manufacturer,old.part_number,old.description,old.category,old.characteristics);
-      DELETE FROM product_vectors WHERE product_id=old.id;
-    END;
-    CREATE TRIGGER IF NOT EXISTS products_fts_update AFTER UPDATE OF name,manufacturer,part_number,description,category,characteristics ON products BEGIN
-      INSERT INTO products_fts(products_fts,rowid,name,manufacturer,part_number,description,category,characteristics)
-      VALUES('delete',old.id,old.name,old.manufacturer,old.part_number,old.description,old.category,old.characteristics);
-      INSERT INTO products_fts(rowid,name,manufacturer,part_number,description,category,characteristics)
-      VALUES(new.id,new.name,new.manufacturer,new.part_number,new.description,new.category,new.characteristics);
-    END;
   `);
-  const signature = `${MODEL_ID}:${DIMENSIONS}:document-v1`;
-  const stored = sqlite.prepare("SELECT value FROM metadata WHERE key='embedding_signature'").get() as { value: string } | undefined;
-  if (stored && stored.value !== signature) {
+
+  const signature = `${MODEL_ID}:${DIMENSIONS}:search-result:document-v2`;
+  const embeddingSignature = sqlite.prepare("SELECT value FROM metadata WHERE key='embedding_signature'").get() as { value: string } | undefined;
+  if (embeddingSignature && embeddingSignature.value !== signature) {
     sqlite.close();
     throw new Error("Индекс создан для другой модели. Создайте новую SEARCH_DATABASE.");
   }
   sqlite.prepare("INSERT INTO metadata(key,value) VALUES('embedding_signature',?) ON CONFLICT(key) DO NOTHING").run(signature);
+  sqlite.prepare("INSERT INTO metadata(key,value) VALUES('index_schema_version',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(INDEX_SCHEMA_VERSION);
   return { sqlite, db };
 }
 

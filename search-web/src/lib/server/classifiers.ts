@@ -1,13 +1,22 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, statSync } from "node:fs";
-import { gunzipSync } from "node:zlib";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
+import pl from "nodejs-polars";
 import type { DirChildrenPage, DirectoryTab, DirTreeNode } from "../types";
-import { classifiersSqlitePath } from "./config";
+import {
+  classifiersSqlitePath,
+  kpgzParquetPath,
+  okpd2ParquetPath,
+  okeiParquetPath,
+  spgzParquetPath,
+} from "./config";
 import { getDatabase } from "./database";
 import { listKtruByOkpd } from "./ktru-tree";
+import { getSteCatalog } from "./ste-catalog";
+
+const CLASSIFIERS_SCHEMA = "classifiers-slim-v2";
 
 export type { DirChildrenPage, DirectoryTab, DirTreeNode };
 
@@ -48,15 +57,15 @@ function repoRoot(): string {
 function ensureDb(): Database.Database {
   if (db) return db;
   const sqlite = classifiersSqlitePath();
-  const sources = ["okpd2-moy-zakupki.parquet", "pp-kpgz.parquet", "spgz.parquet", "ste.parquet", "okei.parquet"].map(name => resolve(repoRoot(), "data", name));
+  const sources = ["okpd2-moy-zakupki.parquet", "pp-kpgz.parquet", "spgz.parquet", "okei.parquet"].map(name => resolve(repoRoot(), "data", name));
   const mtime = String(Math.trunc(Math.max(...sources.filter(existsSync).map(path => statSync(path).mtimeMs))));
   const needsBuild = !existsSync(sqlite) || (() => {
     try {
       const probe = new Database(sqlite, { readonly: true, fileMustExist: true });
       const stored = probe.prepare("SELECT value FROM meta WHERE key='source_mtime_ms'").get() as { value: string } | undefined;
-      const hasOkei = probe.prepare("SELECT 1 AS ok FROM sqlite_master WHERE type='table' AND name='okei'").get();
+      const schema = probe.prepare("SELECT value FROM meta WHERE key='schema'").get() as { value: string } | undefined;
       probe.close();
-      return stored?.value !== mtime || !hasOkei;
+      return stored?.value !== mtime || schema?.value !== CLASSIFIERS_SCHEMA;
     } catch {
       return true;
     }
@@ -78,14 +87,10 @@ function pageSlice<T>(items: T[], offset: number) {
   return { items: slice, total, offset: start, hasMore: start + slice.length < total };
 }
 
-function decode(payload: Buffer): Record<string, unknown> {
-  return JSON.parse(gunzipSync(payload).toString("utf8")) as Record<string, unknown>;
-}
-
 export function classifierStats() {
   const database = ensureDb();
   const get = (key: string) => Number((database.prepare("SELECT value FROM meta WHERE key=?").get(key) as { value: string } | undefined)?.value ?? 0);
-  return { okpd: get("okpd_count"), kpgz: get("kpgz_count"), spgz: get("spgz_count"), ste: get("ste_count"), okei: get("okei_count") };
+  return { okpd: get("okpd_count"), kpgz: get("kpgz_count"), spgz: get("spgz_count"), okei: get("okei_count") };
 }
 
 function okeiNode(row: { id: number; code: string | null; name: string; kind: string; childCount: number }): DirTreeNode {
@@ -470,28 +475,30 @@ export function reverseLinksFor(tab: DirectoryTab, code: string, okpdCode = ""):
 export function getDirectoryRecord(tab: DirectoryTab, code: string): DirRecord | null {
   const database = ensureDb();
   if (tab === "okpd") {
-    const row = database.prepare("SELECT code, name, payload FROM okpd WHERE code=? LIMIT 1").get(code) as { code: string; name: string; payload: Buffer } | undefined;
+    const row = database.prepare("SELECT code, name, level, is_actual AS isActual FROM okpd WHERE code=? LIMIT 1").get(code) as {
+      code: string; name: string; level: number | null; isActual: number;
+    } | undefined;
     if (!row) return null;
-    const raw = decode(row.payload);
     const reverse = reverseLinksFor("okpd", row.code);
     return {
       tab, code: row.code, name: row.name,
       fields: [
         { key: "code", label: "Код", value: row.code },
         { key: "name", label: "Название", value: row.name },
-        { key: "level", label: "Уровень", value: String(raw.level ?? "") },
-        { key: "actual", label: "Актуальность", value: raw.is_actual ? "да" : "нет" },
+        { key: "level", label: "Уровень", value: String(row.level ?? "") },
+        { key: "actual", label: "Актуальность", value: row.isActual ? "да" : "нет" },
       ],
       links: [],
       ...reverse,
     };
   }
   if (tab === "kpgz") {
-    const row = database.prepare("SELECT code, name, okpd_code AS okpdCode, okpd_name AS okpdName, payload FROM kpgz WHERE code=? LIMIT 1").get(code) as {
-      code: string; name: string; okpdCode: string | null; okpdName: string | null; payload: Buffer;
+    const row = database.prepare(
+      "SELECT code, name, okpd_code AS okpdCode, okpd_name AS okpdName, tree_level AS treeLevel, is_last AS isLast FROM kpgz WHERE code=? LIMIT 1",
+    ).get(code) as {
+      code: string; name: string; okpdCode: string | null; okpdName: string | null; treeLevel: number | null; isLast: number;
     } | undefined;
     if (!row) return null;
-    const raw = decode(row.payload);
     const links: DirCrossLink[] = [];
     if (row.okpdCode) links.push({ tab: "okpd", code: row.okpdCode, label: `ОКПД2 ${row.okpdCode}${row.okpdName ? ` — ${row.okpdName}` : ""}` });
     const reverse = reverseLinksFor("kpgz", row.code, row.okpdCode || "");
@@ -500,8 +507,8 @@ export function getDirectoryRecord(tab: DirectoryTab, code: string): DirRecord |
       fields: [
         { key: "code", label: "Код КПГЗ", value: row.code },
         { key: "name", label: "Название", value: row.name },
-        { key: "level", label: "Уровень", value: String(raw.treeLevel ?? "") },
-        { key: "last", label: "Последний уровень", value: raw.isLastLevel ? "да" : "нет" },
+        { key: "level", label: "Уровень", value: String(row.treeLevel ?? "") },
+        { key: "last", label: "Последний уровень", value: row.isLast ? "да" : "нет" },
       ],
       links,
       ...reverse,
@@ -510,18 +517,18 @@ export function getDirectoryRecord(tab: DirectoryTab, code: string): DirRecord |
   if (tab === "spgz") {
     const id = Number(code);
     if (!Number.isSafeInteger(id)) return null;
-    const row = database.prepare("SELECT id, name, kpgz_external_id AS kpgzExternalId, okpd2_code AS okpd2, payload FROM spgz WHERE id=?").get(id) as {
-      id: number; name: string; kpgzExternalId: number | null; okpd2: string | null; payload: Buffer;
+    const row = database.prepare(
+      "SELECT id, name, kpgz_external_id AS kpgzExternalId, okpd2_code AS okpd2, is_excluded AS excluded FROM spgz WHERE id=?",
+    ).get(id) as {
+      id: number; name: string; kpgzExternalId: number | null; okpd2: string | null; excluded: number;
     } | undefined;
     if (!row) return null;
-    const raw = decode(row.payload);
     const links: DirCrossLink[] = [];
     if (row.okpd2) links.push({ tab: "okpd", code: row.okpd2, label: `ОКПД2 ${row.okpd2}` });
     if (row.kpgzExternalId) {
       const kpgz = database.prepare("SELECT code, name FROM kpgz WHERE external_id=?").get(row.kpgzExternalId) as { code: string; name: string } | undefined;
       if (kpgz) links.push({ tab: "kpgz", code: kpgz.code, label: `КПГЗ ${kpgz.code} — ${kpgz.name}` });
     }
-    const chars = Array.isArray(raw.spgzCharacteristics) ? raw.spgzCharacteristics as { characteristicName?: string; value1?: string; value2?: string; characteristicSpgzEnums?: { value?: string }[] }[] : [];
     const reverse = reverseLinksFor("spgz", String(row.id), row.okpd2 || "");
     return {
       tab, code: String(row.id), name: row.name,
@@ -529,20 +536,15 @@ export function getDirectoryRecord(tab: DirectoryTab, code: string): DirRecord |
         { key: "id", label: "ID СПГЗ", value: String(row.id) },
         { key: "name", label: "Название", value: row.name },
         { key: "okpd2", label: "ОКПД2", value: row.okpd2 || "—" },
-        { key: "excluded", label: "Исключён", value: raw.isExcluded ? "да" : "нет" },
-        ...chars.slice(0, 12).map((item, index) => ({
-          key: `char-${index}`,
-          label: item.characteristicName || `Характеристика ${index + 1}`,
-          value: [item.value1, item.value2, ...(item.characteristicSpgzEnums ?? []).map(entry => entry.value).filter(Boolean)].filter(Boolean).join("; ") || "—",
-        })),
+        { key: "excluded", label: "Исключён", value: row.excluded ? "да" : "нет" },
       ],
       links,
       ...reverse,
     };
   }
   if (tab === "okei") {
-    const row = database.prepare("SELECT code, name, kind, razdel, podrazdel, payload FROM okei WHERE code=? LIMIT 1").get(code) as {
-      code: string; name: string; kind: string; razdel: string; podrazdel: string; payload: Buffer;
+    const row = database.prepare("SELECT code, name, kind, razdel, podrazdel FROM okei WHERE code=? LIMIT 1").get(code) as {
+      code: string; name: string; kind: string; razdel: string; podrazdel: string;
     } | undefined;
     if (!row) return null;
     const kindLabel = row.kind === "unit" ? "единица" : row.kind === "group" ? "группа" : "раздел";
@@ -564,103 +566,127 @@ export function getDirectoryRecord(tab: DirectoryTab, code: string): DirRecord |
 }
 
 export function getDirectoryRaw(tab: DirectoryTab, code: string): Record<string, unknown> | null {
-  const database = ensureDb();
-  if (tab === "okpd") {
-    const row = database.prepare("SELECT payload FROM okpd WHERE code=? LIMIT 1").get(code) as { payload: Buffer } | undefined;
-    return row ? decode(row.payload) : null;
-  }
-  if (tab === "kpgz") {
-    const row = database.prepare("SELECT payload FROM kpgz WHERE code=? LIMIT 1").get(code) as { payload: Buffer } | undefined;
-    return row ? decode(row.payload) : null;
-  }
-  if (tab === "spgz") {
-    const id = Number(code);
-    if (!Number.isSafeInteger(id)) return null;
-    const row = database.prepare("SELECT payload FROM spgz WHERE id=?").get(id) as { payload: Buffer } | undefined;
-    return row ? decode(row.payload) : null;
-  }
-  if (tab === "okei") {
-    const row = database.prepare("SELECT payload FROM okei WHERE code=? LIMIT 1").get(code) as { payload: Buffer } | undefined;
-    return row ? decode(row.payload) : null;
+  // Full source rows live in parquet; sqlite only keeps tree columns.
+  try {
+    if (tab === "okpd") {
+      const rows = pl.readParquet(okpd2ParquetPath(), {
+        columns: ["id", "code", "name", "parent", "level", "is_actual", "children_count", "comment"],
+      }).filter(pl.col("code").eq(pl.lit(code))).toRecords();
+      return (rows[0] as Record<string, unknown> | undefined) ?? null;
+    }
+    if (tab === "kpgz") {
+      const rows = pl.readParquet(kpgzParquetPath(), {
+        columns: ["id", "code", "name", "parentId", "externalId", "treeLevel", "isLastLevel", "okpd", "treePath", "innovation"],
+      }).filter(pl.col("code").eq(pl.lit(code))).toRecords();
+      return (rows[0] as Record<string, unknown> | undefined) ?? null;
+    }
+    if (tab === "spgz") {
+      const id = Number(code);
+      if (!Number.isSafeInteger(id)) return null;
+      const rows = pl.readParquet(spgzParquetPath(), {
+        columns: ["id", "name", "kpgzId", "okpd2Code", "okpdCode", "ktruId", "isExcluded", "spgzCharacteristics"],
+      }).filter(pl.col("id").eq(pl.lit(id))).toRecords();
+      return (rows[0] as Record<string, unknown> | undefined) ?? null;
+    }
+    if (tab === "okei") {
+      const rows = pl.readParquet(okeiParquetPath()).toRecords() as Array<Record<string, unknown>>;
+      const unit = rows.find((row) => row.code != null && String(row.code) === code);
+      if (unit) return unit;
+      // Synthetic section/group codes: s:{razdel} / g:{razdel}:{podrazdel}
+      if (code.startsWith("s:")) {
+        const razdel = code.slice(2);
+        return rows.find((row) => row.code == null && String(row.podrazdel) === "0" && String(row.razdel) === razdel) ?? null;
+      }
+      if (code.startsWith("g:")) {
+        const [, razdel, podrazdel] = code.split(":");
+        return rows.find((row) =>
+          row.code == null && String(row.razdel) === razdel && String(row.podrazdel) === podrazdel) ?? null;
+      }
+      return null;
+    }
+  } catch {
+    return null;
   }
   return null;
 }
 
-function catalogWithSte() {
-  ensureDb();
+let indexedIds: Set<number> | undefined;
+let indexedFingerprint = "";
+
+function indexedProductIds(): Set<number> {
   const { sqlite } = getDatabase();
-  const attached = sqlite.prepare("SELECT 1 AS ok FROM pragma_database_list WHERE name = 'classifiers'").get();
-  if (!attached) sqlite.prepare("ATTACH DATABASE ? AS classifiers").run(classifiersSqlitePath());
-  return sqlite;
+  const hasIndex = sqlite.prepare("SELECT 1 AS ok FROM sqlite_master WHERE type='table' AND name='index_state'").get();
+  const table = hasIndex ? "index_state" : "products";
+  const idColumn = hasIndex ? "product_id" : "id";
+  const fingerprint = `${table}:${(sqlite.prepare(`SELECT count(*) AS n FROM ${table}`).get() as { n: number }).n}`;
+  if (!indexedIds || indexedFingerprint !== fingerprint) {
+    indexedIds = new Set(
+      (sqlite.prepare(`SELECT ${idColumn} AS id FROM ${table}`).all() as { id: number }[]).map((row) => row.id),
+    );
+    indexedFingerprint = fingerprint;
+  }
+  return indexedIds;
+}
+
+function listIndexedCatalogProducts(
+  match: (frame: ReturnType<typeof getSteCatalog>["frame"]) => ReturnType<typeof getSteCatalog>["frame"],
+  limit: number,
+): { total: number; items: DirProductHit[] } {
+  const indexed = indexedProductIds();
+  const kpgzName = (code: string) => {
+    if (!code) return "";
+    const row = ensureDb().prepare("SELECT name FROM kpgz WHERE code=? LIMIT 1").get(code) as { name: string } | undefined;
+    return row?.name ?? "";
+  };
+  const rows = match(getSteCatalog().frame)
+    .select("id", "name", "okpd2_code", "production_code", "production_name")
+    .sort(["name", "id"])
+    .toRecords() as {
+    id: number;
+    name: string | null;
+    okpd2_code: string | null;
+    production_code: string | null;
+    production_name: string | null;
+  }[];
+  const hits: DirProductHit[] = [];
+  let total = 0;
+  for (const row of rows) {
+    if (!indexed.has(row.id)) continue;
+    total += 1;
+    if (hits.length >= limit) continue;
+    const kpgzCode = (row.production_code ?? "").trim();
+    hits.push({
+      id: row.id,
+      name: (row.name ?? "").trim(),
+      okpd2: (row.okpd2_code ?? "").trim(),
+      kpgzCode,
+      kpgzName: (row.production_name ?? "").trim() || kpgzName(kpgzCode),
+    });
+  }
+  return { total, items: hits };
 }
 
 export function listDirectoryProducts(tab: DirectoryTab, code: string, limit = 24): { total: number; items: DirProductHit[] } {
-  // Only products present in the search catalog — ste.parquet alone has many IDs without local cards.
-  const database = catalogWithSte();
   if (tab === "okpd") {
-    const total = (database.prepare(`
-      SELECT count(*) AS n FROM classifiers.ste_product sp
-      INNER JOIN products p ON p.id = sp.id WHERE sp.okpd2 = ?
-    `).get(code) as { n: number }).n;
-    const items = database.prepare(`
-      SELECT sp.id, p.name AS name, sp.okpd2, sp.kpgz_code AS kpgzCode, sp.kpgz_name AS kpgzName
-      FROM classifiers.ste_product sp
-      INNER JOIN products p ON p.id = sp.id
-      WHERE sp.okpd2 = ? ORDER BY p.name LIMIT ?
-    `).all(code, limit) as DirProductHit[];
-    return { total, items };
+    return listIndexedCatalogProducts((frame) => frame.filter(pl.col("okpd2_code").eq(pl.lit(code))), limit);
   }
   if (tab === "kpgz") {
-    const total = (database.prepare(`
-      SELECT count(*) AS n FROM classifiers.ste_product sp
-      INNER JOIN products p ON p.id = sp.id WHERE sp.kpgz_code = ?
-    `).get(code) as { n: number }).n;
-    const items = database.prepare(`
-      SELECT sp.id, p.name AS name, sp.okpd2, sp.kpgz_code AS kpgzCode, sp.kpgz_name AS kpgzName
-      FROM classifiers.ste_product sp
-      INNER JOIN products p ON p.id = sp.id
-      WHERE sp.kpgz_code = ? ORDER BY p.name LIMIT ?
-    `).all(code, limit) as DirProductHit[];
-    return { total, items };
+    return listIndexedCatalogProducts((frame) => frame.filter(pl.col("production_code").eq(pl.lit(code))), limit);
   }
   if (tab === "spgz") {
     const record = getDirectoryRecord("spgz", code);
-    const okpd2 = record?.fields.find(field => field.key === "okpd2")?.value;
+    const okpd2 = record?.fields.find((field) => field.key === "okpd2")?.value;
     if (!okpd2 || okpd2 === "—") return { total: 0, items: [] };
     return listDirectoryProducts("okpd", okpd2, limit);
   }
   if (tab === "okei") {
     const unit = ensureDb().prepare("SELECT kind, name FROM okei WHERE code=? LIMIT 1").get(code) as { kind: string; name: string } | undefined;
     if (!unit || unit.kind !== "unit") return { total: 0, items: [] };
-    const total = (database.prepare("SELECT count(*) AS n FROM products WHERE lower(unit) = lower(?)").get(unit.name) as { n: number }).n;
-    const items = database.prepare(`
-      SELECT p.id, p.name AS name,
-        coalesce(sp.okpd2, '') AS okpd2,
-        coalesce(sp.kpgz_code, '') AS kpgzCode,
-        coalesce(sp.kpgz_name, '') AS kpgzName
-      FROM products p
-      LEFT JOIN classifiers.ste_product sp ON sp.id = p.id
-      WHERE lower(p.unit) = lower(?)
-      ORDER BY p.name LIMIT ?
-    `).all(unit.name, limit) as DirProductHit[];
-    return { total, items };
-  }
-  if (tab === "ktru") {
-    return { total: 0, items: [] };
+    const needle = unit.name.toLocaleLowerCase("ru");
+    return listIndexedCatalogProducts(
+      (frame) => frame.filter(pl.col("okei").str.toLowerCase().eq(pl.lit(needle))),
+      limit,
+    );
   }
   return { total: 0, items: [] };
-}
-
-const steCache = new Map<number, { okpd2: string; kpgzCode: string; kpgzName: string } | null>();
-
-export function steClassification(productId: number): { okpd2: string; kpgzCode: string; kpgzName: string } | null {
-  if (steCache.has(productId)) return steCache.get(productId)!;
-  const database = ensureDb();
-  const row = database.prepare("SELECT okpd2, kpgz_code AS kpgzCode, kpgz_name AS kpgzName FROM ste_product WHERE id=?").get(productId) as {
-    okpd2: string; kpgzCode: string; kpgzName: string;
-  } | undefined;
-  const value = row ?? null;
-  if (steCache.size > 20000) steCache.clear();
-  steCache.set(productId, value);
-  return value;
 }

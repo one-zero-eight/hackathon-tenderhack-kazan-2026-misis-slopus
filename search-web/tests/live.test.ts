@@ -5,7 +5,7 @@ import { embedQuery } from "../src/lib/server/embeddings";
 import { runSearch } from "../src/lib/server/search";
 import { DIMENSIONS } from "../src/lib/server/config";
 
-test("live BERTA /embed query and sqlite-vec semantic/hybrid retrieval", { skip: process.env.LIVE_EMBED !== "1" }, async () => {
+test("live EmbeddingGemma /embed query and sqlite-vec semantic/hybrid retrieval", { skip: process.env.LIVE_EMBED !== "1" }, async () => {
   const vector = await embedQuery("пылесборник для пылесоса");
   assert.equal(vector.length, DIMENSIONS * 4);
   const semantic = await runSearch({ query: "пылесборник для пылесоса", mode: "semantic" });

@@ -1,33 +1,28 @@
 # Поиск по каталогу СТЕ
 
-Веб-приложение для поиска стандартных товарных единиц [Портала поставщиков Москвы](https://zakupki.mos.ru/). Работает с локальным каталогом: текстовый поиск — SQLite FTS5, семантический — [sergeyzh/BERTA](https://huggingface.co/sergeyzh/BERTA) и sqlite-vec, гибридный объединяет обе выдачи через Reciprocal Rank Fusion.
+UI для каталога стандартных товарных единиц [Портала поставщиков Москвы](https://zakupki.mos.ru/).
+
+**Поиск** (FTS / semantic / hybrid / similar) — отдельный FastAPI backend: [`../search-api`](../search-api).  
+**КТРУ**, карточки товаров и прокси картинок — этот Solid-сервер (Parquet через nodejs-polars).
 
 ## Возможности
 
-- Три режима поиска: по словам, по смыслу и гибридный; точный поиск по ID СТЕ.
-- Фильтрация по категории и пагинация по 24 товара.
-- Карточки с характеристиками, производителем, моделью, ценой при её наличии и кодами ОКПД2/КПГЗ/СПГЗ.
-- До шести похожих товаров по близости векторов.
-- Загрузка изображений с Портала поставщиков и локальный дисковый кеш.
-- Повторяемый импорт и возобновляемая индексация: неизменённые документы сохраняют векторы.
+- Каталог: режимы «по словам» / «по смыслу» / гибрид, фильтр по категории, пагинация.
+- Карточка СТЕ и до шести похожих товаров (similar — через API).
+- Дерево и пикер КТРУ из `ktru-actual.parquet`.
+- Картинки с Портала поставщиков + локальный дисковый кеш (`/api/images/...`).
 
-Стек: TypeScript, SolidStart 2 / SolidJS, Vite 8, Nitro, Tailwind CSS 4, Kobalte, Drizzle ORM, better-sqlite3 и sqlite-vec. Сервер эмбеддингов запускается отдельно через `meow-embed`.
-
-Переиспользуемые компоненты и тема выделены в [UI-kit](src/ui-kit/README.md).
-Импорт компонентов — из `~/ui-kit`, интерактивные примеры — на `/ui-kit`.
+Стек UI: TypeScript, SolidStart 2 / SolidJS, Vite 8, Nitro, Tailwind CSS 4, Kobalte.  
+Компоненты: [`src/ui-kit`](src/ui-kit/README.md), демо — `/ui-kit`.
 
 ## Требования
 
-- Node.js **24+** и pnpm **11.18.0** (версия закреплена в `packageManager`).
-- Исходные подробные карточки СТЕ в SQLite; подготовка из опубликованного JSONL описана ниже.
-- Для семантического поиска: Python-окружение с `meow-embed[server]`, Sentence Transformers и PyTorch. Штатный `meow:start` запускает модель на **CUDA в float32**: нужны совместимые NVIDIA GPU, драйвер и сборка PyTorch.
-- Интернет для первоначальной загрузки модели и некешированных изображений. Текстовый поиск после импорта не требует сервера эмбеддингов.
+- Node.js **24+**, pnpm **11.18.0**
+- Python **3.12+** / [uv](https://docs.astral.sh/uv/) для `search-api`
+- Parquet: `../data/ste.parquet`, `ktru-actual.parquet`, `okpd2-moy-zakupki.parquet` ([данные](../data/README.md))
+- Для semantic: доступный meow-embed с EmbeddingGemma-2 (по умолчанию удалённый API)
 
-Все команды ниже выполняются из `search-web/`, если не указано иное.
-
-## Установка и конфигурация
-
-Если pnpm ещё не установлен, установите версию **11.18.0** по [официальной инструкции](https://pnpm.io/installation). При установленном Corepack можно выполнить `corepack enable`: он выберет версию из `packageManager`.
+## Установка
 
 ```bash
 cd search-web
@@ -35,136 +30,77 @@ pnpm install --frozen-lockfile
 cp .env.example .env
 ```
 
-Настройки в `.env`:
-
-- `SOURCE_DATABASE` — исходная база карточек; по умолчанию `../data/tmp/ste-details.sqlite`.
-- `SEARCH_DATABASE` — база приложения, FTS и векторного индекса; по умолчанию `./data/search-berta.sqlite`.
-- `MEOW_EMBED_URL` — адрес сервера эмбеддингов; по умолчанию `http://127.0.0.1:8067`.
-- `EMBED_BATCH_SIZE` — размер батча индексации, по умолчанию `64`; допустимо `1–128`.
-
-Пути разрешаются относительно текущей рабочей директории. Исходная и поисковая базы должны быть **разными файлами**. Исходная открывается только для чтения; миграции применяются к поисковой базе автоматически при её открытии.
-
-### Подготовка исходной базы
-
-Рабочий SQLite-чекпойнт загрузчика **не опубликован**. Если он уже есть локально, используйте стандартный `SOURCE_DATABASE`. Простое распаковывание JSONL не создаёт SQLite: импорт ожидает таблицу `sku_details` с полями `sku_id`, `fetched_at`, `payload`, где `payload` — JSON подробной карточки.
-
-Для запуска на опубликованном снимке скачайте `../data/ste-details.jsonl.gz` через Git LFS:
-
 ```bash
-git lfs pull --include="data/ste-details.jsonl.gz"
+git lfs pull --include="data/ste.parquet,data/ktru-actual.parquet,data/okpd2-moy-zakupki.parquet"
 ```
 
-Создайте отдельную исходную базу из этого снимка (нужен Python 3):
+### `.env`
 
-```bash
-python3 - <<'PY'
-import gzip
-import json
-import sqlite3
-from datetime import datetime, timezone
-from pathlib import Path
-
-path = Path("data/source.sqlite")
-if path.exists():
-    raise FileExistsError(path)
-path.parent.mkdir(parents=True, exist_ok=True)
-restored_at = datetime.now(timezone.utc).isoformat()
-with sqlite3.connect(path) as db:
-    db.execute("CREATE TABLE sku_details (sku_id INTEGER PRIMARY KEY, fetched_at TEXT NOT NULL, payload TEXT NOT NULL)")
-    with gzip.open("../data/ste-details.jsonl.gz", "rt", encoding="utf-8") as source:
-        db.executemany(
-            "INSERT INTO sku_details VALUES (?, ?, ?)",
-            ((json.loads(line)["id"], restored_at, line.strip()) for line in source if line.strip()),
-        )
-PY
-```
-
-Затем задайте в `.env` `SOURCE_DATABASE=./data/source.sqlite`. Здесь `fetched_at` обозначает время восстановления, а не реальное время скачивания карточки. Записи с `_fetchError` импортёр пропускает. Источники и ограничения снимков описаны в [документации данных](../data/README.md).
+| Variable | Назначение |
+|----------|------------|
+| `SEARCH_API_URL` / `VITE_SEARCH_API_URL` | FastAPI, по умолчанию `http://127.0.0.1:8070` |
+| `CATEGORY_PARQUETS` | Основные parquet (по умолчанию Инструменты/Мебель/Одежда) |
+| `STE_PARQUET` | Опциональный доп. ste; пусто = не грузить |
+| `KTRU_PARQUET` / `OKPD2_PARQUET` | Дерево КТРУ |
+| `SEARCH_DATABASE` | Путь к индексу (кеш картинок рядом); индекс собирает `search-api` |
+| `MEOW_EMBED_URL` | Только для локального `meow:start` / бенчей; поиск эмбеддит API |
 
 ## Запуск
 
-### 1. Импорт каталога
+### 1. Индекс + API (`search-api`)
 
 ```bash
-pnpm run data:import
+cd ../search-api
+uv sync
+uv run zakupki-search-index          # import + embed
+uv run zakupki-search-api            # :8070
 ```
 
-После импорта доступен текстовый поиск. Повторный запуск обновляет карточки; векторы сбрасываются только при изменении текста, используемого для эмбеддинга.
+Подробности — в [README search-api](../search-api/README.md).
 
-### 2. Сервер BERTA
-
-Установите `meow-embed[server]` в подготовленное Python-окружение и запустите его в отдельном терминале:
+Опционально локальный эмбеддер:
 
 ```bash
-python -m pip install 'meow-embed[server]'
-pnpm run meow:start
+cd ../search-web
+pnpm run meow:start                  # :8067
+# в search-api: MEOW_EMBED_URL=http://127.0.0.1:8067
 ```
 
-Скрипт слушает `127.0.0.1:8067`, загружает `sergeyzh/BERTA` на CUDA и использует float32. Если исполняемый файл не находится в `PATH`, передайте полный путь:
+### 2. UI
 
 ```bash
-MEOW_EMBED_BIN=/absolute/path/to/venv/bin/meow-embed pnpm run meow:start
+cd search-web
+pnpm run dev                         # http://127.0.0.1:3000
 ```
 
-**`meow:start` не читает `.env`**: `MEOW_EMBED_BIN` нужно экспортировать в окружение или передать прямо в команде. Для сервера на другом адресе настройте `MEOW_EMBED_URL` у приложения и индексатора. Ожидается HTTP `POST /embed` с моделью BERTA и 768-мерными float32-векторами в base64.
+- `/` — создание товара / пикер КТРУ  
+- `/catalog` — поиск  
+- `/ktru` — дерево КТРУ  
+- `/products/:id` — карточка  
 
-### 3. Векторный индекс
+Production:
 
 ```bash
-pnpm run data:embed
+pnpm run build && pnpm start         # + запущенный zakupki-search-api
 ```
 
-Для ограниченного первого запуска или подбора батча:
-
-```bash
-pnpm run data:embed --limit 1000 --batch 32
-```
-
-Индексатор сохраняет каждый батч и при повторном запуске продолжает с оставшихся карточек. SIGINT/SIGTERM останавливают его после текущего батча. Одновременный запуск второго индексатора блокируется SQLite lease.
-
-`pnpm run data:index` последовательно выполняет импорт и индексацию; сервер эмбеддингов должен быть уже запущен.
-
-### 4. Веб-приложение
-
-```bash
-pnpm run dev
-```
-
-Откройте [http://127.0.0.1:3000](http://127.0.0.1:3000). Каталог доступен на `/`, карточки — на `/products/<id>`.
-
-Для production-сборки:
-
-```bash
-pnpm run build
-pnpm start
-```
-
-Запускайте сервер из `search-web/`, сохранив рядом каталог `drizzle/` и доступ к файлу `SEARCH_DATABASE`. `pnpm start` читает `.env`; семантические запросы по-прежнему требуют отдельного сервера BERTA. Базу и кеш изображений нужно хранить на постоянном диске.
-
-## Проверки и обслуживание
+## Проверки
 
 ```bash
 pnpm run typecheck
 pnpm test
-pnpm run db:migrate
-pnpm run bench:embed --batches 8,16,32,64
+pnpm run bench:embed --batches 8,16,32,64   # нужен meow-embed
 ```
 
-Обычные тесты проверяют нормализацию, импорт, FTS, векторный поиск, гибридное ранжирование и HTTP-контракт без настоящей модели. Бенчмарк требует запущенного `meow-embed` и карточек с `embedded_hash IS NULL`.
-
-Live-тест включается явно и проверяет реальные запросы BERTA на заполненном индексе. Он ожидает товары для запросов «пылесборник» и `Neolux`:
+Live-эмбеддинги:
 
 ```bash
 LIVE_EMBED=1 node --env-file-if-exists=.env --import tsx --test tests/live.test.ts
 ```
 
-`pnpm run db:generate` создаёт Drizzle-миграции после изменения схемы. FTS5, sqlite-vec и триггеры инициализируются отдельно в `src/lib/server/database.ts`.
-
 ## Ограничения
 
-- Семантическая и гибридная выдачи ограничены **240** кандидатами; текстовый поиск считает все совпадения. Частичная индексация ищет по смыслу только среди уже обработанных карточек.
-- Пустой векторный индекс или недоступный `meow-embed` дают явную ошибку, без скрытого переключения на текстовый поиск. Выберите режим «По словам», если нужен только FTS.
-- Индекс привязан к BERTA, размерности 768 и формату документа. При смене модели используйте новую поисковую базу и переиндексацию.
-- Изображения не входят в снимок данных: скачиваются по запросу и кешируются в `images/` рядом с поисковой базой.
-- Полнота, актуальность характеристик и наличие цен зависят от исходных карточек; приложение не дополняет отсутствующие значения.
-- `.env`, локальные базы, кеши и `node_modules/` исключены из Git. Приложению не нужны ключи DeepSeek или учётные данные загрузчиков для поиска по уже импортированным данным.
+- Semantic/hybrid без векторов или без meow-embed на стороне API — явная ошибка; текстовый режим работает после `zakupki-search-index import`.
+- Индекс привязан к EmbeddingGemma-2 (768d) и формату `title:…|text:…`; старый BERTA-индекс несовместим.
+- Изображения не в снимке данных — качаются по запросу.
+- Полнота полей и цен зависит от исходных карточек.
