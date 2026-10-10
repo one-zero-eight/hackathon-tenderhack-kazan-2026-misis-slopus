@@ -1,12 +1,7 @@
 import type { CatalogStats, CharacteristicAutofillInput, CharacteristicAutofillResult, Product, ProductHit, SearchInput, SearchResult } from "./types";
 
-export const searchApiUrl = () =>
-  (import.meta as ImportMeta & { env?: Record<string, string> }).env?.VITE_SEARCH_API_URL
-  || (typeof process !== "undefined" ? process.env.SEARCH_API_URL : undefined)
-  || "http://127.0.0.1:8070";
-
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${searchApiUrl().replace(/\/+$/, "")}${path}`, {
+  const response = await fetch(`/api/search${path}`, {
     ...init,
     headers: { Accept: "application/json", ...(init?.headers ?? {}) },
   });
@@ -48,5 +43,4 @@ export const apiAutofillCharacteristics = (input: CharacteristicAutofillInput, s
     signal,
   });
 
-/** Image URLs must hit FastAPI — Nitro 404s `<img>` to `/api/images/*` (Sec-Fetch-Dest: image). */
-export const apiImageUrl = (id: number) => `${searchApiUrl().replace(/\/+$/, "")}/images/${id}`;
+export const apiImageUrl = (id: number) => `/api/search/images/${id}`;

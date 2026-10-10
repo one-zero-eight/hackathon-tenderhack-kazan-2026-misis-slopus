@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { apiAutofillCharacteristics } from "../src/lib/api";
+import { apiAutofillCharacteristics, apiCatalogStats, apiGetProduct, apiGetSimilarProducts, apiImageUrl, apiSearchProducts } from "../src/lib/api";
+import { apiSearchProducts as serverSearchProducts } from "../src/lib/server/search-api";
+import { GET, POST } from "../src/routes/api/search/[...path]";
+import type { APIEvent } from "@solidjs/start/server";
 import { suggestFromNeighbors } from "../src/lib/server/neighbor-suggest";
 import { getSoleSpgzForKpgz } from "../src/lib/server/classifiers";
 import { embedTexts } from "../src/lib/server/embeddings";
@@ -39,7 +42,7 @@ test("autofill transport sends the actual schema, supports abort and exposes API
   };
   try {
     globalThis.fetch = async (url, init) => {
-      assert.ok(String(url).endsWith("/characteristics/autofill"));
+      assert.equal(url, "/api/search/characteristics/autofill");
       assert.equal(init?.method, "POST");
       assert.equal(init?.signal, controller.signal);
       assert.deepEqual(JSON.parse(String(init?.body)), input);
@@ -52,6 +55,112 @@ test("autofill transport sends the actual schema, supports abort and exposes API
     await assert.rejects(apiAutofillCharacteristics(input), { message: "TypeSafe API: HTTP 429" });
   } finally {
     globalThis.fetch = originalFetch;
+  }
+});
+
+test("catalog browser transport uses only same-origin Solid API URLs", async () => {
+  const originalFetch = globalThis.fetch;
+  const urls: string[] = [];
+  try {
+    globalThis.fetch = async (url) => {
+      urls.push(String(url));
+      return Response.json({});
+    };
+    await apiCatalogStats();
+    await apiSearchProducts({ query: "шкаф", mode: "text" });
+    await apiGetProduct(123);
+    await apiGetSimilarProducts(123);
+    assert.deepEqual(urls, [
+      "/api/search/catalog/stats", "/api/search/catalog/search",
+      "/api/search/catalog/products/123", "/api/search/catalog/products/123/similar",
+    ]);
+    assert.equal(apiImageUrl(456), "/api/search/images/456");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+function proxyEvent(path: string, init?: RequestInit): Pick<APIEvent, "request" | "params"> {
+  const request = new Request(`http://192.168.1.10:3000/api/search/${path}`, init);
+  return { request, params: { path } };
+}
+
+test("Solid proxy forwards requests, errors and binary images to the server-only API", async () => {
+  const originalFetch = globalThis.fetch;
+  const previousUrl = process.env.SEARCH_API_URL;
+  process.env.SEARCH_API_URL = "http://127.0.0.1:18070/";
+  try {
+    const body = JSON.stringify({ query: "шкаф", mode: "text", page: 2, categoryId: 5 });
+    const event = proxyEvent("catalog/search", {
+      method: "POST", body,
+      headers: { "Content-Type": "application/json", Cookie: "private=value", Origin: "http://192.168.1.10:3000" },
+    });
+    globalThis.fetch = async (url, init) => {
+      assert.equal(url, "http://127.0.0.1:18070/catalog/search");
+      assert.equal(init?.method, "POST");
+      assert.equal(init?.body, body);
+      assert.equal(init?.signal, event.request.signal);
+      const headers = new Headers(init?.headers);
+      assert.equal(headers.get("Content-Type"), "application/json");
+      assert.equal(headers.get("Cookie"), null);
+      assert.equal(headers.get("Origin"), null);
+      return Response.json({ items: [] });
+    };
+    assert.deepEqual(await (await POST(event)).json(), { items: [] });
+
+    globalThis.fetch = async () => Response.json({ detail: "TypeSafe API: HTTP 429" }, {
+      status: 502, headers: { "Retry-After": "30" },
+    });
+    const error = await POST(proxyEvent("characteristics/autofill", { method: "POST", body: "{}" }));
+    assert.equal(error.status, 502);
+    assert.equal(error.headers.get("Retry-After"), "30");
+    assert.deepEqual(await error.json(), { detail: "TypeSafe API: HTTP 429" });
+
+    const image = new Uint8Array([0xff, 0xd8, 0xff, 0x00]);
+    globalThis.fetch = async (url) => {
+      assert.equal(url, "http://127.0.0.1:18070/images/456");
+      return new Response(image, { headers: {
+        "Content-Type": "image/jpeg", "Cache-Control": "public, max-age=604800", "X-Content-Type-Options": "nosniff",
+      } });
+    };
+    const response = await GET(proxyEvent("images/456", { headers: { "Sec-Fetch-Dest": "image" } }));
+    assert.equal(response.headers.get("Content-Type"), "image/jpeg");
+    assert.equal(response.headers.get("Cache-Control"), "public, max-age=604800");
+    assert.equal(response.headers.get("X-Content-Type-Options"), "nosniff");
+    assert.deepEqual(new Uint8Array(await response.arrayBuffer()), image);
+
+    globalThis.fetch = async () => { throw new Error("Connection refused"); };
+    const unavailable = await GET(proxyEvent("catalog/stats"));
+    assert.equal(unavailable.status, 502);
+    assert.deepEqual(await unavailable.json(), { detail: "Сервер поиска недоступен" });
+
+    globalThis.fetch = async () => { assert.fail("Unknown routes must not reach FastAPI"); };
+    for (const path of ["health", "images/../health", "catalog/products/1/other", "https://example.com", "catalog/search"]) {
+      assert.equal((await GET(proxyEvent(path))).status, 404);
+    }
+    assert.equal((await POST(proxyEvent("catalog/stats", { method: "POST" }))).status, 404);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (previousUrl === undefined) delete process.env.SEARCH_API_URL;
+    else process.env.SEARCH_API_URL = previousUrl;
+  }
+});
+
+test("server-side neighbor search calls FastAPI directly without a Solid proxy round trip", async () => {
+  const originalFetch = globalThis.fetch;
+  const previousUrl = process.env.SEARCH_API_URL;
+  process.env.SEARCH_API_URL = "http://127.0.0.1:18070";
+  try {
+    globalThis.fetch = async (url, init) => {
+      assert.equal(url, "http://127.0.0.1:18070/catalog/search");
+      assert.deepEqual(JSON.parse(String(init?.body)), { query: "шкаф", mode: "semantic", page: 1 });
+      return Response.json({ items: [] });
+    };
+    assert.deepEqual(await serverSearchProducts({ query: "шкаф", mode: "semantic" }), { items: [] });
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (previousUrl === undefined) delete process.env.SEARCH_API_URL;
+    else process.env.SEARCH_API_URL = previousUrl;
   }
 });
 

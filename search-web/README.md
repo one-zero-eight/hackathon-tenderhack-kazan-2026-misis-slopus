@@ -38,7 +38,7 @@ git lfs pull --include="data/ste.parquet,data/ktru-actual.parquet,data/okpd2-moy
 
 | Variable | Назначение |
 |----------|------------|
-| `SEARCH_API_URL` / `VITE_SEARCH_API_URL` | FastAPI, по умолчанию `http://127.0.0.1:8070` |
+| `SEARCH_API_URL` | FastAPI для Solid-сервера, по умолчанию `http://127.0.0.1:8070`. Браузер обращается только к `/api/search/...` на сервере UI |
 | `CATEGORY_PARQUETS` | Основные parquet (по умолчанию Инструменты/Мебель/Одежда) |
 | `STE_PARQUET` | Опциональный доп. ste; пусто = не грузить |
 | `KTRU_PARQUET` / `OKPD2_PARQUET` | Дерево КТРУ |

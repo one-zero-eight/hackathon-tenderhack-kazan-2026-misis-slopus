@@ -1,4 +1,4 @@
-import { apiSearchProducts } from "../api";
+import { apiSearchProducts } from "./search-api";
 import { isRangeCharacteristic } from "../characteristic-options";
 import { draftFromSpgzCharacteristic } from "../spgz-characteristics";
 import type { DraftCharacteristic, ProductHit, VotedCode } from "../types";
