@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build SQLite cache for KPGZ / SPGZ / OKPD2 trees and STE classifier links."""
+"""Build SQLite cache for KPGZ / SPGZ / OKPD2 / OKEI trees and STE classifier links."""
 from __future__ import annotations
 
 import argparse
@@ -25,6 +25,7 @@ def main() -> None:
     parser.add_argument("--kpgz", type=Path, default=ROOT / "data" / "pp-kpgz.parquet")
     parser.add_argument("--spgz", type=Path, default=ROOT / "data" / "spgz.parquet")
     parser.add_argument("--okpd", type=Path, default=ROOT / "data" / "okpd2-moy-zakupki.parquet")
+    parser.add_argument("--okei", type=Path, default=ROOT / "data" / "okei.parquet")
     parser.add_argument("--ste", type=Path, default=ROOT / "data" / "ste.parquet")
     args = parser.parse_args()
     started = time.monotonic()
@@ -74,6 +75,17 @@ def main() -> None:
           okpd2 TEXT NOT NULL,
           kpgz_code TEXT NOT NULL,
           kpgz_name TEXT NOT NULL
+        );
+        CREATE TABLE okei(
+          id INTEGER PRIMARY KEY,
+          code TEXT,
+          name TEXT NOT NULL,
+          razdel TEXT NOT NULL,
+          podrazdel TEXT NOT NULL,
+          kind TEXT NOT NULL,
+          parent_id INTEGER,
+          children_count INTEGER NOT NULL,
+          payload BLOB NOT NULL
         );
         """
     )
@@ -163,16 +175,72 @@ def main() -> None:
             ),
         )
 
+    okei_rows = pq.read_table(args.okei).to_pylist()
+    okei_id = 0
+    section_ids: dict[str, int] = {}
+    group_ids: dict[tuple[str, str], int] = {}
+    for row in okei_rows:
+        razdel = str(row.get("razdel") or "")
+        podrazdel = str(row.get("podrazdel") or "")
+        code = row.get("code")
+        name = (row.get("name") or "").strip()
+        if not name:
+            continue
+        if code is None and podrazdel == "0":
+            okei_id += 1
+            section_ids[razdel] = okei_id
+            db.execute(
+                "INSERT INTO okei VALUES (?,?,?,?,?,?,?,?,?)",
+                (okei_id, f"s:{razdel}", name, razdel, podrazdel, "section", None, 0, dump(row)),
+            )
+    for row in okei_rows:
+        razdel = str(row.get("razdel") or "")
+        podrazdel = str(row.get("podrazdel") or "")
+        code = row.get("code")
+        name = (row.get("name") or "").strip()
+        if not name or code is not None or podrazdel == "0":
+            continue
+        okei_id += 1
+        group_ids[(razdel, podrazdel)] = okei_id
+        parent = section_ids.get(razdel)
+        db.execute(
+            "INSERT INTO okei VALUES (?,?,?,?,?,?,?,?,?)",
+            (okei_id, f"g:{razdel}:{podrazdel}", name, razdel, podrazdel, "group", parent, 0, dump(row)),
+        )
+    for row in okei_rows:
+        razdel = str(row.get("razdel") or "")
+        podrazdel = str(row.get("podrazdel") or "")
+        code = row.get("code")
+        name = (row.get("name") or "").strip()
+        if not name or code is None:
+            continue
+        okei_id += 1
+        parent = group_ids.get((razdel, podrazdel)) or section_ids.get(razdel)
+        db.execute(
+            "INSERT INTO okei VALUES (?,?,?,?,?,?,?,?,?)",
+            (okei_id, str(code), name, razdel, podrazdel, "unit", parent, 0, dump(row)),
+        )
+    db.execute(
+        """
+        UPDATE okei SET children_count = (
+          SELECT count(*) FROM okei child WHERE child.parent_id = okei.id
+        )
+        """
+    )
+
+    source_paths = (args.okpd, args.kpgz, args.spgz, args.ste, args.okei)
     sources = {
         "okpd": str(args.okpd.relative_to(ROOT)) if args.okpd.is_relative_to(ROOT) else str(args.okpd),
         "kpgz": str(args.kpgz.relative_to(ROOT)) if args.kpgz.is_relative_to(ROOT) else str(args.kpgz),
         "spgz": str(args.spgz.relative_to(ROOT)) if args.spgz.is_relative_to(ROOT) else str(args.spgz),
         "ste": str(args.ste.relative_to(ROOT)) if args.ste.is_relative_to(ROOT) else str(args.ste),
-        "source_mtime_ms": str(int(max(p.stat().st_mtime_ns for p in (args.okpd, args.kpgz, args.spgz, args.ste)) // 1_000_000)),
+        "okei": str(args.okei.relative_to(ROOT)) if args.okei.is_relative_to(ROOT) else str(args.okei),
+        "source_mtime_ms": str(int(max(p.stat().st_mtime_ns for p in source_paths) // 1_000_000)),
         "okpd_count": str(len(okpd_rows)),
         "kpgz_count": str(len(kpgz_rows)),
         "spgz_count": str(len(spgz_rows)),
         "ste_count": str(len(ste)),
+        "okei_count": str(okei_id),
     }
     db.executemany("INSERT INTO meta(key,value) VALUES(?,?)", list(sources.items()))
     db.executescript(
@@ -187,13 +255,16 @@ def main() -> None:
         CREATE INDEX ix_spgz_okpd ON spgz(okpd2_code);
         CREATE INDEX ix_ste_okpd ON ste_product(okpd2);
         CREATE INDEX ix_ste_kpgz ON ste_product(kpgz_code);
+        CREATE INDEX ix_okei_parent ON okei(parent_id);
+        CREATE INDEX ix_okei_code ON okei(code);
+        CREATE INDEX ix_okei_kind ON okei(kind);
         """
     )
     db.commit()
     db.close()
     temporary.replace(args.output)
     print(
-        f"Wrote {args.output} okpd={len(okpd_rows)} kpgz={len(kpgz_rows)} spgz={len(spgz_rows)} ste={len(ste)} in {time.monotonic() - started:.1f}s",
+        f"Wrote {args.output} okpd={len(okpd_rows)} kpgz={len(kpgz_rows)} spgz={len(spgz_rows)} ste={len(ste)} okei={okei_id} in {time.monotonic() - started:.1f}s",
         flush=True,
     )
 

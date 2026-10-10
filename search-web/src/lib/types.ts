@@ -60,7 +60,7 @@ export interface CatalogStats {
   lastImportedAt: string | null;
 }
 
-export type DirectoryTab = "ktru" | "kpgz" | "spgz" | "okpd";
+export type DirectoryTab = "ktru" | "kpgz" | "spgz" | "okpd" | "okei";
 
 export interface DirTreeNode {
   id: string;

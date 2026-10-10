@@ -24,6 +24,7 @@ const TABS: { id: DirectoryTab; label: string; hint: string }[] = [
   { id: "kpgz", label: "КПГЗ", hint: "Каталог предметов госзаказа" },
   { id: "spgz", label: "СПГЗ", hint: "Стандартные позиции госзаказа" },
   { id: "okpd", label: "ОКПД", hint: "ОКПД 2" },
+  { id: "okei", label: "ОКЕИ", hint: "Общероссийский классификатор единиц измерения" },
 ];
 
 function param(value: string | string[] | undefined) {
@@ -282,7 +283,7 @@ function DirectoryDetail(props: { tab: DirectoryTab; code: string }) {
         <div class="dir-products">
           <h3>Товары каталога</h3>
           <p class="dir-products-note">
-            {props.tab === "spgz" ? "Товары с тем же ОКПД2" : "Прямое соответствие коду"} · {formatNumber(list().total)}
+            {props.tab === "spgz" ? "Товары с тем же ОКПД2" : props.tab === "okei" ? "Товары с этой единицей измерения" : "Прямое соответствие коду"} · {formatNumber(list().total)}
           </p>
           <Show when={list().items.length} fallback={<p class="ktru-empty">В загруженном каталоге СТЕ совпадений нет.</p>}>
             <For each={list().items}>{item =>
@@ -302,6 +303,7 @@ function DetailPanel(props: { tab: DirectoryTab; selected: DirTreeNode | KtruTre
     if (!props.selected) return false;
     if (props.tab === "ktru") return props.selected.kind === "okpd";
     if (props.tab === "spgz") return props.selected.kind === "spgz" || props.selected.kind === "kpgz";
+    if (props.tab === "okei") return props.selected.kind === "okei" || props.selected.kind === "okei-group" || props.selected.kind === "okei-section";
     return props.selected.kind === props.tab || (props.tab === "kpgz" && props.selected.kind === "spgz");
   };
   const detailTab = (): DirectoryTab => {
@@ -309,6 +311,7 @@ function DetailPanel(props: { tab: DirectoryTab; selected: DirTreeNode | KtruTre
     if (props.selected.kind === "spgz") return "spgz";
     if (props.selected.kind === "kpgz") return "kpgz";
     if (props.selected.kind === "okpd") return "okpd";
+    if (props.selected.kind === "okei" || props.selected.kind === "okei-group" || props.selected.kind === "okei-section") return "okei";
     return props.tab;
   };
   return <section class="ktru-panel" aria-label="Карточка позиции справочника">
@@ -411,7 +414,7 @@ export default function DirectoriesPage() {
 
   return <main id="main-content" class="page-width ktru-main">
     <Title>Справочники — каталог</Title>
-    <Meta name="description" content="Справочники КТРУ, КПГЗ, СПГЗ и ОКПД2 со связями и товарами каталога." />
+    <Meta name="description" content="Справочники КТРУ, КПГЗ, СПГЗ, ОКПД2 и ОКЕИ со связями и товарами каталога." />
     <section class="ktru-hero">
       <h1><BookOpen size={34} strokeWidth={1.4} style={{ "vertical-align": "-6px", "margin-right": "10px", color: "var(--green)" }} />Справочники</h1>
       <p>{current().hint}. Дерево, параметры позиции, кросс-ссылки и связанные товары из каталога СТЕ.</p>
@@ -422,6 +425,7 @@ export default function DirectoriesPage() {
             <span><strong>{formatNumber(classifierStats()!.kpgz)}</strong> КПГЗ</span>
             <span><strong>{formatNumber(classifierStats()!.spgz)}</strong> СПГЗ</span>
             <span><strong>{formatNumber(classifierStats()!.okpd)}</strong> ОКПД2</span>
+            <span><strong>{formatNumber(classifierStats()!.okei)}</strong> ОКЕИ</span>
           </Show>
         </Suspense>
       </div>

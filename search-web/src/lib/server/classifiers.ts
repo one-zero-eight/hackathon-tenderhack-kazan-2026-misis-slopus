@@ -48,14 +48,15 @@ function repoRoot(): string {
 function ensureDb(): Database.Database {
   if (db) return db;
   const sqlite = classifiersSqlitePath();
-  const sources = ["okpd2-moy-zakupki.parquet", "pp-kpgz.parquet", "spgz.parquet", "ste.parquet"].map(name => resolve(repoRoot(), "data", name));
+  const sources = ["okpd2-moy-zakupki.parquet", "pp-kpgz.parquet", "spgz.parquet", "ste.parquet", "okei.parquet"].map(name => resolve(repoRoot(), "data", name));
   const mtime = String(Math.trunc(Math.max(...sources.filter(existsSync).map(path => statSync(path).mtimeMs))));
   const needsBuild = !existsSync(sqlite) || (() => {
     try {
       const probe = new Database(sqlite, { readonly: true, fileMustExist: true });
       const stored = probe.prepare("SELECT value FROM meta WHERE key='source_mtime_ms'").get() as { value: string } | undefined;
+      const hasOkei = probe.prepare("SELECT 1 AS ok FROM sqlite_master WHERE type='table' AND name='okei'").get();
       probe.close();
-      return stored?.value !== mtime;
+      return stored?.value !== mtime || !hasOkei;
     } catch {
       return true;
     }
@@ -84,7 +85,29 @@ function decode(payload: Buffer): Record<string, unknown> {
 export function classifierStats() {
   const database = ensureDb();
   const get = (key: string) => Number((database.prepare("SELECT value FROM meta WHERE key=?").get(key) as { value: string } | undefined)?.value ?? 0);
-  return { okpd: get("okpd_count"), kpgz: get("kpgz_count"), spgz: get("spgz_count"), ste: get("ste_count") };
+  return { okpd: get("okpd_count"), kpgz: get("kpgz_count"), spgz: get("spgz_count"), ste: get("ste_count"), okei: get("okei_count") };
+}
+
+function okeiNode(row: { id: number; code: string | null; name: string; kind: string; childCount: number }): DirTreeNode {
+  const code = row.code || String(row.id);
+  return {
+    id: `okei:${row.id}`,
+    code,
+    name: row.name,
+    kind: row.kind === "unit" ? "okei" : row.kind === "group" ? "okei-group" : "okei-section",
+    childCount: row.childCount,
+    hasChildren: row.childCount > 0,
+  };
+}
+
+function okeiChildren(parentId: number | null): DirTreeNode[] {
+  const database = ensureDb();
+  const rows = (parentId == null
+    ? database.prepare("SELECT id, code, name, kind, children_count AS childCount FROM okei WHERE parent_id IS NULL ORDER BY razdel, podrazdel, code").all()
+    : database.prepare("SELECT id, code, name, kind, children_count AS childCount FROM okei WHERE parent_id=? ORDER BY razdel, podrazdel, code").all(parentId)) as {
+    id: number; code: string | null; name: string; kind: string; childCount: number;
+  }[];
+  return rows.map(okeiNode);
 }
 
 function okpdChildren(parentId: number | null): DirTreeNode[] {
@@ -174,6 +197,9 @@ export function listDirectoryChildren(tab: DirectoryTab, parentId: string | null
     } else {
       nodes = [];
     }
+  } else if (tab === "okei") {
+    const parent = parentId?.startsWith("okei:") ? Number(parentId.slice(5)) : null;
+    nodes = okeiChildren(Number.isFinite(parent) ? parent : null);
   }
   if (sets) {
     nodes = nodes.filter(node => sets.visible.has(node.id)).map(node => {
@@ -194,6 +220,7 @@ function listDirectoryChildrenRaw(tab: DirectoryTab, parentId: string): DirTreeN
     const kids = kpgzChildren(id);
     return kids.length ? kids : spgzUnderKpgz(id);
   }
+  if (tab === "okei" && parentId.startsWith("okei:")) return okeiChildren(Number(parentId.slice(5)));
   return [];
 }
 
@@ -231,6 +258,16 @@ function buildFilter(tab: DirectoryTab, filter: string) {
   };
 
   const like = `%${q.replace(/[%_]/g, "")}%`;
+  const addOkeiAncestors = (id: number) => {
+    let current: number | null = id;
+    const seen = new Set<number>();
+    while (current && !seen.has(current)) {
+      seen.add(current);
+      visible.add(`okei:${current}`);
+      const row = database.prepare("SELECT parent_id AS parentId FROM okei WHERE id=?").get(current) as { parentId: number | null } | undefined;
+      current = row?.parentId ?? null;
+    }
+  };
   if (tab === "okpd") {
     const rows = database.prepare("SELECT id FROM okpd WHERE lower(code) LIKE ? OR lower(name) LIKE ? LIMIT ?").all(like, like, FILTER_LIMIT + 1) as { id: number }[];
     truncated = rows.length > FILTER_LIMIT;
@@ -238,6 +275,14 @@ function buildFilter(tab: DirectoryTab, filter: string) {
     for (const row of rows.slice(0, FILTER_LIMIT)) {
       matches.add(`okpd:${row.id}`);
       addOkpdAncestors(row.id);
+    }
+  } else if (tab === "okei") {
+    const rows = database.prepare("SELECT id FROM okei WHERE lower(coalesce(code,'')) LIKE ? OR lower(name) LIKE ? LIMIT ?").all(like, like, FILTER_LIMIT + 1) as { id: number }[];
+    truncated = rows.length > FILTER_LIMIT;
+    matchCount = truncated ? FILTER_LIMIT : rows.length;
+    for (const row of rows.slice(0, FILTER_LIMIT)) {
+      matches.add(`okei:${row.id}`);
+      addOkeiAncestors(row.id);
     }
   } else {
     const kpgzRows = database.prepare("SELECT id FROM kpgz WHERE lower(code) LIKE ? OR lower(name) LIKE ? LIMIT ?").all(like, like, FILTER_LIMIT + 1) as { id: number }[];
@@ -296,6 +341,13 @@ export function getDirectoryNode(tab: DirectoryTab, code: string): DirTreeNode |
     const row = database.prepare("SELECT id, name FROM spgz WHERE id=?").get(id) as { id: number; name: string } | undefined;
     if (!row) return null;
     return { id: `spgz:${row.id}`, code: String(row.id), name: row.name, kind: "spgz", childCount: 0, hasChildren: false };
+  }
+  if (tab === "okei") {
+    const row = database.prepare("SELECT id, code, name, kind, children_count AS childCount FROM okei WHERE code=? LIMIT 1").get(code) as {
+      id: number; code: string | null; name: string; kind: string; childCount: number;
+    } | undefined;
+    if (!row) return null;
+    return okeiNode(row);
   }
   return null;
 }
@@ -356,6 +408,20 @@ export function getDirectoryRevealPath(tab: DirectoryTab, code: string): { node:
       pathIds.reverse();
     }
     pathIds.push(`spgz:${row.id}`);
+    return { node, pathIds };
+  }
+  if (tab === "okei") {
+    const pathIds: string[] = [];
+    let current = database.prepare("SELECT id, parent_id AS parentId FROM okei WHERE code=? LIMIT 1").get(code) as { id: number; parentId: number | null } | undefined;
+    const seen = new Set<number>();
+    while (current && !seen.has(current.id)) {
+      seen.add(current.id);
+      pathIds.push(`okei:${current.id}`);
+      current = current.parentId == null
+        ? undefined
+        : database.prepare("SELECT id, parent_id AS parentId FROM okei WHERE id=?").get(current.parentId) as { id: number; parentId: number | null } | undefined;
+    }
+    pathIds.reverse();
     return { node, pathIds };
   }
   return { node, pathIds: [node.id] };
@@ -474,6 +540,26 @@ export function getDirectoryRecord(tab: DirectoryTab, code: string): DirRecord |
       ...reverse,
     };
   }
+  if (tab === "okei") {
+    const row = database.prepare("SELECT code, name, kind, razdel, podrazdel, payload FROM okei WHERE code=? LIMIT 1").get(code) as {
+      code: string; name: string; kind: string; razdel: string; podrazdel: string; payload: Buffer;
+    } | undefined;
+    if (!row) return null;
+    const kindLabel = row.kind === "unit" ? "единица" : row.kind === "group" ? "группа" : "раздел";
+    return {
+      tab, code: row.code, name: row.name,
+      fields: [
+        { key: "code", label: "Код ОКЕИ", value: row.kind === "unit" ? row.code : "—" },
+        { key: "name", label: "Название", value: row.name },
+        { key: "kind", label: "Тип", value: kindLabel },
+        { key: "razdel", label: "Раздел", value: row.razdel },
+        { key: "podrazdel", label: "Подраздел", value: row.podrazdel },
+      ],
+      links: [],
+      backlinks: [],
+      backlinksMore: 0,
+    };
+  }
   return null;
 }
 
@@ -491,6 +577,10 @@ export function getDirectoryRaw(tab: DirectoryTab, code: string): Record<string,
     const id = Number(code);
     if (!Number.isSafeInteger(id)) return null;
     const row = database.prepare("SELECT payload FROM spgz WHERE id=?").get(id) as { payload: Buffer } | undefined;
+    return row ? decode(row.payload) : null;
+  }
+  if (tab === "okei") {
+    const row = database.prepare("SELECT payload FROM okei WHERE code=? LIMIT 1").get(code) as { payload: Buffer } | undefined;
     return row ? decode(row.payload) : null;
   }
   return null;
@@ -538,6 +628,22 @@ export function listDirectoryProducts(tab: DirectoryTab, code: string, limit = 2
     const okpd2 = record?.fields.find(field => field.key === "okpd2")?.value;
     if (!okpd2 || okpd2 === "—") return { total: 0, items: [] };
     return listDirectoryProducts("okpd", okpd2, limit);
+  }
+  if (tab === "okei") {
+    const unit = ensureDb().prepare("SELECT kind, name FROM okei WHERE code=? LIMIT 1").get(code) as { kind: string; name: string } | undefined;
+    if (!unit || unit.kind !== "unit") return { total: 0, items: [] };
+    const total = (database.prepare("SELECT count(*) AS n FROM products WHERE lower(unit) = lower(?)").get(unit.name) as { n: number }).n;
+    const items = database.prepare(`
+      SELECT p.id, p.name AS name,
+        coalesce(sp.okpd2, '') AS okpd2,
+        coalesce(sp.kpgz_code, '') AS kpgzCode,
+        coalesce(sp.kpgz_name, '') AS kpgzName
+      FROM products p
+      LEFT JOIN classifiers.ste_product sp ON sp.id = p.id
+      WHERE lower(p.unit) = lower(?)
+      ORDER BY p.name LIMIT ?
+    `).all(unit.name, limit) as DirProductHit[];
+    return { total, items };
   }
   if (tab === "ktru") {
     return { total: 0, items: [] };
