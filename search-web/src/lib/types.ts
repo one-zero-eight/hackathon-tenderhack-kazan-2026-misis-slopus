@@ -73,7 +73,7 @@ export interface CatalogStats {
 
 export type DirectoryTab = "ktru" | "kpgz" | "spgz" | "okpd" | "okei";
 
-export type VotedCode = { code: string; name: string; score: number };
+export type VotedCode = { code: string; name: string; score: number; isTemplate?: boolean };
 
 export type CharacteristicRange = {
   option: string;
@@ -99,6 +99,38 @@ export type DraftCharacteristic = {
   multiple: boolean;
   source: "ktru" | "spgz" | "both" | "custom";
   custom?: boolean;
+  /** Choice partitions siblings and sets refined KTRU / СПГЗ. */
+  refinesKtru?: boolean;
+  /** When false, value is kept but does not switch KTRU / СПГЗ. Default true. */
+  applyPositionRefine?: boolean;
+};
+
+export type KtruSpecializationOption = { value: string; code: string; name: string };
+
+export type KtruSpecialization = {
+  templateCode: string;
+  templateName: string;
+  characteristicName: string;
+  characteristicCode: string | null;
+  options: KtruSpecializationOption[];
+  currentValue: string | null;
+};
+
+export type CatalogSpecializationOption = {
+  value: string;
+  ktruCode: string | null;
+  ktruName: string | null;
+  spgzCode: string | null;
+  spgzName: string | null;
+};
+
+export type CatalogSpecialization = {
+  characteristicName: string;
+  characteristicCode: string | null;
+  templateKtruCode: string | null;
+  templateKtruName: string | null;
+  options: CatalogSpecializationOption[];
+  currentValue: string | null;
 };
 
 export interface DirTreeNode {

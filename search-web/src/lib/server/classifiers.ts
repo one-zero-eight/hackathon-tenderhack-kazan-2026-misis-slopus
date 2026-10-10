@@ -4,7 +4,14 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
 import pl from "nodejs-polars";
-import type { DirChildrenPage, DirectoryTab, DirTreeNode } from "../types";
+import type {
+  CatalogSpecialization,
+  CatalogSpecializationOption,
+  DirChildrenPage,
+  DirectoryTab,
+  DirTreeNode,
+  VotedCode,
+} from "../types";
 import {
   classifiersSqlitePath,
   kpgzParquetPath,
@@ -13,7 +20,7 @@ import {
   spgzParquetPath,
 } from "./config";
 import { getDatabase } from "./database";
-import { listKtruByOkpd } from "./ktru-tree";
+import { getKtruRecord, getKtruSpecialization, getSoleTemplateKtruForOkpd, listKtruByOkpd } from "./ktru-tree";
 import { getSteCatalog } from "./ste-catalog";
 
 const CLASSIFIERS_SCHEMA = "classifiers-slim-v2";
@@ -842,6 +849,7 @@ export function getDirectoryRaw(tab: DirectoryTab, code: string): Record<string,
     if (tab === "spgz") {
       const id = Number(code);
       if (!Number.isSafeInteger(id)) return null;
+      if (spgzRawByIdCache.has(id)) return spgzRawByIdCache.get(id)!;
       const rows = pl.readParquet(spgzParquetPath(), {
         columns: [
           "id", "name", "kpgzId", "okpd2Code", "okpdCode", "ktruId", "isExcluded", "spgzCharacteristics", "okeis", "descriptions",
@@ -849,7 +857,9 @@ export function getDirectoryRaw(tab: DirectoryTab, code: string): Record<string,
           "allowTwoStage", "allowCall", "regulationRequired", "art", "project",
         ],
       }).filter(pl.col("id").eq(pl.lit(id))).toRecords();
-      return (rows[0] as Record<string, unknown> | undefined) ?? null;
+      const row = (rows[0] as Record<string, unknown> | undefined) ?? null;
+      spgzRawByIdCache.set(id, row);
+      return row;
     }
     if (tab === "okei") {
       const rows = pl.readParquet(okeiParquetPath()).toRecords() as Array<Record<string, unknown>>;
@@ -875,8 +885,6 @@ export function getDirectoryRaw(tab: DirectoryTab, code: string): Record<string,
 
 let indexedIds: Set<number> | undefined;
 let indexedFingerprint = "";
-let ktruProductIds: Map<string, number[]> | undefined;
-let ktruProductFingerprint = "";
 
 function indexedProductIds(): Set<number> {
   const { sqlite } = getDatabase();
@@ -891,37 +899,6 @@ function indexedProductIds(): Set<number> {
     indexedFingerprint = fingerprint;
   }
   return indexedIds;
-}
-
-function ktruCodeFromCharacteristics(
-  characteristics: Array<{ name: string | null; value: string | null } | null> | null | undefined,
-): string {
-  for (const item of characteristics ?? []) {
-    if (!item) continue;
-    if ((item.name ?? "").trim().toLocaleLowerCase("ru") !== "ктру") continue;
-    return String(item.value ?? "").trim();
-  }
-  return "";
-}
-
-function productsByKtruCode(): Map<string, number[]> {
-  const catalog = getSteCatalog();
-  if (ktruProductIds && ktruProductFingerprint === catalog.fingerprint) return ktruProductIds;
-  const map = new Map<string, number[]>();
-  const rows = catalog.frame.select("id", "characteristics").toRecords() as {
-    id: number;
-    characteristics: Array<{ name: string | null; value: string | null } | null> | null;
-  }[];
-  for (const row of rows) {
-    const ktru = ktruCodeFromCharacteristics(row.characteristics);
-    if (!ktru) continue;
-    const list = map.get(ktru);
-    if (list) list.push(row.id);
-    else map.set(ktru, [row.id]);
-  }
-  ktruProductIds = map;
-  ktruProductFingerprint = catalog.fingerprint;
-  return map;
 }
 
 function listIndexedCatalogProducts(
@@ -984,10 +961,382 @@ export function listDirectoryProducts(tab: DirectoryTab, code: string, limit = 2
       limit,
     );
   }
-  if (tab === "ktru") {
-    const ids = productsByKtruCode().get(code.trim()) ?? [];
-    if (!ids.length) return { total: 0, items: [] };
-    return listIndexedCatalogProducts((frame) => frame.filter(pl.col("id").isIn(pl.lit(ids))), limit);
-  }
+  // STE parquet almost never stores KTRU in characteristics; full-catalog scan blocked the UI.
+  // Directory KTRU card falls back to products by OKPD2 instead.
   return { total: 0, items: [] };
+}
+
+const SPGZ_SPEC_SIBLING_LIMIT = 80;
+
+/** Filtered SPGZ row lookups — full-file toRecords() hangs the suggest RPC. */
+const spgzRawByIdCache = new Map<number, Record<string, unknown> | null>();
+const spgzSiblingRowsByKpgz = new Map<number, {
+  id: number;
+  name: string;
+  spgzCharacteristics?: {
+    characteristicName?: string | null;
+    value1?: string | null;
+    value2?: string | null;
+    characteristicSpgzEnums?: { value?: string }[] | null;
+    kpgzCharacteristicId?: number | null;
+  }[] | null;
+}[]>();
+
+function loadSpgzSiblingRows(kpgzExternalId: number) {
+  const cached = spgzSiblingRowsByKpgz.get(kpgzExternalId);
+  if (cached) return cached;
+  const rows = pl.readParquet(spgzParquetPath(), {
+    columns: ["id", "name", "kpgzId", "isExcluded", "spgzCharacteristics"],
+  })
+    .filter(pl.col("kpgzId").eq(pl.lit(kpgzExternalId)))
+    .filter(pl.col("isExcluded").eq(pl.lit(0)))
+    .toRecords() as {
+    id: number;
+    name: string;
+    spgzCharacteristics?: {
+      characteristicName?: string | null;
+      value1?: string | null;
+      value2?: string | null;
+      characteristicSpgzEnums?: { value?: string }[] | null;
+      kpgzCharacteristicId?: number | null;
+    }[] | null;
+  }[];
+  spgzSiblingRowsByKpgz.set(kpgzExternalId, rows);
+  return rows;
+}
+
+function normSpecName(name: string): string {
+  return name.trim().toLocaleLowerCase("ru").replaceAll("ё", "е");
+}
+
+function spgzConcreteCharValues(item: {
+  characteristicName?: string | null;
+  value1?: string | null;
+  value2?: string | null;
+  characteristicSpgzEnums?: { value?: string }[] | null;
+  kpgzCharacteristicId?: number | null;
+}): { name: string; value: string; code: string | null } | null {
+  const name = String(item.characteristicName ?? "").trim();
+  if (!name) return null;
+  const enums = (item.characteristicSpgzEnums ?? [])
+    .map((entry) => String(entry.value ?? "").trim())
+    .filter(Boolean);
+  if (enums.length === 1) {
+    return {
+      name,
+      value: enums[0]!,
+      code: item.kpgzCharacteristicId != null ? String(item.kpgzCharacteristicId) : null,
+    };
+  }
+  if (enums.length > 1) return null;
+  const v1 = item.value1 != null ? String(item.value1).trim() : "";
+  const v2 = item.value2 != null ? String(item.value2).trim() : "";
+  if (v1 && !v2) {
+    return {
+      name,
+      value: v1,
+      code: item.kpgzCharacteristicId != null ? String(item.kpgzCharacteristicId) : null,
+    };
+  }
+  return null;
+}
+
+type SpgzSiblingSpec = {
+  characteristicName: string;
+  characteristicCode: string | null;
+  options: { value: string; code: string; name: string }[];
+  currentValue: string | null;
+  kpgzCode: string | null;
+};
+
+/** Sibling СПГЗ under one КПГЗ, partitioned by a single concrete characteristic value. */
+export function getSpgzSpecialization(input: {
+  spgzCode?: string | null;
+  kpgzCode?: string | null;
+  preferredCharName?: string | null;
+}): SpgzSiblingSpec | null {
+  const database = ensureDb();
+  let kpgzExternalId: number | null = null;
+  let kpgzCode: string | null = input.kpgzCode?.trim() || null;
+  let currentSpgzId: number | null = null;
+
+  if (input.spgzCode) {
+    const id = Number(input.spgzCode);
+    if (!Number.isSafeInteger(id)) return null;
+    currentSpgzId = id;
+    const row = database.prepare(
+      "SELECT kpgz_external_id AS kpgzExternalId FROM spgz WHERE id=?",
+    ).get(id) as { kpgzExternalId: number | null } | undefined;
+    if (!row?.kpgzExternalId) return null;
+    kpgzExternalId = row.kpgzExternalId;
+    if (!kpgzCode) {
+      const kpgz = database.prepare("SELECT code FROM kpgz WHERE external_id=? LIMIT 1").get(kpgzExternalId) as { code: string } | undefined;
+      kpgzCode = kpgz?.code ?? null;
+    }
+  } else if (kpgzCode) {
+    const row = database.prepare("SELECT external_id AS externalId FROM kpgz WHERE code=? LIMIT 1").get(kpgzCode) as { externalId: number | null } | undefined;
+    if (!row?.externalId) return null;
+    kpgzExternalId = row.externalId;
+  } else {
+    return null;
+  }
+
+  const count = (database.prepare(
+    "SELECT count(*) AS n FROM spgz WHERE kpgz_external_id=? AND is_excluded=0",
+  ).get(kpgzExternalId) as { n: number }).n;
+  if (count < 2 || count > SPGZ_SPEC_SIBLING_LIMIT) return null;
+
+  const rows = loadSpgzSiblingRows(kpgzExternalId);
+
+  if (rows.length < 2) return null;
+
+  const children = rows.map((row) => {
+    const chars = new Map<string, { value: string; code: string | null }>();
+    for (const item of row.spgzCharacteristics ?? []) {
+      const concrete = spgzConcreteCharValues(item);
+      if (!concrete) continue;
+      chars.set(concrete.name, { value: concrete.value, code: concrete.code });
+    }
+    return { code: String(row.id), name: row.name || String(row.id), chars };
+  });
+
+  const preferred = input.preferredCharName?.trim() || "";
+  const allNames = new Set<string>();
+  for (const child of children) for (const name of child.chars.keys()) allNames.add(name);
+
+  const ranked: {
+    name: string;
+    code: string | null;
+    score: number;
+    pairs: { value: string; code: string; name: string }[];
+  }[] = [];
+
+  for (const name of allNames) {
+    const pairs: { value: string; code: string; name: string }[] = [];
+    const seen = new Set<string>();
+    let charCode: string | null = null;
+    let ok = true;
+    for (const child of children) {
+      const entry = child.chars.get(name);
+      if (!entry) {
+        ok = false;
+        break;
+      }
+      if (seen.has(entry.value)) {
+        ok = false;
+        break;
+      }
+      seen.add(entry.value);
+      charCode = entry.code;
+      pairs.push({ value: entry.value, code: child.code, name: child.name });
+    }
+    if (!ok || pairs.length !== children.length) continue;
+    let score = 10;
+    if (preferred && normSpecName(name) === normSpecName(preferred)) score += 50;
+    if (/^(тип|вид|назначение)\b/i.test(name)) score += 5;
+    ranked.push({ name, code: charCode, score, pairs });
+  }
+
+  ranked.sort((a, b) => b.score - a.score || a.name.localeCompare(b.name, "ru"));
+  const best = ranked[0];
+  if (!best) return null;
+
+  const options = [...best.pairs].sort((a, b) => a.value.localeCompare(b.value, "ru") || a.code.localeCompare(b.code));
+  const current = currentSpgzId != null
+    ? options.find((item) => item.code === String(currentSpgzId)) ?? null
+    : null;
+  return {
+    characteristicName: best.name,
+    characteristicCode: best.code,
+    options,
+    currentValue: current?.value ?? null,
+    kpgzCode,
+  };
+}
+
+export function getCatalogSpecialization(input: {
+  ktruCode?: string | null;
+  spgzCode?: string | null;
+  kpgzCode?: string | null;
+}): CatalogSpecialization | null {
+  const ktru = input.ktruCode ? getKtruSpecialization(input.ktruCode) : null;
+  const spgz = getSpgzSpecialization({
+    spgzCode: input.spgzCode,
+    kpgzCode: input.kpgzCode,
+    preferredCharName: ktru?.characteristicName,
+  });
+  if (!ktru && !spgz) return null;
+
+  const characteristicName = ktru?.characteristicName || spgz!.characteristicName;
+  const byValue = new Map<string, CatalogSpecializationOption>();
+
+  const touch = (value: string) => {
+    let row = byValue.get(value);
+    if (!row) {
+      row = { value, ktruCode: null, ktruName: null, spgzCode: null, spgzName: null };
+      byValue.set(value, row);
+    }
+    return row;
+  };
+
+  if (ktru && normSpecName(ktru.characteristicName) === normSpecName(characteristicName)) {
+    for (const option of ktru.options) {
+      const row = touch(option.value);
+      row.ktruCode = option.code;
+      row.ktruName = option.name;
+    }
+  }
+  if (spgz && normSpecName(spgz.characteristicName) === normSpecName(characteristicName)) {
+    for (const option of spgz.options) {
+      const row = touch(option.value);
+      row.spgzCode = option.code;
+      row.spgzName = option.name;
+    }
+  } else if (spgz && !ktru) {
+    for (const option of spgz.options) {
+      const row = touch(option.value);
+      row.spgzCode = option.code;
+      row.spgzName = option.name;
+    }
+  }
+
+  const options = [...byValue.values()]
+    .filter((item) => item.ktruCode || item.spgzCode)
+    .sort((a, b) => a.value.localeCompare(b.value, "ru"));
+  if (options.length < 2) return null;
+
+  const currentValue = ktru?.currentValue || spgz?.currentValue || null;
+  return {
+    characteristicName,
+    characteristicCode: ktru?.characteristicCode ?? spgz?.characteristicCode ?? null,
+    templateKtruCode: ktru?.templateCode ?? null,
+    templateKtruName: ktru?.templateName ?? null,
+    options,
+    currentValue,
+  };
+}
+
+/** Normalized characteristic names present in KTRU and/or SPGZ for this product's classifiers. */
+export function classifierCharacteristicNames(input: {
+  ktruCode?: string | null;
+  okpd2?: string | null;
+  spgzCode?: string | null;
+  kpgzCode?: string | null;
+}): { ktru: string[]; spgz: string[] } {
+  const ktruNames = new Set<string>();
+  const spgzNames = new Set<string>();
+
+  let ktruCode = input.ktruCode?.trim() || "";
+  if (!ktruCode && input.okpd2?.trim()) {
+    const sole = getSoleTemplateKtruForOkpd(input.okpd2.trim());
+    if (sole) ktruCode = sole.code;
+    else {
+      const listed = listKtruByOkpd(input.okpd2.trim(), 1);
+      ktruCode = listed.items[0]?.code ?? "";
+    }
+  }
+  if (ktruCode) {
+    const record = getKtruRecord(ktruCode);
+    for (const item of record?.characteristics ?? []) {
+      const name = normSpecName(item.name);
+      if (name) ktruNames.add(name);
+    }
+  }
+
+  if (input.spgzCode?.trim()) {
+    const record = getDirectoryRecord("spgz", input.spgzCode.trim());
+    for (const item of record?.characteristics ?? []) {
+      const name = normSpecName(item.name);
+      if (name) spgzNames.add(name);
+    }
+  } else if (input.kpgzCode?.trim()) {
+    const database = ensureDb();
+    const kpgz = database.prepare("SELECT external_id AS externalId FROM kpgz WHERE code=? LIMIT 1").get(input.kpgzCode.trim()) as
+      | { externalId: number | null }
+      | undefined;
+    if (kpgz?.externalId) {
+      for (const row of loadSpgzSiblingRows(kpgz.externalId)) {
+        for (const item of row.spgzCharacteristics ?? []) {
+          const name = normSpecName(String(item.characteristicName ?? ""));
+          if (name) spgzNames.add(name);
+        }
+      }
+    }
+  }
+
+  return { ktru: [...ktruNames], spgz: [...spgzNames] };
+}
+
+function vote(code: string, name: string, isTemplate?: boolean): VotedCode {
+  return { code, name: name || code, score: 1, ...(isTemplate ? { isTemplate: true } : {}) };
+}
+
+/** Resolve OKPD2/KTRU + КПГЗ/СПГЗ votes for a STE product card (same layout as create flow). */
+export function resolveProductCategoryVotes(input: {
+  okpd2?: string | null;
+  okpd2Name?: string | null;
+  ktruCode?: string | null;
+  ktruName?: string | null;
+  kpgzCode?: string | null;
+  kpgzName?: string | null;
+  spgzId?: number | null;
+  characteristics?: { name: string; value: string }[] | null;
+}): {
+  okpd2: VotedCode | null;
+  ktru: VotedCode | null;
+  kpgz: VotedCode | null;
+  spgz: VotedCode | null;
+} {
+  const okpd2Code = input.okpd2?.trim() || "";
+  const okpd2 = okpd2Code
+    ? vote(okpd2Code, input.okpd2Name?.trim() || okpd2Code)
+    : null;
+
+  let ktru: VotedCode | null = null;
+  const ktruCode = input.ktruCode?.trim() || "";
+  if (ktruCode) {
+    const record = getKtruRecord(ktruCode);
+    ktru = vote(
+      ktruCode,
+      input.ktruName?.trim() || record?.name || ktruCode,
+      !!record?.isTemplate,
+    );
+  } else if (okpd2Code) {
+    const sole = getSoleTemplateKtruForOkpd(okpd2Code);
+    if (sole) ktru = vote(sole.code, sole.name, true);
+  }
+
+  const kpgzCode = input.kpgzCode?.trim() || "";
+  const kpgz = kpgzCode
+    ? vote(kpgzCode, input.kpgzName?.trim() || kpgzCode)
+    : null;
+
+  let spgz: VotedCode | null = null;
+  if (input.spgzId != null && Number.isSafeInteger(input.spgzId)) {
+    const node = getDirectoryNode("spgz", String(input.spgzId));
+    if (node?.kind === "spgz") spgz = vote(node.code, node.name);
+  } else if (ktru?.code || kpgzCode) {
+    const spec = getCatalogSpecialization({
+      ktruCode: ktru?.code ?? null,
+      spgzCode: null,
+      kpgzCode: kpgzCode || null,
+    });
+    if (spec) {
+      const byName = new Map(
+        (input.characteristics ?? []).map((item) => [normSpecName(item.name), item.value.trim()]),
+      );
+      const steValue = byName.get(normSpecName(spec.characteristicName)) ?? "";
+      const match = steValue
+        ? spec.options.find((option) => normSpecName(option.value) === normSpecName(steValue))
+        : null;
+      if (match?.spgzCode) {
+        spgz = vote(match.spgzCode, match.spgzName || match.spgzCode);
+        if (match.ktruCode && (!ktru || ktru.isTemplate)) {
+          ktru = vote(match.ktruCode, match.ktruName || match.ktruCode, match.ktruCode === spec.templateKtruCode);
+        }
+      }
+    }
+  }
+
+  return { okpd2, ktru, kpgz, spgz };
 }

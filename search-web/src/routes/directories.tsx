@@ -366,7 +366,6 @@ function ListBlock(props: {
 
 function KtruDetail(props: { code: string }) {
   const record = createAsync(() => getKtruRecord(props.code));
-  const exactProducts = createAsync(() => getDirectoryProducts("ktru", props.code));
   return <Show when={record()} fallback={<div class="ktru-empty">Запись не найдена</div>}>{data => {
     const okpd = data().okpd2;
     return <>
@@ -394,21 +393,11 @@ function KtruDetail(props: { code: string }) {
       <DirForwardLinks links={data().links} />
       <ListBlocks lists={data().standards.length ? [{ title: "Стандарты и нормы", items: data().standards.map(text => ({ text })) }] : []} />
       <CharacteristicTable items={data().characteristics} />
-      <Suspense fallback={<div class="ktru-loading">Товары…</div>}>
-        <Show when={exactProducts()}>{(exact) =>
-          <Show when={exact().total > 0} fallback={
-            <Show when={okpd}><KtruProducts code={props.code} okpdCode={okpd!.code} /></Show>
-          }>
-            <div class="dir-products">
-              <h3>Товары каталога</h3>
-              <p class="dir-products-note">По коду КТРУ · {formatNumber(exact().total)}</p>
-              <For each={exact().items}>{item =>
-                <A class="dir-product-link" href={`/products/${item.id}?from=${encodeURIComponent(directoryHref("ktru", props.code))}`}>{item.name}<span>СТЕ {item.id}{item.kpgzCode ? ` · КПГЗ ${item.kpgzCode}` : ""}</span></A>
-              }</For>
-            </div>
-          </Show>
-        }</Show>
-      </Suspense>
+      <Show when={okpd}>
+        <Suspense fallback={<div class="ktru-loading">Товары…</div>}>
+          <KtruProducts code={props.code} okpdCode={okpd!.code} />
+        </Suspense>
+      </Show>
       <DirBacklinks backlinks={data().backlinks} backlinksMore={data().backlinksMore} />
       <LazyRawJson label="Исходный JSON" load={() => getKtruRaw(props.code)} />
     </>;

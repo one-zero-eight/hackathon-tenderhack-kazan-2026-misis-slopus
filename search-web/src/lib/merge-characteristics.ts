@@ -79,15 +79,18 @@ function mergePair(ktru: DraftCharacteristic, spgz: DraftCharacteristic): Displa
 
 /**
  * One table row when KTRU and SPGZ schemas match fully; otherwise keep separate rows.
- * Custom fields stay at the end.
+ * Order: KTRU source order (XML list), then leftover SPGZ, then custom.
+ * Discriminating characteristic is pinned first.
  */
 export function buildDisplayCharacteristics(items: DraftCharacteristic[]): DisplayCharacteristic[] {
   const custom = items.filter((item) => item.source === "custom" || item.custom);
+  const both = items.filter((item) => item.source === "both" && !item.custom);
   const ktru = items.filter((item) => item.source === "ktru");
   const spgz = items.filter((item) => item.source === "spgz");
   const usedSpgz = new Set<string>();
   const catalog: DisplayCharacteristic[] = [];
 
+  // Preserve KTRU array order from the position payload.
   for (const left of ktru) {
     const match = spgz.find((right) => !usedSpgz.has(right.id) && schemaEquivalent(left, right));
     if (match) {
@@ -101,79 +104,18 @@ export function buildDisplayCharacteristics(items: DraftCharacteristic[]): Displ
     if (usedSpgz.has(right.id)) continue;
     catalog.push({ ...right, linkedIds: [right.id], source: sourceLabel(["spgz"]) });
   }
+  for (const item of both) {
+    catalog.push({ ...item, linkedIds: [item.id], source: "both" });
+  }
 
-  return [
-    ...sortRelatedNames(catalog),
+  const ordered = [
+    ...catalog,
     ...custom.map((item) => ({ ...item, linkedIds: [item.id] })),
   ];
-}
-
-function namesRelated(a: string, b: string): boolean {
-  const left = normName(a);
-  const right = normName(b);
-  if (left === right) return true;
-  if (left.includes(right) || right.includes(left)) return true;
-  const tokens = (value: string) =>
-    value.split(/[^\p{L}\p{N}]+/u).filter((token) => token.length >= 4);
-  const ta = new Set(tokens(left));
-  const tb = new Set(tokens(right));
-  if (!ta.size || !tb.size) return false;
-  let shared = 0;
-  for (const token of ta) if (tb.has(token)) shared += 1;
-  return shared > 0 && shared / Math.min(ta.size, tb.size) >= 0.5;
-}
-
-function sourceRank(source: DraftCharacteristic["source"]): number {
-  switch (source) {
-    case "both": return 0;
-    case "ktru": return 1;
-    case "spgz": return 2;
-    default: return 3;
-  }
-}
-
-/** Keep same/similar names adjacent; required clusters first; KTRU before SPGZ within a name. */
-function sortRelatedNames(list: DisplayCharacteristic[]): DisplayCharacteristic[] {
-  if (list.length <= 1) return list;
-  const parent = list.map((_, index) => index);
-  const find = (index: number): number => {
-    if (parent[index] !== index) parent[index] = find(parent[index]!);
-    return parent[index]!;
-  };
-  const unite = (a: number, b: number) => {
-    const pa = find(a);
-    const pb = find(b);
-    if (pa !== pb) parent[pb] = pa;
-  };
-  for (let i = 0; i < list.length; i += 1) {
-    for (let j = i + 1; j < list.length; j += 1) {
-      if (namesRelated(list[i]!.name, list[j]!.name)) unite(i, j);
-    }
-  }
-  const clusterName = new Map<number, string>();
-  for (let i = 0; i < list.length; i += 1) {
-    const root = find(i);
-    const name = normName(list[i]!.name);
-    const prev = clusterName.get(root);
-    if (!prev || name.length < prev.length) clusterName.set(root, name);
-  }
-  return list
-    .map((item, index) => ({ item, index }))
-    .sort((a, b) => {
-      const byRequired = Number(b.item.required) - Number(a.item.required);
-      if (byRequired) return byRequired;
-      const ca = find(a.index);
-      const cb = find(b.index);
-      const byCluster = (clusterName.get(ca) ?? "").localeCompare(clusterName.get(cb) ?? "", "ru");
-      if (byCluster) return byCluster;
-      if (ca === cb) {
-        const byName = normName(a.item.name).localeCompare(normName(b.item.name), "ru");
-        if (byName) return byName;
-        return sourceRank(a.item.source) - sourceRank(b.item.source);
-      }
-      return a.index - b.index;
-    })
-    .map(({ item }) => item);
+  return [
+    ...ordered.filter((item) => item.refinesKtru),
+    ...ordered.filter((item) => !item.refinesKtru),
+  ];
 }
 
 export function characteristicSourceLabel(source: DraftCharacteristic["source"]): string {

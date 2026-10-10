@@ -3,7 +3,6 @@ import { A, Router } from "@solidjs/router";
 import { FileRoutes } from "@solidjs/start/router";
 import ArrowUpRight from "lucide-solid/icons/arrow-up-right";
 import BookOpen from "lucide-solid/icons/book-open";
-import Boxes from "lucide-solid/icons/boxes";
 import CircleHelp from "lucide-solid/icons/circle-help";
 import Plus from "lucide-solid/icons/plus";
 import { Suspense } from "solid-js";
@@ -14,7 +13,6 @@ export default function App() {
     <Title>Каталог — товары для закупок</Title>
     <a class="skip-link" href="#main-content">К содержимому</a>
     <header class="site-header"><div class="page-width header-inner">
-      <A href="/" class="brand" aria-label="Каталог — главная"><span class="brand-symbol"><Boxes size={23} strokeWidth={1.7} /></span><span>каталог<span class="brand-period">.</span></span></A>
       <nav aria-label="Основная навигация">
         <A href="/" end activeClass="nav-active"><Plus size={15} />Новый товар</A>
         <A href="/catalog" activeClass="nav-active">Каталог товаров</A>

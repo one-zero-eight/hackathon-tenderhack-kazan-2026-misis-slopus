@@ -1,7 +1,6 @@
 import { Meta, Title } from "@solidjs/meta";
 import { A } from "@solidjs/router";
 import CircleAlert from "lucide-solid/icons/circle-alert";
-import ClipboardList from "lucide-solid/icons/clipboard-list";
 import FileText from "lucide-solid/icons/file-text";
 import ImagePlus from "lucide-solid/icons/image-plus";
 import Lightbulb from "lucide-solid/icons/lightbulb";
@@ -13,33 +12,95 @@ import Tags from "lucide-solid/icons/tags";
 import X from "lucide-solid/icons/x";
 import { batch, createEffect, createMemo, createSignal, For, Index, on, onCleanup, Show } from "solid-js";
 import { directoryHref, ProductCard } from "~/components/catalog";
+import { CategoryPairs } from "~/components/category-pairs";
 import { KtruPickerActions, KtruPickerBody } from "~/components/ktru-picker";
 import { SpgzPickerActions, SpgzPickerBody } from "~/components/spgz-picker";
 import {
-  extractCharacteristicNumber,
   isRangeCharacteristic,
   isYesNoOptions,
   matchCharacteristicOption,
   matchNumberToRange,
   parseCharacteristicNumber,
-  resolveCharacteristicValue,
   splitCharacteristicValues,
   yesNoOptionPair,
 } from "~/lib/characteristic-options";
-import { getDirectoryNode, getDirectoryRecord, getDirectoryRevealPath, getKtruNode, getKtruRecord, getKtruRevealPath, suggestFromNeighbors } from "~/lib/rpc";
+import { getCatalogSpecialization, getDirectoryNode, getDirectoryRecord, getDirectoryRevealPath, getKtruNode, getKtruRecord, getKtruRevealPath, suggestFromNeighbors } from "~/lib/rpc";
 import {
   buildDisplayCharacteristics,
   characteristicSourceLabel,
   mapValueToOptions,
 } from "~/lib/merge-characteristics";
+import {
+  brand,
+  catalogSpecialization,
+  characteristics,
+  charStandards,
+  clearCharMeta,
+  clearPhotos,
+  currentRefineSeq,
+  description,
+  type DraftPhoto,
+  generatedFor,
+  kpgz,
+  ktruLocked,
+  ktruPickerPath,
+  ktruPickerSelected,
+  ktruVote,
+  lastSuggestQuery,
+  model,
+  name,
+  nameTouched,
+  nextRefineSeq,
+  noNewFeatures,
+  noNewFeaturesReason,
+  okpd2,
+  photoIndex,
+  photos,
+  selected,
+  setBrand,
+  setCatalogSpecialization,
+  setCharacteristics,
+  setCharStandards,
+  setDescription,
+  setGeneratedFor,
+  setKpgz,
+  setKtruLocked,
+  setKtruPickerPath,
+  setKtruPickerSelected,
+  setKtruVote,
+  setLastSuggestQuery,
+  setModel,
+  setName,
+  setNameTouched,
+  setNoNewFeatures,
+  setNoNewFeaturesReason,
+  setOkpd2,
+  setPhotoIndex,
+  setPhotos,
+  setSelected,
+  setSimilar,
+  setSku,
+  setSpgz,
+  setSpgzLocked,
+  setSpgzPickerPath,
+  setSpgzPickerSelected,
+  setSuggestDurationMs,
+  setSuggesting,
+  similar,
+  sku,
+  spgz,
+  spgzLocked,
+  spgzPickerPath,
+  spgzPickerSelected,
+  suggestDurationMs,
+  suggesting,
+} from "~/lib/create-product-state";
 import { draftFromSpgzCharacteristic } from "~/lib/spgz-characteristics";
-import type { DirTreeNode, DraftCharacteristic, KtruTreeNode, ProductHit, VotedCode } from "~/lib/types";
-import { Badge, Button, Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, Select, SelectContent, SelectItem, SelectTrigger, SelectValue, TextField, TextFieldInput, TextFieldLabel, TextFieldTextarea } from "~/ui-kit";
+import type { CatalogSpecialization, DirTreeNode, DraftCharacteristic, KtruTreeNode, VotedCode } from "~/lib/types";
+import { Badge, Button, Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, Select, SelectContent, SelectItem, SelectTrigger, SelectValue, Skeleton, TextField, TextFieldInput, TextFieldLabel, TextFieldTextarea } from "~/ui-kit";
 import "./create-product.css";
 import "./directories.css";
 import "./ktru.css";
-
-type DraftPhoto = { id: string; url: string; name: string };
 
 const MAX_PHOTOS = 8;
 
@@ -47,45 +108,111 @@ function nameFromDescription(text: string): string {
   return text.trim().split(/[.!?\n]/)[0]?.trim().slice(0, 200) ?? "";
 }
 
-function revokePhotos(items: DraftPhoto[]) {
-  for (const item of items) URL.revokeObjectURL(item.url);
+function formatSuggestTiming(ms: number): string {
+  return ms < 1000 ? `${Math.round(ms)} мс` : `${(ms / 1000).toFixed(2)} с`;
 }
 
-function guessFromText(name: string, description: string): string {
-  const text = description.toLocaleLowerCase("ru");
-  const n = name.toLocaleLowerCase("ru");
-  if (/формат/.test(n)) return (text.match(/\b(а[345])\b/i)?.[1] ?? "").toUpperCase();
-  if (/плотност/.test(n)) {
-    const value = text.match(/(\d{2,3}(?:[.,]\d+)?)\s*(?:г\s*\/\s*м\s*(?:²|2)|г\/м)/i)?.[1];
-    return value ? `${value.replace(",", ".")} г/м²` : "";
-  }
-  if (/лист/.test(n)) {
-    const value = text.match(/(\d{1,4})\s*лист/i)?.[1];
-    return value ? `${value} шт.` : "";
-  }
-  if (/цвет/.test(n)) {
-    if (/бел/.test(text)) return "Белый";
-    if (/ч[её]рн/.test(text)) return "Чёрный";
-  }
-  if (/материал/.test(n)) return text.match(/(металл(?:ический)?|пластик(?:овый)?|дерев(?:о|янный)|ткань|кожа)/i)?.[1] ?? "";
-  return "";
+function normCharName(name: string): string {
+  return name.trim().toLocaleLowerCase("ru").replaceAll("ё", "е");
 }
 
+function withCatalogSpecialization(
+  fields: DraftCharacteristic[],
+  spec: CatalogSpecialization | null,
+  selectedValue?: string | null,
+): DraftCharacteristic[] {
+  if (!spec) return fields.map((item) => ({ ...item, refinesKtru: false }));
+  const options = spec.options.map((item) => item.value);
+  // Only an explicit choice (user / refine) fills the discriminator — never auto from current KTRU.
+  const preferred = (selectedValue ?? "").trim();
+  const value = preferred ? mapValueToOptions(preferred, options) || preferred : "";
+  const hasKtru = spec.options.some((item) => item.ktruCode);
+  const hasSpgz = spec.options.some((item) => item.spgzCode);
+  const hint = hasKtru && hasSpgz
+    ? "Выбор уточняет позиции КТРУ и СПГЗ"
+    : hasSpgz
+      ? "Выбор уточняет позицию СПГЗ среди вариантов КПГЗ"
+      : "Выбор уточняет позицию КТРУ среди вариантов шаблона";
+  const previousRefine = new Map(
+    fields
+      .filter((item) => item.refinesKtru)
+      .map((item) => [normCharName(item.name), item.applyPositionRefine !== false]),
+  );
+  const refineIds = new Set<string>();
+  const mapped = fields.map((item) => {
+    if (normCharName(item.name) !== normCharName(spec.characteristicName)) {
+      return { ...item, refinesKtru: false };
+    }
+    if (item.source !== "ktru" && item.source !== "spgz" && item.source !== "both") {
+      return { ...item, refinesKtru: false };
+    }
+    refineIds.add(item.id);
+    return {
+      ...item,
+      options,
+      value: value || item.value,
+      rangeOption: "",
+      required: true,
+      multiple: false,
+      ranges: [],
+      badges: item.badges.filter((entry) => !/^уточняет /.test(entry)),
+      hint: item.hint || hint,
+      refinesKtru: true,
+      applyPositionRefine: previousRefine.get(normCharName(item.name)) ?? item.applyPositionRefine !== false,
+      // Keep ktru/spgz so buildDisplayCharacteristics can merge siblings; only
+      // injected rows (no prior source) use "both".
+      source: item.source === "both" ? "both" : item.source,
+    };
+  });
+  if (!refineIds.size) {
+    mapped.unshift({
+      id: spec.characteristicCode || `refine:${spec.characteristicName}`,
+      name: spec.characteristicName,
+      value,
+      rangeOption: "",
+      required: true,
+      badges: [],
+      hint,
+      options,
+      optionLabels: {},
+      ranges: [],
+      unit: "",
+      multiple: false,
+      source: hasKtru && hasSpgz ? "both" : hasSpgz ? "spgz" : "ktru",
+      refinesKtru: true,
+      applyPositionRefine: previousRefine.get(normCharName(spec.characteristicName)) ?? true,
+    });
+  }
+  return [
+    ...mapped.filter((item) => item.refinesKtru),
+    ...mapped.filter((item) => !item.refinesKtru),
+  ];
+}
+
+type RefinedPositionRef = {
+  tab: "ktru" | "spgz";
+  code: string;
+  name: string;
+  kindLabel: string;
+};
 
 function CreateCharRow(props: {
   item: () => DraftCharacteristic;
   choiceOptions: (item: DraftCharacteristic) => string[];
   optionLabel: (item: DraftCharacteristic, value: string) => string;
   selectedOptions: (value: string) => string[];
+  refinedRefs?: RefinedPositionRef[];
   onUpdate: (id: string, value: string) => void;
   onUpdateName: (id: string, name: string) => void;
   onUpdateRange: (id: string, rangeOption: string) => void;
+  onTogglePositionRefine?: (id: string, enabled: boolean) => void;
   onRemove: (id: string) => void;
   onPickOption: (item: DraftCharacteristic, option: string) => void;
 }) {
   const item = () => props.item();
+  const refineEnabled = () => item().applyPositionRefine !== false;
   return (
-            <div class="create-char-row">
+            <div class="create-char-row" classList={{ "create-char-row-detached": !!item().refinesKtru && !refineEnabled() }}>
               <dt>
                 <Show when={item().custom} fallback={
                   <span class="dir-char-name">
@@ -132,8 +259,8 @@ function CreateCharRow(props: {
                               props.onUpdate(item().id, "");
                               return;
                             }
-                            if (!item().required && value && value === item().value) {
-                              props.onUpdate(item().id, "");
+                            if (value && value === item().value) {
+                              if (!item().required) props.onUpdate(item().id, "");
                               return;
                             }
                             props.onUpdate(item().id, value ?? "");
@@ -230,91 +357,80 @@ function CreateCharRow(props: {
                     </Select>
                   </div>
                 </Show>
-                <Show when={item().hint}><p class="create-char-hint">{item().hint}</p></Show>
+                <Show when={item().refinesKtru && props.onTogglePositionRefine} fallback={
+                  <Show when={item().hint}><p class="create-char-hint">{item().hint}</p></Show>
+                }>
+                  <div class="create-char-hint-row" classList={{ detached: !refineEnabled() }}>
+                    <Show when={item().hint}><p class="create-char-hint">{item().hint}</p></Show>
+                    <label class="create-char-refine-toggle">
+                      <input
+                        type="checkbox"
+                        checked={refineEnabled()}
+                        onChange={(event) => props.onTogglePositionRefine?.(item().id, event.currentTarget.checked)}
+                      />
+                      <span>Уточнять позицию</span>
+                    </label>
+                  </div>
+                  <Show when={props.refinedRefs?.length}>
+                    <div class="create-char-refine-bar" classList={{ detached: !refineEnabled() }}>
+                      <div class="create-char-ktru-ref">
+                        <For each={props.refinedRefs}>{ref =>
+                          <A class="create-char-ktru-ref-link" href={directoryHref(ref.tab, ref.code)} title={`Открыть ${ref.kindLabel} в справочнике`}>
+                            <span class="create-char-ktru-ref-code">{ref.kindLabel} {ref.code}</span>
+                            <Show when={ref.name}><span class="create-char-ktru-ref-name">{ref.name}</span></Show>
+                          </A>
+                        }</For>
+                      </div>
+                    </div>
+                  </Show>
+                </Show>
               </dd>
             </div>
   );
 }
 
-function VoteRow(props: { label: string; tab: "okpd" | "ktru" | "kpgz" | "spgz"; vote: VotedCode | null | undefined }) {
-  return <Show when={props.vote} fallback={
-    <div>
-      <dt>{props.label}</dt>
-      <dd><span class="create-vote-name">—</span></dd>
+function CategorySuggestSkeleton() {
+  return (
+    <div class="create-suggest-status" role="status" aria-live="polite" aria-label="Ищем ближайшие товары и голосуем за категории">
+      <p class="create-live-hint create-live-hint-pulse">Ищем ближайшие товары и голосуем за категории…</p>
+      <div class="create-vote-card create-vote-card-skeleton" aria-hidden="true">
+        <For each={["ОКПД2 и КТРУ", "КПГЗ и СПГЗ"]}>{title =>
+          <div class="create-vote-group create-vote-group-skeleton">
+            <div class="create-vote-group-head">
+              <Skeleton class="create-skel-title" />
+              <span class="sr-only">{title}</span>
+            </div>
+            <div class="create-skel-rows">
+              <div><Skeleton class="create-skel-label" /><Skeleton class="create-skel-value" /></div>
+              <div><Skeleton class="create-skel-label" /><Skeleton class="create-skel-value wide" /></div>
+            </div>
+          </div>
+        }</For>
+      </div>
     </div>
-  }>{vote =>
-    <div>
-      <dt>{props.label}</dt>
-      <dd>
-        <A class="create-vote-code" href={directoryHref(props.tab, vote().code)}>{vote().code}</A>
-        <span class="create-vote-name">{vote().name}</span>
-      </dd>
-    </div>
-  }</Show>;
+  );
 }
 
-function CategoryPairs(props: {
-  okpd2: VotedCode | null;
-  ktru: VotedCode | null;
-  kpgz: VotedCode | null;
-  spgz: VotedCode | null;
-  onEditKtru: () => void;
-  onEditSpgz: () => void;
-  class?: string;
-}) {
-  return <div class={`create-vote-card ${props.class ?? ""}`.trim()}>
-    <div class="create-vote-group">
-      <div class="create-vote-group-head">
-        <h3>ОКПД2 и КТРУ</h3>
-        <Button type="button" variant="outline" size="xs" onClick={props.onEditKtru}><ClipboardList size={12} />Изменить</Button>
+function SimilarSuggestSkeleton() {
+  return (
+    <div class="create-suggest-status" role="status" aria-live="polite" aria-label="Ищем похожие позиции в каталоге">
+      <p class="create-live-hint create-live-hint-pulse">Ищем похожие позиции в каталоге…</p>
+      <div class="create-similar-skel" aria-hidden="true">
+        <For each={[1, 2, 3]}>{() =>
+          <div class="create-similar-skel-card">
+            <Skeleton class="create-skel-thumb" />
+            <Skeleton class="create-skel-line" />
+            <Skeleton class="create-skel-line short" />
+          </div>
+        }</For>
       </div>
-      <dl class="create-vote-rows">
-        <VoteRow label="ОКПД2" tab="okpd" vote={props.okpd2} />
-        <VoteRow label="КТРУ" tab="ktru" vote={props.ktru} />
-      </dl>
     </div>
-    <div class="create-vote-group">
-      <div class="create-vote-group-head">
-        <h3>КПГЗ и СПГЗ</h3>
-        <Button type="button" variant="outline" size="xs" onClick={props.onEditSpgz}><ClipboardList size={12} />Изменить</Button>
-      </div>
-      <dl class="create-vote-rows">
-        <VoteRow label="КПГЗ" tab="kpgz" vote={props.kpgz} />
-        <VoteRow label="СПГЗ" tab="spgz" vote={props.spgz} />
-      </dl>
-    </div>
-  </div>;
+  );
 }
 
 export default function NewProduct() {
-  const [name, setName] = createSignal("");
-  const [nameTouched, setNameTouched] = createSignal(false);
-  const [sku, setSku] = createSignal("");
-  const [model, setModel] = createSignal("");
-  const [brand, setBrand] = createSignal("");
-  const [description, setDescription] = createSignal("");
-  const [selected, setSelected] = createSignal<KtruTreeNode | null>(null);
-  const [okpd2, setOkpd2] = createSignal<VotedCode | null>(null);
-  const [kpgz, setKpgz] = createSignal<VotedCode | null>(null);
-  const [spgz, setSpgz] = createSignal<VotedCode | null>(null);
-  const [ktruVote, setKtruVote] = createSignal<VotedCode | null>(null);
-  const [ktruLocked, setKtruLocked] = createSignal(false);
-  const [spgzLocked, setSpgzLocked] = createSignal(false);
-  const [suggesting, setSuggesting] = createSignal(false);
-  const [similar, setSimilar] = createSignal<ProductHit[]>([]);
-  const [ktruPickerSelected, setKtruPickerSelected] = createSignal<KtruTreeNode | null>(null);
   const [ktruPickerOpen, setKtruPickerOpen] = createSignal(false);
-  const [ktruPickerPath, setKtruPickerPath] = createSignal<string[]>([]);
-  const [spgzPickerSelected, setSpgzPickerSelected] = createSignal<DirTreeNode | null>(null);
   const [spgzPickerOpen, setSpgzPickerOpen] = createSignal(false);
-  const [spgzPickerPath, setSpgzPickerPath] = createSignal<string[]>([]);
-  const [characteristics, setCharacteristics] = createSignal<DraftCharacteristic[]>([]);
-  const [charStandards, setCharStandards] = createSignal<string[]>([]);
-  const [noNewFeatures, setNoNewFeatures] = createSignal<boolean | null>(null);
-  const [noNewFeaturesReason, setNoNewFeaturesReason] = createSignal("");
-  const [generatedFor, setGeneratedFor] = createSignal("");
-  const [photos, setPhotos] = createSignal<DraftPhoto[]>([]);
-  const [photoIndex, setPhotoIndex] = createSignal(0);
   const [photoDragging, setPhotoDragging] = createSignal(false);
   let photoInput: HTMLInputElement | undefined;
 
@@ -329,16 +445,43 @@ export default function NewProduct() {
   const hasKtruPosition = () => !!(ktruVote()?.code || selected()?.kind === "ktru");
   const activePhoto = () => photos()[photoIndex()] ?? photos()[0] ?? null;
 
-  const clearCharMeta = () => {
-    setCharStandards([]);
-    setNoNewFeatures(null);
-    setNoNewFeaturesReason("");
-  };
+  const loadSpecialization = async (input?: {
+    ktruCode?: string | null;
+    spgzCode?: string | null;
+    kpgzCode?: string | null;
+  }) => getCatalogSpecialization({
+    ktruCode: input?.ktruCode ?? ktruVote()?.code ?? (selected()?.kind === "ktru" ? selected()?.code : null),
+    spgzCode: input?.spgzCode ?? spgz()?.code ?? null,
+    kpgzCode: input?.kpgzCode ?? kpgz()?.code ?? null,
+  });
 
-  const clearPhotos = () => {
-    revokePhotos(photos());
-    setPhotos([]);
-    setPhotoIndex(0);
+  const refinedPositionRefs = (item: DraftCharacteristic): RefinedPositionRef[] => {
+    if (!item.refinesKtru) return [];
+    const spec = catalogSpecialization();
+    if (!spec) return [];
+    const match = item.value.trim()
+      ? spec.options.find((option) => option.value === item.value)
+      : null;
+    if (!match) return [];
+    const refs: RefinedPositionRef[] = [];
+    if (match.ktruCode) {
+      const isTemplate = match.ktruCode === spec.templateKtruCode;
+      refs.push({
+        tab: "ktru",
+        code: match.ktruCode,
+        name: match.ktruName ? `${match.ktruName}${isTemplate ? " (Шаблон)" : ""}` : (isTemplate ? "(Шаблон)" : ""),
+        kindLabel: "КТРУ",
+      });
+    }
+    if (match.spgzCode) {
+      refs.push({
+        tab: "spgz",
+        code: match.spgzCode,
+        name: match.spgzName || "",
+        kindLabel: "СПГЗ",
+      });
+    }
+    return refs;
   };
 
   const addPhotoFiles = (list: FileList | File[] | null) => {
@@ -374,8 +517,6 @@ export default function NewProduct() {
     });
   };
 
-  onCleanup(() => revokePhotos(photos()));
-
   const applyOkpd = async (code: string, locked: boolean) => {
     const node = await getKtruNode(code);
     if (!node || node.kind !== "okpd") return;
@@ -395,23 +536,29 @@ export default function NewProduct() {
     });
   };
 
-  const applyKtru = async (code: string, locked: boolean) => {
-    const [node, record] = await Promise.all([getKtruNode(code), getKtruRecord(code)]);
-    if (!node || node.kind !== "ktru") return;
-    const text = description();
-    const fields: DraftCharacteristic[] = (record?.characteristics ?? []).map((item) => {
+  const buildKtruDraftFields = (
+    record: NonNullable<Awaited<ReturnType<typeof getKtruRecord>>>,
+    previous: DraftCharacteristic[],
+    keepPrevious: boolean,
+  ): DraftCharacteristic[] => {
+    const previousByName = new Map(
+      previous
+        .filter((item) => item.source === "ktru" || item.source === "both")
+        .map((item) => [normCharName(item.name), item]),
+    );
+    return (record.characteristics ?? []).map((item) => {
       const options = item.options ?? [];
       const ranges = item.ranges ?? [];
-      const raw = guessFromText(item.name, text);
       const id = item.code || item.name;
+      const prior = keepPrevious ? previousByName.get(normCharName(item.name)) : undefined;
       if (isRangeCharacteristic(item)) {
-        const value = extractCharacteristicNumber(raw);
-        const number = parseCharacteristicNumber(value);
         return {
           id,
           name: item.name,
-          value,
-          rangeOption: number == null ? "" : (matchNumberToRange(number, ranges) ?? ""),
+          value: prior?.value.trim() ? prior.value : "",
+          rangeOption: prior?.rangeOption.trim()
+            ? mapValueToOptions(prior.rangeOption, options) || prior.rangeOption
+            : "",
           required: item.required,
           badges: item.badges.filter((badge) => badge !== "обязательная"),
           hint: item.hint || "",
@@ -426,7 +573,9 @@ export default function NewProduct() {
       return {
         id,
         name: item.name,
-        value: resolveCharacteristicValue(raw, options, !!item.multiple, text),
+        value: prior?.value.trim()
+          ? (options.length ? mapValueToOptions(prior.value, options) || prior.value : prior.value)
+          : "",
         rangeOption: "",
         required: item.required,
         badges: item.badges.filter((badge) => badge !== "обязательная"),
@@ -439,58 +588,193 @@ export default function NewProduct() {
         source: "ktru" as const,
       };
     });
-    batch(() => {
-      setSelected(node);
-      setKtruVote({ code: node.code, name: node.name, score: ktruVote()?.score ?? 1 });
-      setKtruLocked(locked);
-      setCharacteristics((current) => [
-        ...fields,
-        ...current.filter((item) => item.source === "spgz" || item.source === "custom" || item.custom),
-      ]);
-      setCharStandards(record?.standards ?? []);
-      setNoNewFeatures(record ? record.noNewFeatures : null);
-      setNoNewFeaturesReason(record?.noNewFeaturesReason ?? "");
-      setGeneratedFor(`${node.code}\u0000${text}`);
-      if (!nameTouched() || !name().trim()) {
-        setName(nameFromDescription(text) || node.name);
-        setNameTouched(false);
+  };
+
+  const buildSpgzDraftFields = (
+    record: NonNullable<Awaited<ReturnType<typeof getDirectoryRecord>>>,
+    previous: DraftCharacteristic[],
+    keepPrevious: boolean,
+  ): DraftCharacteristic[] => {
+    const previousByName = new Map(
+      previous
+        .filter((item) => item.source === "spgz" || item.source === "both")
+        .map((item) => [normCharName(item.name), item]),
+    );
+    return (record.characteristics ?? []).map((item) => {
+      const draft = draftFromSpgzCharacteristic(item);
+      const prior = keepPrevious ? previousByName.get(normCharName(draft.name)) : undefined;
+      if (prior?.value.trim()) {
+        return {
+          ...draft,
+          value: draft.options.length ? mapValueToOptions(prior.value, draft.options) || prior.value : prior.value,
+        };
       }
-      if (record?.okpd2) setOkpd2({ code: record.okpd2.code, name: record.okpd2.name || record.okpd2.code, score: okpd2()?.score ?? 1 });
+      return draft;
+    });
+  };
+
+  /** Fetch KTRU/SPGZ once, then commit votes + characteristics in a single batch (no table flicker). */
+  const applyCatalogPositions = async (input: {
+    ktruCode?: string | null;
+    spgzCode?: string | null;
+    clearSpgz?: boolean;
+    ktruLocked?: boolean;
+    spgzLocked?: boolean;
+    discriminatorValue?: string | null;
+    applyPositionRefine?: boolean;
+    /** Reuse already-loaded specialization (refine path) — skips a heavy RPC. */
+    reuseSpecialization?: boolean;
+  }) => {
+    const text = description();
+    const keepPrevious = input.discriminatorValue !== undefined;
+    const previous = characteristics();
+    const customKeep = previous.filter((item) => item.source === "custom" || item.custom);
+    const wantKtru = !!input.ktruCode;
+    const wantSpgz = !input.clearSpgz && !!input.spgzCode;
+    const keepSpgzRows = !input.clearSpgz && !input.spgzCode;
+    const reuseSpec = input.reuseSpecialization ? catalogSpecialization() : null;
+
+    const [ktruNode, ktruRecord, spgzNode, spgzRecord, spec] = await Promise.all([
+      wantKtru ? getKtruNode(input.ktruCode!) : Promise.resolve(null),
+      wantKtru ? getKtruRecord(input.ktruCode!) : Promise.resolve(null),
+      wantSpgz ? getDirectoryNode("spgz", input.spgzCode!) : Promise.resolve(null),
+      wantSpgz ? getDirectoryRecord("spgz", input.spgzCode!) : Promise.resolve(null),
+      reuseSpec
+        ? Promise.resolve(reuseSpec)
+        : getCatalogSpecialization({
+          ktruCode: input.ktruCode ?? (selected()?.kind === "ktru" ? selected()?.code : ktruVote()?.code) ?? null,
+          spgzCode: input.clearSpgz ? null : (input.spgzCode ?? spgz()?.code ?? null),
+          kpgzCode: kpgz()?.code ?? null,
+        }),
+    ]);
+
+    const ktruFields = (wantKtru && ktruRecord && ktruNode?.kind === "ktru")
+      ? buildKtruDraftFields(ktruRecord, previous, keepPrevious)
+      : previous.filter((item) => item.source === "ktru");
+    const spgzFields = (wantSpgz && spgzRecord && spgzNode?.kind === "spgz")
+      ? buildSpgzDraftFields(spgzRecord, previous, keepPrevious)
+      : keepSpgzRows
+        ? previous.filter((item) => item.source === "spgz")
+        : [];
+
+    let nextChars = withCatalogSpecialization(
+      [...ktruFields, ...spgzFields, ...customKeep],
+      spec,
+      input.discriminatorValue,
+    );
+    if (input.applyPositionRefine === false) {
+      nextChars = nextChars.map((item) => item.refinesKtru ? { ...item, applyPositionRefine: false } : item);
+    }
+
+    const kpgzLink = spgzRecord?.links.find((link) => link.tab === "kpgz");
+
+    batch(() => {
+      if (wantKtru && ktruNode?.kind === "ktru" && ktruRecord) {
+        setSelected(ktruNode);
+        setKtruVote({
+          code: ktruNode.code,
+          name: ktruNode.name,
+          score: ktruVote()?.score ?? 1,
+          isTemplate: ktruNode.isTemplate,
+        });
+        if (input.ktruLocked != null) setKtruLocked(input.ktruLocked);
+        setCharStandards(ktruRecord.standards ?? []);
+        setNoNewFeatures(ktruRecord.noNewFeatures);
+        setNoNewFeaturesReason(ktruRecord.noNewFeaturesReason ?? "");
+        setGeneratedFor(`${ktruNode.code}\u0000${text}`);
+        if (ktruRecord.okpd2) {
+          setOkpd2({
+            code: ktruRecord.okpd2.code,
+            name: ktruRecord.okpd2.name || ktruRecord.okpd2.code,
+            score: okpd2()?.score ?? 1,
+          });
+        }
+        if (!nameTouched() || !name().trim()) {
+          setName(nameFromDescription(text) || ktruNode.name);
+          setNameTouched(false);
+        }
+      }
+      if (input.clearSpgz) {
+        setSpgz(null);
+        if (input.spgzLocked != null) setSpgzLocked(input.spgzLocked);
+      } else if (wantSpgz && spgzNode?.kind === "spgz") {
+        setSpgz({
+          code: spgzNode.code,
+          name: spgzNode.name || spgzRecord?.name || spgzNode.code,
+          score: spgz()?.score ?? 1,
+        });
+        if (input.spgzLocked != null) setSpgzLocked(input.spgzLocked);
+        if (kpgzLink) {
+          const label = kpgzLink.label.replace(/^КПГЗ\s+/, "");
+          const sep = label.indexOf(" — ");
+          setKpgz({
+            code: kpgzLink.code,
+            name: sep >= 0 ? label.slice(sep + 3) : label,
+            score: kpgz()?.score ?? 1,
+          });
+        }
+      }
+      setCatalogSpecialization(spec);
+      setCharacteristics(nextChars);
+    });
+  };
+
+  const applyKtru = async (code: string, locked: boolean, discriminatorValue?: string | null) => {
+    await applyCatalogPositions({
+      ktruCode: code,
+      ktruLocked: locked,
+      discriminatorValue,
+    });
+  };
+
+  const refineFromDiscriminator = (value: string) => {
+    const spec = catalogSpecialization();
+    if (!spec) return;
+    const match = spec.options.find((option) => option.value === value);
+    const nextKtru = match?.ktruCode ?? spec.templateKtruCode;
+    const nextSpgz = match?.spgzCode ?? null;
+    const ktruSame = !nextKtru || ktruVote()?.code === nextKtru;
+    const spgzSame = !nextSpgz || spgz()?.code === nextSpgz;
+    if (ktruSame && spgzSame) {
+      setCharacteristics((items) => items.map((item) =>
+        item.refinesKtru ? { ...item, value } : item));
+      return;
+    }
+    const seq = nextRefineSeq();
+    void applyCatalogPositions({
+      ktruCode: !ktruLocked() && nextKtru && !ktruSame ? nextKtru : (ktruVote()?.code ?? null),
+      spgzCode: !spgzLocked() && nextSpgz && !spgzSame ? nextSpgz : undefined,
+      clearSpgz: !spgzLocked() && !nextSpgz && !!spgz(),
+      discriminatorValue: value || null,
+      applyPositionRefine: true,
+      reuseSpecialization: true,
+    }).then(() => {
+      if (seq !== currentRefineSeq()) return;
     });
   };
 
   const applyKpgz = async (code: string, locked: boolean) => {
     const node = await getDirectoryNode("kpgz", code);
     if (!node || node.kind !== "kpgz") return;
+    const spec = await loadSpecialization({ kpgzCode: code, spgzCode: null });
     batch(() => {
       setKpgz({ code: node.code, name: node.name, score: kpgz()?.score ?? 1 });
       setSpgz(null);
       setSpgzLocked(locked);
-      setCharacteristics((current) => current.filter((item) => item.source !== "spgz"));
+      setCatalogSpecialization(spec);
+      setCharacteristics((current) => withCatalogSpecialization(
+        current.filter((item) => item.source !== "spgz"),
+        spec,
+      ));
     });
   };
 
-  const applySpgz = async (code: string, locked: boolean) => {
-    const [node, record] = await Promise.all([getDirectoryNode("spgz", code), getDirectoryRecord("spgz", code)]);
-    if (!node || node.kind !== "spgz") return;
-    const kpgzLink = record?.links.find((link) => link.tab === "kpgz");
-    const fields = (record?.characteristics ?? []).map((item) => draftFromSpgzCharacteristic(item, description()));
-    batch(() => {
-      setSpgz({ code: node.code, name: node.name || record?.name || node.code, score: spgz()?.score ?? 1 });
-      setSpgzLocked(locked);
-      setCharacteristics((current) => [
-        ...current.filter((item) => item.source !== "spgz"),
-        ...fields,
-      ]);
-      if (kpgzLink) {
-        const label = kpgzLink.label.replace(/^КПГЗ\s+/, "");
-        const sep = label.indexOf(" — ");
-        setKpgz({
-          code: kpgzLink.code,
-          name: sep >= 0 ? label.slice(sep + 3) : label,
-          score: kpgz()?.score ?? 1,
-        });
-      }
+  const applySpgz = async (code: string, locked: boolean, discriminatorValue?: string | null) => {
+    await applyCatalogPositions({
+      spgzCode: code,
+      spgzLocked: locked,
+      ktruCode: ktruVote()?.code ?? (selected()?.kind === "ktru" ? selected()?.code : null),
+      discriminatorValue,
     });
   };
 
@@ -545,6 +829,8 @@ export default function NewProduct() {
       setKtruLocked(false);
       setSpgzLocked(false);
       setSimilar([]);
+      setLastSuggestQuery("");
+      setSuggestDurationMs(null);
       setDescription("Молоток слесарный 500 г, боёк стальной круглый, рукоятка деревянная. Для слесарных и монтажных работ.");
       setCharacteristics([]);
       clearCharMeta();
@@ -558,7 +844,7 @@ export default function NewProduct() {
       setName(""); setNameTouched(false); setSku(""); setModel(""); setBrand(""); setDescription("");
       setSelected(null); setOkpd2(null); setKpgz(null); setSpgz(null); setKtruVote(null);
       setKtruLocked(false); setSpgzLocked(false);
-      setSimilar([]); setSuggesting(false);
+      setSimilar([]); setSuggesting(false); setLastSuggestQuery(""); setSuggestDurationMs(null);
       setCharacteristics([]); clearCharMeta(); setGeneratedFor("");
       clearPhotos();
     });
@@ -570,6 +856,8 @@ export default function NewProduct() {
       batch(() => {
         setSimilar([]);
         setSuggesting(false);
+        setLastSuggestQuery("");
+        setSuggestDurationMs(null);
         if (!ktruLocked()) {
           setSelected(null);
           setOkpd2(null);
@@ -586,59 +874,99 @@ export default function NewProduct() {
       });
       return;
     }
+    if (query === lastSuggestQuery()) {
+      setSuggesting(false);
+      return;
+    }
     setSuggesting(true);
     let alive = true;
     const timer = setTimeout(() => {
-      void suggestFromNeighbors(query).then((draft) => {
+      const started = performance.now();
+      void suggestFromNeighbors(query).then(async (draft) => {
         if (!alive) return;
-        batch(() => {
-          setSimilar(draft.neighbors);
-          setSuggesting(false);
-          if (!spgzLocked()) {
-            setKpgz(draft.kpgz);
-            setSpgz(draft.spgz);
-          }
+        try {
+          const wantSpec = (!ktruLocked() || !spgzLocked()) && !!(draft.ktru || draft.spgz || draft.kpgz);
+          const spec = wantSpec
+            ? await getCatalogSpecialization({
+              ktruCode: (!ktruLocked() ? draft.ktru?.code : ktruVote()?.code) ?? null,
+              spgzCode: (!spgzLocked() ? draft.spgz?.code : spgz()?.code) ?? null,
+              kpgzCode: (!spgzLocked() ? draft.kpgz?.code : kpgz()?.code) ?? null,
+            })
+            : null;
+          if (!alive) return;
+          setLastSuggestQuery(query);
+          setSuggestDurationMs(Math.round(performance.now() - started));
+
           const draftKtru = draft.characteristics.filter((item) => item.source === "ktru");
           const draftSpgz = draft.characteristics.filter((item) => item.source === "spgz");
-          if (!ktruLocked() && !spgzLocked()) {
-            setCharacteristics((current) => [
-              ...draftKtru,
-              ...draftSpgz,
-              ...current.filter((item) => item.source === "custom" || item.custom),
-            ]);
-          } else if (!ktruLocked()) {
-            setCharacteristics((current) => [
-              ...draftKtru,
-              ...current.filter((item) => item.source !== "ktru"),
-            ]);
-          } else if (!spgzLocked()) {
-            setCharacteristics((current) => [
-              ...current.filter((item) => item.source !== "spgz"),
-              ...draftSpgz,
-            ]);
-          }
-          if (!ktruLocked()) {
-            setOkpd2(draft.okpd2);
-            setKtruVote(draft.ktru);
-            setCharStandards(draft.standards);
-            setNoNewFeatures(draft.noNewFeatures);
-            setNoNewFeaturesReason(draft.noNewFeaturesReason);
-            if (draft.ktru) {
-              void getKtruNode(draft.ktru.code).then((node) => {
-                if (!alive || ktruLocked() || !node) return;
-                setSelected(node);
-                setGeneratedFor(`${node.code}\u0000${query}`);
-              });
-            } else {
-              setSelected(null);
-              setGeneratedFor(`\u0000${query}`);
+          const customKeep = characteristics().filter((item) => item.source === "custom" || item.custom);
+          let nextChars: DraftCharacteristic[];
+          if (!ktruLocked() && !spgzLocked()) nextChars = [...draftKtru, ...draftSpgz, ...customKeep];
+          else if (!ktruLocked()) nextChars = [...draftKtru, ...characteristics().filter((item) => item.source !== "ktru")];
+          else if (!spgzLocked()) nextChars = [...characteristics().filter((item) => item.source !== "spgz"), ...draftSpgz];
+          else nextChars = characteristics();
+          nextChars = withCatalogSpecialization(nextChars, spec);
+
+          const refineItem = nextChars.find((item) =>
+            item.refinesKtru && item.applyPositionRefine !== false && item.value.trim());
+          const refineMatch = refineItem && spec
+            ? spec.options.find((option) => option.value === refineItem.value)
+            : undefined;
+          // Resolve child codes before painting categories — avoid template → child jump.
+          const resolvedKtruCode = (!ktruLocked() && refineMatch?.ktruCode)
+            ? refineMatch.ktruCode
+            : (!ktruLocked() ? draft.ktru?.code : null);
+          const resolvedSpgzCode = (!spgzLocked() && refineMatch?.spgzCode)
+            ? refineMatch.spgzCode
+            : (!spgzLocked() ? draft.spgz?.code : null);
+
+          batch(() => {
+            setSimilar(draft.neighbors);
+            setSuggesting(false);
+            setCatalogSpecialization(spec);
+            if (!ktruLocked()) {
+              setOkpd2(draft.okpd2);
+              setCharStandards(draft.standards);
+              setNoNewFeatures(draft.noNewFeatures);
+              setNoNewFeaturesReason(draft.noNewFeaturesReason);
             }
+            if (!spgzLocked() && !refineMatch?.spgzCode) {
+              setKpgz(draft.kpgz);
+              setSpgz(draft.spgz);
+            }
+            if (!refineMatch) setCharacteristics(nextChars);
+            // Sole OKPD2 template (or any draft KTRU without a discriminator pick) must still land in the vote card.
+            if (!ktruLocked() && !refineMatch) {
+              setKtruVote(draft.ktru);
+              if (draft.ktru) {
+                void getKtruNode(draft.ktru.code).then((node) => {
+                  if (!alive || ktruLocked() || !node) return;
+                  setSelected(node);
+                  setGeneratedFor(`${node.code}\u0000${query}`);
+                });
+              } else {
+                setSelected(null);
+                setGeneratedFor(`\u0000${query}`);
+              }
+            }
+            if (!nameTouched()) {
+              setName(draft.productName || nameFromDescription(query));
+              setNameTouched(false);
+            }
+          });
+
+          if (refineMatch) {
+            await applyCatalogPositions({
+              ktruCode: resolvedKtruCode && !ktruLocked() ? resolvedKtruCode : null,
+              spgzCode: resolvedSpgzCode && !spgzLocked() ? resolvedSpgzCode : null,
+              discriminatorValue: refineItem?.value ?? null,
+              applyPositionRefine: true,
+              reuseSpecialization: true,
+            });
           }
-          if (!nameTouched()) {
-            setName(draft.productName || nameFromDescription(query));
-            setNameTouched(false);
-          }
-        });
+        } catch {
+          if (alive) setSuggesting(false);
+        }
       }, () => { if (alive) setSuggesting(false); });
     }, 420);
     onCleanup(() => { alive = false; clearTimeout(timer); });
@@ -646,9 +974,10 @@ export default function NewProduct() {
 
   const updateCharacteristic = (id: string, value: string) => {
     const ids = new Set(linkedIdsFor(id));
+    const target = characteristics().find((item) => ids.has(item.id));
+    const next = target?.options.length ? mapValueToOptions(value, target.options) : value;
     setCharacteristics((items) => items.map((item) => {
       if (!ids.has(item.id)) return item;
-      const next = item.options.length ? mapValueToOptions(value, item.options) : value;
       if (!isRangeCharacteristic(item)) return { ...item, value: next };
       const number = parseCharacteristicNumber(next);
       return {
@@ -657,6 +986,35 @@ export default function NewProduct() {
         rangeOption: number == null ? "" : (matchNumberToRange(number, item.ranges) ?? mapValueToOptions(next, item.options)),
       };
     }));
+    if (target?.refinesKtru && target.applyPositionRefine !== false) {
+      refineFromDiscriminator(next);
+    }
+  };
+
+  const togglePositionRefine = (id: string, enabled: boolean) => {
+    const ids = new Set(linkedIdsFor(id));
+    const keptValue = characteristics().find((item) => ids.has(item.id))?.value ?? "";
+    if (enabled) {
+      setCharacteristics((items) => items.map((item) =>
+        ids.has(item.id) ? { ...item, applyPositionRefine: true } : item));
+      if (keptValue.trim()) refineFromDiscriminator(keptValue);
+      return;
+    }
+    const template = catalogSpecialization()?.templateKtruCode;
+    if (!template) {
+      setCharacteristics((items) => items.map((item) =>
+        ids.has(item.id) ? { ...item, applyPositionRefine: false } : item));
+      return;
+    }
+    const seq = nextRefineSeq();
+    void applyCatalogPositions({
+      ktruCode: !ktruLocked() ? template : null,
+      clearSpgz: !spgzLocked() && !!spgz(),
+      discriminatorValue: keptValue || null,
+      applyPositionRefine: false,
+    }).then(() => {
+      if (seq !== currentRefineSeq()) return;
+    });
   };
 
   const updateCharacteristicName = (id: string, name: string) => {
@@ -745,8 +1103,14 @@ export default function NewProduct() {
     <Show when={description().trim().length >= 12}>
       <section class="create-live" aria-live="polite">
         <div class="create-live-category">
-          <div class="section-heading"><Tags size={18} strokeWidth={1.6} /><h2>Категории</h2></div>
-          <Show when={!suggesting()} fallback={<p class="create-live-hint">Ищем ближайшие товары и голосуем за категории…</p>}>
+          <div class="section-heading">
+            <Tags size={18} strokeWidth={1.6} />
+            <h2>Категории</h2>
+            <Show when={!suggesting() && suggestDurationMs() != null}>
+              <span>{formatSuggestTiming(suggestDurationMs()!)}</span>
+            </Show>
+          </div>
+          <Show when={!suggesting()} fallback={<CategorySuggestSkeleton />}>
             <Show when={hasCategory()} fallback={<p class="create-live-hint">Пока не удалось вывести категории — уточните описание или выберите коды вручную.</p>}>
               <CategoryPairs
                 okpd2={okpd2()}
@@ -761,7 +1125,7 @@ export default function NewProduct() {
         </div>
         <div class="create-live-similar">
           <div class="section-heading"><Sparkles size={18} strokeWidth={1.6} /><h2>Похожие товары</h2></div>
-          <Show when={!suggesting()} fallback={<p class="create-live-hint">Ищем похожие позиции в каталоге…</p>}>
+          <Show when={!suggesting()} fallback={<SimilarSuggestSkeleton />}>
             <Show when={similar().length} fallback={<p class="create-live-hint">Похожих товаров пока нет — уточните описание.</p>}>
               <div class="create-similar-row"><For each={similar()}>{product => <ProductCard product={product} returnTo="/" />}</For></div>
             </Show>
@@ -859,15 +1223,6 @@ export default function NewProduct() {
               <dd><TextField class="create-inline-field" name="product-model" value={model()} onChange={setModel}><TextFieldLabel class="sr-only">Модель</TextFieldLabel><TextFieldInput id="product-model" placeholder="Необязательно" maxlength={120} /></TextField></dd>
             </div>
           </dl>
-          <CategoryPairs
-            class="create-summary-votes"
-            okpd2={okpd2()}
-            ktru={ktruVote()}
-            kpgz={kpgz()}
-            spgz={spgz()}
-            onEditKtru={openKtruPicker}
-            onEditSpgz={openSpgzPicker}
-          />
           <Show when={outdated()}><div class="create-summary-actions"><Badge variant="outline">Описание изменилось</Badge></div></Show>
           <input type="hidden" name="product-category" value={selected()?.code ?? ""} />
         </div>
@@ -885,9 +1240,11 @@ export default function NewProduct() {
               choiceOptions={choiceOptions}
               optionLabel={optionLabel}
               selectedOptions={selectedOptions}
+              refinedRefs={refinedPositionRefs(item())}
               onUpdate={updateCharacteristic}
               onUpdateName={updateCharacteristicName}
               onUpdateRange={updateCharacteristicRange}
+              onTogglePositionRefine={togglePositionRefine}
               onRemove={removeCharacteristic}
               onPickOption={pickCharacteristicOption}
             />

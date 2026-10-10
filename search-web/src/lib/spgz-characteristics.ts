@@ -1,4 +1,4 @@
-import { resolveCharacteristicValue, shortUnitName } from "./characteristic-options";
+import { shortUnitName } from "./characteristic-options";
 import type { DraftCharacteristic } from "./types";
 
 /** Map directory SPGZ characteristic into an editable draft row (no merge with КТРУ). */
@@ -11,7 +11,6 @@ export function draftFromSpgzCharacteristic(
     options?: string[];
     parts?: { text: string; okeiName?: string }[];
   },
-  description = "",
 ): DraftCharacteristic {
   const options = (item.options ?? []).map((option) => option.trim()).filter(Boolean);
   const unit = shortUnitName(item.parts?.find((part) => part.okeiName)?.okeiName);
@@ -21,7 +20,7 @@ export function draftFromSpgzCharacteristic(
   return {
     id: `spgz:${item.code || item.name}`,
     name: item.name,
-    value: resolveCharacteristicValue("", options, false, description),
+    value: "",
     rangeOption: "",
     required,
     badges,

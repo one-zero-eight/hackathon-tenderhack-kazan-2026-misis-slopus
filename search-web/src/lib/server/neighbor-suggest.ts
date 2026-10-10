@@ -1,11 +1,5 @@
 import { apiSearchProducts } from "../api";
-import {
-  extractCharacteristicNumber,
-  isRangeCharacteristic,
-  matchNumberToRange,
-  parseCharacteristicNumber,
-  resolveCharacteristicValue,
-} from "../characteristic-options";
+import { isRangeCharacteristic } from "../characteristic-options";
 import { draftFromSpgzCharacteristic } from "../spgz-characteristics";
 import type { DraftCharacteristic, ProductHit, VotedCode } from "../types";
 import { getDirectoryRecord } from "./classifiers";
@@ -57,90 +51,22 @@ function voteCodes(rows: { code: string; name: string; score: number }[]): Voted
     .sort((a, b) => b.score - a.score || a.code.localeCompare(b.code, "ru"));
 }
 
-function guessFromText(name: string, description: string): string {
-  const text = description.toLocaleLowerCase("ru");
-  const n = name.toLocaleLowerCase("ru");
-  if (/формат/.test(n)) return (text.match(/\b(а[345])\b/i)?.[1] ?? "").toUpperCase();
-  if (/плотност/.test(n)) {
-    const value = text.match(/(\d{2,3}(?:[.,]\d+)?)\s*(?:г\s*\/\s*м\s*(?:²|2)|г\/м)/i)?.[1];
-    return value ? `${value.replace(",", ".")} г/м²` : "";
-  }
-  if (/лист/.test(n)) {
-    const value = text.match(/(\d{1,4})\s*лист/i)?.[1];
-    return value ? `${value} шт.` : "";
-  }
-  if (/цвет/.test(n)) {
-    if (/бел/.test(text)) return "Белый";
-    if (/ч[её]рн/.test(text)) return "Чёрный";
-  }
-  if (/материал/.test(n)) return text.match(/(металл(?:ический)?|пластик(?:овый)?|дерев(?:о|янный)|ткань|кожа)/i)?.[1] ?? "";
-  if (/объ[её]м|емкост/.test(n)) {
-    const value = text.match(/(\d+(?:[.,]\d+)?)\s*(мл|л|литр)/i);
-    return value ? `${value[1]} ${value[2]}` : "";
-  }
-  return "";
-}
-
-function neighborConsensus(name: string, neighbors: ProductHit[]): string {
-  const counts = new Map<string, number>();
-  const key = name.toLocaleLowerCase("ru");
-  for (const product of neighbors) {
-    for (const item of product.characteristics ?? []) {
-      if (item.name.trim().toLocaleLowerCase("ru") !== key) continue;
-      const value = `${item.value.trim()}${item.unit ? ` ${item.unit.trim()}` : ""}`.trim();
-      if (!value) continue;
-      counts.set(value, (counts.get(value) ?? 0) + 1);
-    }
-  }
-  let best = "";
-  let bestCount = 0;
-  for (const [value, count] of counts) {
-    if (count > bestCount) {
-      best = value;
-      bestCount = count;
-    }
-  }
-  return bestCount >= 2 ? best : "";
-}
-
-function fillCharacteristics(schema: KtruCharacteristic[], description: string, neighbors: ProductHit[]): DraftCharacteristic[] {
+function fillCharacteristics(schema: KtruCharacteristic[]): DraftCharacteristic[] {
   return schema.map((item) => {
     const options = item.options ?? [];
     const ranges = item.ranges ?? [];
-    const fromText = guessFromText(item.name, description);
-    const fromNeighbors = fromText ? "" : neighborConsensus(item.name, neighbors);
-    const raw = fromText || fromNeighbors;
     const id = item.code || item.name;
-    if (isRangeCharacteristic(item)) {
-      const value = extractCharacteristicNumber(raw);
-      const number = parseCharacteristicNumber(value);
-      return {
-        id,
-        name: item.name,
-        value,
-        rangeOption: number == null ? "" : (matchNumberToRange(number, ranges) ?? ""),
-        required: item.required,
-        badges: item.badges.filter((badge) => badge !== "обязательная"),
-        hint: item.hint || "",
-        options,
-        optionLabels: item.optionLabels ?? {},
-        ranges,
-        unit: item.unit || "",
-        multiple: !!item.multiple,
-        source: "ktru" as const,
-      };
-    }
     return {
       id,
       name: item.name,
-      value: resolveCharacteristicValue(raw, options, !!item.multiple, description),
+      value: "",
       rangeOption: "",
       required: item.required,
       badges: item.badges.filter((badge) => badge !== "обязательная"),
       hint: item.hint || "",
       options,
       optionLabels: item.optionLabels ?? {},
-      ranges: [],
+      ranges: isRangeCharacteristic(item) ? ranges : [],
       unit: item.unit || "",
       multiple: !!item.multiple,
       source: "ktru" as const,
@@ -219,6 +145,7 @@ function resolveKtruFromVotes(neighbors: ProductHit[], okpd2: VotedCode | null):
       code: best.code,
       name: record?.name || best.name,
       score: best.score,
+      isTemplate: !!(node?.isTemplate ?? record?.isTemplate),
     },
     status: node?.status ?? record?.status ?? null,
     characteristics: record?.characteristics ?? [],
@@ -293,11 +220,11 @@ export async function suggestFromNeighbors(description: string): Promise<Neighbo
   }
 
   const spgz = resolveSpgz(neighbors);
-  const ktruCharacteristics = fillCharacteristics(schema, query, neighbors);
+  const ktruCharacteristics = fillCharacteristics(schema);
   const spgzCharacteristics = (() => {
     if (!spgz) return [] as DraftCharacteristic[];
     const record = getDirectoryRecord("spgz", spgz.code);
-    return (record?.characteristics ?? []).map((item) => draftFromSpgzCharacteristic(item, query));
+    return (record?.characteristics ?? []).map((item) => draftFromSpgzCharacteristic(item));
   })();
   const characteristics = [...ktruCharacteristics, ...spgzCharacteristics];
   const productName = nameFromDescription(query) || ktru?.name || neighbors[0]?.name || "";

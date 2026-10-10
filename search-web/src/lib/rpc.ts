@@ -71,6 +71,42 @@ export const getKtruRevealPath = query(async (code: string) => {
   return load(code);
 }, "ktru-reveal-path");
 
+export const getCatalogSpecialization = query(async (input: {
+  ktruCode?: string | null;
+  spgzCode?: string | null;
+  kpgzCode?: string | null;
+}) => {
+  "use server";
+  const { getCatalogSpecialization: load } = await import("./server/classifiers");
+  return load(input);
+}, "catalog-specialization");
+
+export const getClassifierCharacteristicNames = query(async (input: {
+  ktruCode?: string | null;
+  okpd2?: string | null;
+  spgzCode?: string | null;
+  kpgzCode?: string | null;
+}) => {
+  "use server";
+  const { classifierCharacteristicNames } = await import("./server/classifiers");
+  return classifierCharacteristicNames(input);
+}, "classifier-characteristic-names");
+
+export const resolveProductCategoryVotes = query(async (input: {
+  okpd2?: string | null;
+  okpd2Name?: string | null;
+  ktruCode?: string | null;
+  ktruName?: string | null;
+  kpgzCode?: string | null;
+  kpgzName?: string | null;
+  spgzId?: number | null;
+  characteristics?: { name: string; value: string }[] | null;
+}) => {
+  "use server";
+  const { resolveProductCategoryVotes: load } = await import("./server/classifiers");
+  return load(input);
+}, "product-category-votes");
+
 export const getClassifierStats = query(async () => {
   "use server";
   const { classifierStats } = await import("./server/classifiers");

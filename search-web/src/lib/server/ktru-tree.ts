@@ -10,7 +10,7 @@ import {
   dedupeCharacteristicOptions,
   shortUnitName,
 } from "../characteristic-options";
-import type { CharacteristicRange, KtruChildrenPage, KtruTreeNode } from "../types";
+import type { CharacteristicRange, KtruChildrenPage, KtruSpecialization, KtruTreeNode } from "../types";
 import { classifiersSqlitePath, ktruParquetPath, ktruSqlitePath } from "./config";
 
 interface LightRow {
@@ -610,6 +610,126 @@ export function getSoleTemplateKtruForOkpd(okpd2: string): { code: string; name:
   if (!row?.isTemplate) return null;
   if (row.status && row.status !== "ACTIVE") return null;
   return { code: row.code, name: row.name };
+}
+
+function characteristicValueTexts(raw: Record<string, unknown>): Map<string, { values: string[]; code: string | null; required: boolean; kind: string }> {
+  const out = new Map<string, { values: string[]; code: string | null; required: boolean; kind: string }>();
+  const list = Array.isArray(raw.characteristics) ? raw.characteristics : [];
+  for (const item of list) {
+    if (!item || typeof item !== "object") continue;
+    const row = item as {
+      code?: string;
+      name?: string;
+      kind?: string | number;
+      required?: boolean;
+      actual?: boolean;
+      values?: {
+        unit?: { code?: string; name?: string } | null;
+        text?: string | null;
+        concrete_values?: string[] | null;
+        ranges?: { min_operator?: string; min?: string; max_operator?: string; max?: string }[] | null;
+      }[];
+    };
+    if (row.actual === false) continue;
+    const name = String(row.name ?? "").trim();
+    if (!name) continue;
+    const values = dedupeCharacteristicOptions((row.values ?? []).flatMap(formatKtruValueParts).map(part => part.text).filter(Boolean));
+    out.set(name, {
+      values,
+      code: row.code ? String(row.code) : null,
+      required: !!row.required,
+      kind: String(row.kind ?? ""),
+    });
+  }
+  return out;
+}
+
+/**
+ * For a template (or a child under a template): find the characteristic that uniquely
+ * partitions sibling positions, and map each value → child KTRU code.
+ */
+export function getKtruSpecialization(code: string): KtruSpecialization | null {
+  if (!code || code.length > 64) return null;
+  const data = getCatalog();
+  const row = data.byCode.get(code);
+  if (!row) return null;
+
+  let templateCode = code;
+  if (!row.isTemplate) {
+    const parent = row.parentCode ? data.byCode.get(row.parentCode) : undefined;
+    if (!parent?.isTemplate) return null;
+    templateCode = parent.code;
+  }
+
+  const childCodes = (data.ktruChildren.get(templateCode) ?? []).filter(child => {
+    const childRow = data.byCode.get(child);
+    return childRow && (!childRow.status || childRow.status === "ACTIVE");
+  });
+  if (childCodes.length < 2) return null;
+
+  const children = childCodes.map(childCode => {
+    const rowPayload = data.db.prepare("SELECT payload FROM ktru WHERE code=?").get(childCode) as { payload: Buffer } | undefined;
+    const chars = rowPayload ? characteristicValueTexts(parseKtruPayload(rowPayload.payload)) : new Map();
+    return { code: childCode, name: data.byCode.get(childCode)?.name ?? childCode, chars };
+  });
+
+  const nameScores = new Map<string, {
+    score: number;
+    code: string | null;
+    required: boolean;
+    kind: string;
+    pairs: { value: string; code: string; name: string }[];
+  }>();
+
+  const allNames = new Set<string>();
+  for (const child of children) for (const name of child.chars.keys()) allNames.add(name);
+
+  for (const name of allNames) {
+    const pairs: { value: string; code: string; name: string }[] = [];
+    let required = false;
+    let kind = "";
+    let charCode: string | null = null;
+    let ok = true;
+    const seen = new Set<string>();
+    for (const child of children) {
+      const entry = child.chars.get(name);
+      if (!entry || entry.values.length !== 1) {
+        ok = false;
+        break;
+      }
+      const value = entry.values[0]!;
+      if (seen.has(value)) {
+        ok = false;
+        break;
+      }
+      seen.add(value);
+      required = entry.required;
+      kind = entry.kind;
+      charCode = entry.code;
+      pairs.push({ value, code: child.code, name: child.name });
+    }
+    if (!ok || pairs.length !== children.length) continue;
+    let score = 10;
+    if (required) score += 20;
+    if (kind === "1") score += 10;
+    nameScores.set(name, { score, code: charCode, required, kind, pairs });
+  }
+
+  const best = [...nameScores.entries()].sort((a, b) => b[1].score - a[1].score || a[0].localeCompare(b[0], "ru"))[0];
+  if (!best) return null;
+
+  const [characteristicName, meta] = best;
+  const options = [...meta.pairs].sort((a, b) => a.value.localeCompare(b.value, "ru") || a.code.localeCompare(b.code));
+  const current = options.find(item => item.code === code) ?? null;
+  const templateRow = data.byCode.get(templateCode)!;
+  return {
+    templateCode,
+    templateName: templateRow.name,
+    characteristicName,
+    characteristicCode: meta.code,
+    options,
+    currentValue: current?.value ?? null,
+  };
 }
 
 export function getKtruNodeByCode(code: string): KtruTreeNode | null {

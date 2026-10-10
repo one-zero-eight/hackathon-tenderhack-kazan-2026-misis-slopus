@@ -101,7 +101,7 @@ export function ProductCard(props: { product: ProductHit; returnTo: string }) {
       <h3><A href={href()}>{product().name}</A></h3>
       <p class="product-brand">{product().manufacturer || "Производитель не указан"}</p>
       <ProductClassifierLinks product={product()} class="classifier-links card-classifier-links" />
-      <Show when={product().characteristics.length}><dl class="card-characteristics"><For each={product().characteristics.slice(0, 2)}>{item => <div><dt>{item.name}</dt><dd>{item.value}{item.unit ? ` ${item.unit}` : ""}</dd></div>}</For></dl></Show>
+      <Show when={product().characteristics.length}><dl class="card-characteristics"><For each={product().characteristics.slice(0, 6)}>{item => <div><dt>{item.name}</dt><dd>{item.value}{item.unit ? ` ${item.unit}` : ""}</dd></div>}</For></dl></Show>
       <A href={href()} class="product-bottom" aria-label={`Подробнее: ${product().name}`}><span class="card-arrow" aria-hidden="true"><ArrowRight size={18} /></span></A>
     </div>
   </Card>;
