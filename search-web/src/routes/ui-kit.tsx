@@ -1,5 +1,8 @@
 import { Title } from "@solidjs/meta";
-import { ArrowRight, Check, Package, Search } from "lucide-solid";
+import ArrowRight from "lucide-solid/icons/arrow-right";
+import Check from "lucide-solid/icons/check";
+import Package from "lucide-solid/icons/package";
+import Search from "lucide-solid/icons/search";
 import { createSignal, For, type JSX } from "solid-js";
 import {
   Badge, Button, Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle,

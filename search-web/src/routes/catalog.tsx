@@ -1,6 +1,13 @@
 import { Meta, Title } from "@solidjs/meta";
 import { createAsync, revalidate, useIsRouting, useLocation, useSearchParams } from "@solidjs/router";
-import { ArrowDown, ArrowLeft, ArrowRight, Check, Layers3, Search, Sparkles, TextSearch } from "lucide-solid";
+import ArrowDown from "lucide-solid/icons/arrow-down";
+import ArrowLeft from "lucide-solid/icons/arrow-left";
+import ArrowRight from "lucide-solid/icons/arrow-right";
+import Check from "lucide-solid/icons/check";
+import Layers3 from "lucide-solid/icons/layers-3";
+import Search from "lucide-solid/icons/search";
+import Sparkles from "lucide-solid/icons/sparkles";
+import TextSearch from "lucide-solid/icons/text-search";
 import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show, Suspense } from "solid-js";
 import { CategoryPicker } from "~/components/category-picker";
 import { DataBoundary, EmptyState, ProductCard, ResultsSkeleton } from "~/components/catalog";

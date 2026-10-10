@@ -55,6 +55,13 @@ _category_stats: list[dict] | None = None
 _taxonomy: CategoryTaxonomy | None = None
 
 
+def _ktru_from_characteristics(chars: list[dict[str, str]]) -> str:
+    for item in chars:
+        if item["name"].casefold() == "ктру" and item["value"].strip():
+            return item["value"].strip()
+    return ""
+
+
 def _row_to_product(row: dict) -> Product:
     chars = []
     for item in row.get("characteristics") or []:
@@ -217,6 +224,7 @@ def list_products(*, category_id: int | None, offset: int, limit: int) -> tuple[
 
 
 def product_to_dict(product: Product) -> dict:
+    ktru_code = _ktru_from_characteristics(product.characteristics)
     return {
         "id": product.id,
         "name": product.name,
@@ -230,6 +238,8 @@ def product_to_dict(product: Product) -> dict:
         "modelName": product.model_name,
         "okpd2": product.okpd2,
         "okpd2Name": product.okpd2_name,
+        "ktruCode": ktru_code,
+        "ktruName": "",
         "kpgzCode": product.kpgz_code,
         "kpgzName": product.kpgz_name,
         "spgzId": product.spgz_id,

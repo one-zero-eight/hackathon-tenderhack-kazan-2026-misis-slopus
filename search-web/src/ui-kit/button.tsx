@@ -16,7 +16,13 @@ const buttonVariants = cva("ui-button inline-flex items-center justify-center ga
       ghost: "hover:bg-accent",
       link: "text-primary underline-offset-4 hover:underline",
     },
-    size: { default: "h-10 px-4 py-2", sm: "h-9 px-3 text-xs", lg: "h-12 px-6", icon: "size-10" },
+    size: {
+      default: "h-10 px-4 py-2",
+      sm: "h-9 px-3 text-xs",
+      xs: "h-7 gap-1 rounded px-2 text-[11px] [&_svg]:size-3",
+      lg: "h-12 px-6",
+      icon: "size-10",
+    },
   },
   defaultVariants: { variant: "default", size: "default" },
 });

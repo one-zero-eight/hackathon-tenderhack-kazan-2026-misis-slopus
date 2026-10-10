@@ -1,7 +1,8 @@
 import { Title } from "@solidjs/meta";
 import { A } from "@solidjs/router";
 import { HttpStatusCode } from "@solidjs/start";
-import { ArrowRight, Search } from "lucide-solid";
+import ArrowRight from "lucide-solid/icons/arrow-right";
+import Search from "lucide-solid/icons/search";
 import { buttonVariants } from "~/ui-kit";
 
 export default function NotFound() {

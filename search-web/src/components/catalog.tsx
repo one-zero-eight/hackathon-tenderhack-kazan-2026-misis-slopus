@@ -1,9 +1,15 @@
 import { A } from "@solidjs/router";
-import { AlertCircle, ArrowRight, ImageOff, Network, Package, RotateCcw, Search, Sparkles } from "lucide-solid";
+import AlertCircle from "lucide-solid/icons/alert-circle";
+import ArrowRight from "lucide-solid/icons/arrow-right";
+import ImageOff from "lucide-solid/icons/image-off";
+import Network from "lucide-solid/icons/network";
+import Package from "lucide-solid/icons/package";
+import RotateCcw from "lucide-solid/icons/rotate-ccw";
+import Search from "lucide-solid/icons/search";
 import { createEffect, createSignal, ErrorBoundary, For, on, Show, type JSX } from "solid-js";
 import { apiImageUrl } from "~/lib/api";
 import type { DirectoryTab, Product, ProductHit } from "~/lib/types";
-import { Badge, Button, Card, Skeleton, StatePanel } from "~/ui-kit";
+import { Button, Card, Skeleton, StatePanel } from "~/ui-kit";
 
 export function directoryHref(tab: DirectoryTab, code: string) {
   const resolved = tab === "spgz" ? "kpgz" : tab === "okpd" ? "ktru" : tab;
@@ -97,7 +103,6 @@ export function ProductCard(props: { product: ProductHit; returnTo: string }) {
       <ProductClassifierLinks product={product()} class="classifier-links card-classifier-links" />
       <Show when={product().characteristics.length}><dl class="card-characteristics"><For each={product().characteristics.slice(0, 2)}>{item => <div><dt>{item.name}</dt><dd>{item.value}{item.unit ? ` ${item.unit}` : ""}</dd></div>}</For></dl></Show>
       <A href={href()} class="product-bottom" aria-label={`Подробнее: ${product().name}`}><span class="card-arrow" aria-hidden="true"><ArrowRight size={18} /></span></A>
-      <Show when={product().score !== null && product().match !== "text" && product().match !== "catalog"}><div class="similarity" title="Косинусная близость векторов, не вероятность совпадения"><Sparkles size={12} />Семантическая близость {product().score!.toFixed(3)}<Show when={product().match === "both"}><Badge variant="secondary">+ текст</Badge></Show></div></Show>
     </div>
   </Card>;
 }

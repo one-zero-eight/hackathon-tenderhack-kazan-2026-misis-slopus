@@ -1,6 +1,8 @@
 import { Meta, Title } from "@solidjs/meta";
 import { A, createAsync, revalidate, useSearchParams } from "@solidjs/router";
-import { BookOpen, ChevronRight, Search } from "lucide-solid";
+import BookOpen from "lucide-solid/icons/book-open";
+import ChevronRight from "lucide-solid/icons/chevron-right";
+import Search from "lucide-solid/icons/search";
 import { createEffect, createMemo, createSignal, For, on, onCleanup, Show, Suspense } from "solid-js";
 import { DataBoundary } from "~/components/catalog";
 import {

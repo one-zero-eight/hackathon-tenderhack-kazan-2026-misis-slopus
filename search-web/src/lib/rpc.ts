@@ -124,3 +124,9 @@ export const searchKtru = query(async (queryText: string) => {
   const { searchKtru: search } = await import("./server/ktru-tree");
   return search(queryText);
 }, "ktru-search");
+
+export const suggestFromNeighbors = query(async (description: string) => {
+  "use server";
+  const { suggestFromNeighbors: suggest } = await import("./server/neighbor-suggest");
+  return suggest(description);
+}, "neighbor-suggest");

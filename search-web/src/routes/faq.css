@@ -1,0 +1,26 @@
+.faq-main { padding-top: 28px; padding-bottom: 72px; min-height: 65vh; max-width: 720px; }
+.faq-block { margin-bottom: 40px; }
+.faq-block:first-of-type { margin-top: 8px; }
+.faq-main .section-heading h1 { margin: 0; color: #35442d; font-weight: 500; font-size: 20px; letter-spacing: -.4px; }
+.faq-lead { margin: -8px 0 0; font-size: 13px; color: #7f8f71; line-height: 1.7; }
+.faq-block .term-list, .faq-block .faq-list { border-top: 1px solid #ebeee8; margin-top: 16px; }
+.term-item, .faq-item { border-bottom: 1px solid #ebeee8; }
+.term-item summary, .faq-item summary { display: flex; align-items: center; gap: 10px; padding: 14px 0; font-size: 13px; line-height: 1.45; cursor: pointer; list-style: none; color: #4b5c4b; }
+.term-item summary::-webkit-details-marker, .faq-item summary::-webkit-details-marker { display: none; }
+.term-item summary svg, .faq-item summary svg { margin-left: auto; flex: none; color: #96a396; transition: transform .15s; }
+.term-item[open] summary svg, .faq-item[open] summary svg { transform: rotate(180deg); }
+.term-item summary:hover, .faq-item summary:hover { color: var(--green); }
+.term-item summary:focus-visible, .faq-item summary:focus-visible { outline: 2px solid var(--green); outline-offset: 3px; border-radius: 3px; }
+.term-code { font-weight: 700; color: #366848; flex: none; white-space: nowrap; }
+.term-name { flex: 1; font-size: 12px; color: #8c988a; }
+.term-item p, .faq-item p { color: #788b77; font-size: 12px; line-height: 1.7; margin: -4px 0 15px; }
+.term-definition { margin: -4px 0 15px; }
+.term-definition p { margin: 0 0 8px; }
+.term-sources { display: flex; flex-wrap: wrap; gap: 8px 16px; }
+.term-source { display: inline-flex; align-items: center; gap: 5px; color: #37674a; font-size: 12px; font-weight: 600; line-height: 1.5; text-decoration: underline; text-underline-offset: 3px; }
+.term-source:hover { color: #254c34; }
+.term-source:focus-visible { outline: 2px solid var(--green); outline-offset: 3px; border-radius: 2px; }
+
+@media (max-width: 600px) {
+  .faq-main { padding-top: 22px; padding-bottom: 48px; }
+}

@@ -1,7 +1,7 @@
 import type { CatalogStats, Product, ProductHit, SearchInput, SearchResult } from "./types";
 
 export const searchApiUrl = () =>
-  (import.meta.env.VITE_SEARCH_API_URL as string | undefined)
+  (import.meta as ImportMeta & { env?: Record<string, string> }).env?.VITE_SEARCH_API_URL
   || (typeof process !== "undefined" ? process.env.SEARCH_API_URL : undefined)
   || "http://127.0.0.1:8070";
 

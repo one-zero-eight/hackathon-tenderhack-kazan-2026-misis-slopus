@@ -73,6 +73,34 @@ export interface CatalogStats {
 
 export type DirectoryTab = "ktru" | "kpgz" | "spgz" | "okpd" | "okei";
 
+export type VotedCode = { code: string; name: string; score: number };
+
+export type CharacteristicRange = {
+  option: string;
+  min: number | null;
+  max: number | null;
+  minInclusive: boolean;
+  maxInclusive: boolean;
+};
+
+export type DraftCharacteristic = {
+  id: string;
+  name: string;
+  value: string;
+  /** Selected KTRU range bucket for quantitative range characteristics. */
+  rangeOption: string;
+  required: boolean;
+  badges: string[];
+  hint: string;
+  options: string[];
+  optionLabels: Record<string, string>;
+  ranges: CharacteristicRange[];
+  unit: string;
+  multiple: boolean;
+  source: "ktru" | "spgz" | "both" | "custom";
+  custom?: boolean;
+};
+
 export interface DirTreeNode {
   id: string;
   code: string;

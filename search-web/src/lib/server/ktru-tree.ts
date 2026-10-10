@@ -4,7 +4,13 @@ import { gunzipSync } from "node:zlib";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
-import type { KtruChildrenPage, KtruTreeNode } from "../types";
+import {
+  buildCharacteristicHint,
+  buildCharacteristicOptionLabels,
+  dedupeCharacteristicOptions,
+  shortUnitName,
+} from "../characteristic-options";
+import type { CharacteristicRange, KtruChildrenPage, KtruTreeNode } from "../types";
 import { classifiersSqlitePath, ktruParquetPath, ktruSqlitePath } from "./config";
 
 interface LightRow {
@@ -342,6 +348,12 @@ export type KtruCharacteristic = {
   badges: string[];
   code?: string;
   parts: KtruCharacteristicPart[];
+  options: string[];
+  optionLabels: Record<string, string>;
+  ranges: CharacteristicRange[];
+  unit?: string;
+  hint: string;
+  multiple: boolean;
 };
 
 export type KtruRecordSummary = {
@@ -352,6 +364,7 @@ export type KtruRecordSummary = {
   versionCode: string;
   isTemplate: boolean;
   noNewFeatures: boolean;
+  noNewFeaturesReason: string;
   description: string;
   okpd2: { code: string; name: string } | null;
   units: { code: string; name: string }[];
@@ -377,6 +390,44 @@ function formatRangeOperator(value: string | null | undefined): string {
     case "equal": return "=";
     default: return value ? String(value) : "";
   }
+}
+
+function parseRangeNumber(value: string | null | undefined): number | null {
+  if (value == null || value === "") return null;
+  const number = Number(String(value).replace(",", "."));
+  return Number.isFinite(number) ? number : null;
+}
+
+function buildCharacteristicRanges(
+  values: {
+    unit?: { code?: string; name?: string } | null;
+    text?: string | null;
+    concrete_values?: string[] | null;
+    ranges?: { min_operator?: string; min?: string; max_operator?: string; max?: string }[] | null;
+  }[],
+): CharacteristicRange[] {
+  const rangeOnly = values.length > 0 && values.every((entry) =>
+    Array.isArray(entry.ranges) && entry.ranges.length > 0
+    && !entry.text
+    && !(Array.isArray(entry.concrete_values) && entry.concrete_values.length),
+  );
+  if (!rangeOnly) return [];
+  const out: CharacteristicRange[] = [];
+  for (const entry of values) {
+    const parts = formatKtruValueParts(entry);
+    for (const [index, range] of (entry.ranges ?? []).entries()) {
+      const option = parts[index]?.text || parts[0]?.text;
+      if (!option) continue;
+      out.push({
+        option,
+        min: parseRangeNumber(range.min),
+        max: parseRangeNumber(range.max),
+        minInclusive: range.min_operator !== "greater",
+        maxInclusive: range.max_operator !== "less",
+      });
+    }
+  }
+  return out;
 }
 
 function formatDate(value: unknown): string {
@@ -406,7 +457,7 @@ function formatKtruValueParts(value: {
   }
   const okeiCode = value.unit?.code ? String(value.unit.code) : undefined;
   const okeiName = value.unit?.name ? String(value.unit.name) : undefined;
-  const shortUnit = okeiName?.split(";")[0].trim();
+  const shortUnit = shortUnitName(okeiName);
   if (!chunks.length && shortUnit) return [{ text: shortUnit, okeiCode, okeiName }];
   return chunks.map(text => ({
     text: shortUnit ? `${text} ${shortUnit}` : text,
@@ -415,7 +466,7 @@ function formatKtruValueParts(value: {
   }));
 }
 
-function parseKtruCharacteristics(raw: Record<string, unknown>): KtruCharacteristic[] {
+function parseKtruCharacteristics(raw: Record<string, unknown>, standards: string[] = []): KtruCharacteristic[] {
   const list = Array.isArray(raw.characteristics) ? raw.characteristics : [];
   return list.flatMap(item => {
     if (!item || typeof item !== "object") return [];
@@ -441,15 +492,34 @@ function parseKtruCharacteristics(raw: Record<string, unknown>): KtruCharacteris
     if (row.required) badges.push("обязательная");
     if (String(row.type) === "1") badges.push("качественная");
     if (String(row.type) === "2") badges.push("количественная");
+    // kind — режим для заказчика в закупке (ТЗ), не блокировка поля у поставщика.
+    // choice_type в выгрузке часто = «есть варианты в справочнике», а не мультивыбор.
     if (String(row.kind) === "1") badges.push("неизменяемая заказчиком");
     if (String(row.kind) === "2") badges.push("заказчик выбирает одно");
     if (String(row.kind) === "3") badges.push("заказчик выбирает несколько");
-    if (String(row.choice_type) === "1") badges.push("единственный выбор");
-    if (String(row.choice_type) === "2") badges.push("множественный выбор");
-    if (String(row.choice_type) === "3") badges.push("неизменяемый выбор");
+    const multiple = String(row.kind) === "3";
     const parts = (row.values ?? []).flatMap(formatKtruValueParts);
     const values = parts.map(part => part.text).filter(Boolean).join(" · ") || "—";
-    return [{ name, required: !!row.required, values, badges, code: row.code ? String(row.code) : undefined, parts }];
+    const options = dedupeCharacteristicOptions(parts.map(part => part.text).filter(Boolean));
+    const ranges = buildCharacteristicRanges(row.values ?? []);
+    const unit = shortUnitName(parts.find((part) => part.okeiName)?.okeiName)
+      || shortUnitName((row.values ?? []).find((entry) => entry.unit?.name)?.unit?.name);
+    const optionLabels = buildCharacteristicOptionLabels(name, options, standards);
+    const hint = buildCharacteristicHint({ name, options, unit, standards });
+    return [{
+      name,
+      required: !!row.required,
+      values,
+      badges,
+      code: row.code ? String(row.code) : undefined,
+      parts,
+      options,
+      optionLabels,
+      ranges,
+      unit: unit || undefined,
+      hint,
+      multiple,
+    }];
   });
 }
 
@@ -497,6 +567,7 @@ export function getKtruRecord(code: string): KtruRecordSummary | null {
     versionCode: String(raw.version_code ?? ""),
     isTemplate: !!raw.is_template,
     noNewFeatures: !!raw.no_new_features,
+    noNewFeaturesReason: String(raw.no_new_features_reason ?? "").trim(),
     description: String(raw.description ?? "").trim(),
     okpd2: okpd?.code ? { code: String(okpd.code), name: String(okpd.name ?? "") } : null,
     units,
@@ -506,7 +577,7 @@ export function getKtruRecord(code: string): KtruRecordSummary | null {
     parent: parentRaw?.code ? { code: String(parentRaw.code), version: String(parentRaw.version ?? "") } : null,
     printFormUrl: printForm?.url ? String(printForm.url) : null,
     cancellation: cancelRaw ? { date: formatDate(cancelRaw.date), reason: String(cancelRaw.reason ?? "").trim() } : null,
-    characteristics: parseKtruCharacteristics(raw),
+    characteristics: parseKtruCharacteristics(raw, standards),
   };
 }
 
@@ -524,6 +595,21 @@ export function listKtruByOkpd(okpd: string, limit = 12): { total: number; items
   const total = (data.db.prepare("SELECT count(*) AS n FROM ktru WHERE okpd2=?").get(okpd) as { n: number }).n;
   const items = data.db.prepare("SELECT code, name FROM ktru WHERE okpd2=? ORDER BY code LIMIT ?").all(okpd, limit) as { code: string; name: string }[];
   return { total, items };
+}
+
+/**
+ * If OKPD2 has exactly one KTRU root and it is an active template — safe auto-pick for STE.
+ * Example: 25.73.30.141 → 25.73.30.141-00000011 (ШАБЛОН).
+ */
+export function getSoleTemplateKtruForOkpd(okpd2: string): { code: string; name: string } | null {
+  if (!okpd2) return null;
+  const data = getCatalog();
+  const roots = data.okpdKtruRoots.get(okpd2) ?? [];
+  if (roots.length !== 1) return null;
+  const row = data.byCode.get(roots[0]!);
+  if (!row?.isTemplate) return null;
+  if (row.status && row.status !== "ACTIVE") return null;
+  return { code: row.code, name: row.name };
 }
 
 export function getKtruNodeByCode(code: string): KtruTreeNode | null {
@@ -574,4 +660,71 @@ export function ktruFilterMeta(filter: string) {
     truncated: sets.truncated,
     matchIds: [...sets.matches],
   };
+}
+
+const SEARCH_LIMIT = 40;
+const SEARCH_STOP = new Set([
+  "и", "или", "для", "из", "на", "по", "со", "во", "от", "до", "при", "без", "под", "над", "это", "как",
+  "the", "and", "with", "from", "шт", "упаковке", "подходит", "также", "данный", "данная", "белая", "белый",
+  "белые", "белое", "документов", "документ", "листов", "листа",
+]);
+
+function searchTokens(query: string): string[] {
+  return [...new Set(
+    query
+      .toLocaleLowerCase("ru-RU")
+      .split(/[^0-9a-zA-Zа-яА-ЯёЁ./№+-]+/u)
+      .map((token) => token.trim())
+      .filter((token) => token.length >= 3 && !SEARCH_STOP.has(token)),
+  )].slice(0, 12);
+}
+
+function tokenStem(token: string): string {
+  if (token.length <= 4) return token;
+  if (token.length <= 6) return token.slice(0, -1);
+  return token.slice(0, -2);
+}
+
+function textHasToken(haystack: string, token: string): boolean {
+  if (haystack.includes(token)) return true;
+  const stem = tokenStem(token);
+  return stem.length >= 4 && haystack.includes(stem);
+}
+
+export function searchKtru(query: string): KtruTreeNode[] {
+  const raw = query.trim();
+  if (raw.length < 2) return [];
+  const data = getCatalog();
+  const q = raw.toLocaleLowerCase("ru-RU");
+  const tokens = searchTokens(raw);
+  const scored: { node: KtruTreeNode; score: number; hits: number }[] = [];
+
+  for (const row of data.byCode.values()) {
+    const code = row.code.toLocaleLowerCase("ru-RU");
+    const name = row.name.toLocaleLowerCase("ru-RU");
+    let score = 0;
+    let hits = 0;
+    if (code.includes(q) || name.includes(q)) {
+      score += 100;
+      hits = tokens.length || 1;
+    } else if (tokens.length) {
+      for (const token of tokens) {
+        if (!textHasToken(name, token) && !code.includes(token)) continue;
+        hits += 1;
+        score += token.length >= 5 ? 5 : 2;
+      }
+    }
+    if (hits <= 0 && score <= 0) continue;
+    // Prefer more specific positions that cover several description tokens.
+    score += hits * 6;
+    if (hits >= 2) score += 8;
+    if (row.status === "ACTIVE") score += 3;
+    if (!row.isTemplate) score += 1;
+    // Prefer shorter names when scores are close (less over-specific oddities).
+    score -= Math.min(12, Math.floor(name.length / 18));
+    scored.push({ node: ktruNode(row.code, data), score, hits });
+  }
+
+  scored.sort((a, b) => b.score - a.score || b.hits - a.hits || a.node.name.localeCompare(b.node.name, "ru"));
+  return scored.slice(0, SEARCH_LIMIT).map((item) => item.node);
 }

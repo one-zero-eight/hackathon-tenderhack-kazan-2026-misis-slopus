@@ -1,7 +1,14 @@
 import { Meta, Title } from "@solidjs/meta";
 import { A, createAsync, revalidate, useParams, useSearchParams } from "@solidjs/router";
 import { HttpStatusCode } from "@solidjs/start";
-import { ArrowLeft, ArrowUpRight, ChevronRight, FileText, Globe2, Package, Sparkles, Tags } from "lucide-solid";
+import ArrowLeft from "lucide-solid/icons/arrow-left";
+import ArrowUpRight from "lucide-solid/icons/arrow-up-right";
+import ChevronRight from "lucide-solid/icons/chevron-right";
+import FileText from "lucide-solid/icons/file-text";
+import Globe2 from "lucide-solid/icons/globe-2";
+import Package from "lucide-solid/icons/package";
+import Sparkles from "lucide-solid/icons/sparkles";
+import Tags from "lucide-solid/icons/tags";
 import { createSignal, For, Show, Suspense } from "solid-js";
 import { DataBoundary, ImagePlaceholder, ProductCard, ProductClassifierLinks, ProductImage, ResultsSkeleton } from "~/components/catalog";
 import { buttonVariants, Skeleton } from "~/ui-kit";

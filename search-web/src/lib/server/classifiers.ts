@@ -38,6 +38,8 @@ export interface DirCharacteristic {
   required?: boolean;
   badges?: string[];
   code?: string;
+  /** Selectable catalog values (SPGZ enums). Absent for free-text / constraint-only rows. */
+  options?: string[];
   parts?: DirCharacteristicPart[];
 }
 
@@ -199,6 +201,14 @@ function spgzUnderKpgz(kpgzId: number): DirTreeNode[] {
     hasChildren: false,
     meta: { okpd2: row.okpd2, excluded: !!row.excluded },
   }));
+}
+
+/** SPGZ leaves under a КПГЗ code (for create-product suggestion / pickers). */
+export function listSpgzUnderKpgzCode(kpgzCode: string): { code: string; name: string }[] {
+  const database = ensureDb();
+  const row = database.prepare("SELECT id FROM kpgz WHERE code=? LIMIT 1").get(kpgzCode) as { id: number } | undefined;
+  if (!row) return [];
+  return spgzUnderKpgz(row.id).map(node => ({ code: node.code, name: node.name }));
 }
 
 export function listDirectoryChildren(tab: DirectoryTab, parentId: string | null = null, offset = 0, filter = ""): DirChildrenPage {
@@ -612,12 +622,15 @@ function formatSpgzCharacteristic(item: {
   const unitShort = unitMeta?.short || "";
   const withUnit = (value: string) => (unitShort ? `${value} ${unitShort}` : value);
 
+  const required = item.catalogVariantId === 1;
   const enums = (item.characteristicSpgzEnums ?? []).map(entry => String(entry.value ?? "").trim()).filter(Boolean);
   if (enums.length) {
     return {
       name,
       value: enums.join(" · "),
+      required,
       badges,
+      options: enums,
       parts: enums.map(text => ({ text })),
       code: item.kpgzCharacteristicId != null ? String(item.kpgzCharacteristicId) : undefined,
     };
@@ -645,6 +658,7 @@ function formatSpgzCharacteristic(item: {
   return {
     name,
     value,
+    required,
     badges,
     code: item.kpgzCharacteristicId != null ? String(item.kpgzCharacteristicId) : undefined,
     parts: value === "—" ? [] : [{

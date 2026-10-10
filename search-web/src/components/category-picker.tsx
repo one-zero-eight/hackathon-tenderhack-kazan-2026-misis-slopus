@@ -1,4 +1,8 @@
-import { Check, ChevronRight, Search, SlidersHorizontal, X } from "lucide-solid";
+import Check from "lucide-solid/icons/check";
+import ChevronRight from "lucide-solid/icons/chevron-right";
+import Search from "lucide-solid/icons/search";
+import SlidersHorizontal from "lucide-solid/icons/sliders-horizontal";
+import X from "lucide-solid/icons/x";
 import { createEffect, createMemo, createSignal, For, on, onCleanup, Show } from "solid-js";
 import type { CategoryTreeNode } from "~/lib/types";
 import { formatNumber } from "~/lib/utils";
