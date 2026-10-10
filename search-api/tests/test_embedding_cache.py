@@ -1,3 +1,4 @@
+import base64
 import hashlib
 
 import lmdb
@@ -9,8 +10,32 @@ from search_api.embeddings import (
     ParquetSkuVectorStore,
     cached_document_vectors,
     cached_sku_vectors,
+    decode_dense,
     sku_embedding_key,
 )
+
+
+@pytest.mark.parametrize("invalid", [np.nan, np.inf, -np.inf])
+def test_dense_response_rejects_nonfinite_values(invalid):
+    vector = np.ones(settings.dimensions, dtype="<f4")
+    vector[-1] = invalid
+    payload = {"dense": {
+        "model_id": settings.model_id, "dtype": "float32",
+        "shape": [1, settings.dimensions],
+        "data": base64.b64encode(vector.tobytes()).decode(),
+    }}
+    with pytest.raises(RuntimeError, match="нечисловой вектор"):
+        decode_dense(payload, 1)
+
+
+def test_dense_response_preserves_float32_vectors():
+    vectors = np.arange(settings.dimensions * 2, dtype="<f4").reshape(2, -1)
+    payload = {"dense": {
+        "model_id": settings.model_id, "dtype": "float32",
+        "shape": [2, settings.dimensions],
+        "data": base64.b64encode(vectors.tobytes()).decode(),
+    }}
+    assert decode_dense(payload, 2) == [vector.tobytes() for vector in vectors]
 
 
 def cache_key(text):

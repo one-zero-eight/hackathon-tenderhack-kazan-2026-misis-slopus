@@ -725,7 +725,7 @@ export default function NewProduct() {
   };
 
   const buildKtruDraftFields = (
-    record: NonNullable<Awaited<ReturnType<typeof getKtruRecord>>>,
+    record: Pick<NonNullable<Awaited<ReturnType<typeof getKtruRecord>>>, "characteristics">,
     previous: DraftCharacteristic[],
     keepPrevious: boolean,
   ): DraftCharacteristic[] => {
@@ -1222,17 +1222,19 @@ export default function NewProduct() {
         if (!alive) return;
         try {
           const wantSpec = (!ktruLocked() || !spgzLocked()) && !!(draft.ktru || draft.spgz || draft.kpgz);
-          const spec = wantSpec
-            ? await getCatalogSpecialization({
+          const spec = !wantSpec ? null : !ktruLocked() && !spgzLocked()
+            ? draft.specialization
+            : await getCatalogSpecialization({
               ktruCode: (!ktruLocked() ? draft.ktru?.code : ktruVote()?.code) ?? null,
               spgzCode: (!spgzLocked() ? draft.spgz?.code : spgz()?.code) ?? null,
               kpgzCode: (!spgzLocked() ? draft.kpgz?.code : kpgz()?.code) ?? null,
-            })
-            : null;
+            });
           if (!alive) return;
           let draftKtru = draft.characteristics.filter((item) => item.source === "ktru");
           if (!ktruLocked() && draft.ktru && spec?.templateKtruCode && spec.templateKtruCode !== draft.ktru.code) {
-            const template = await getKtruRecord(spec.templateKtruCode);
+            const template = spec.templateKtruCode === draft.specialization?.templateKtruCode
+              ? draft.templateCharacteristics ? { characteristics: draft.templateCharacteristics } : null
+              : await getKtruRecord(spec.templateKtruCode);
             if (!alive) return;
             if (template) {
               draftKtru = retainTemplateCharacteristics(
@@ -1264,9 +1266,7 @@ export default function NewProduct() {
             ? refineMatch.spgzCode
             : (!spgzLocked() ? draft.spgz?.code : null);
 
-          const draftNode = !ktruLocked() && !refineMatch && draft.ktru
-            ? await getKtruNode(draft.ktru.code)
-            : null;
+          const draftNode = !ktruLocked() && !refineMatch ? draft.ktruNode : null;
           if (!alive) return;
 
           batch(() => {
@@ -1321,7 +1321,7 @@ export default function NewProduct() {
           if (alive) setSuggesting(false);
         }
       }, () => { if (alive) setSuggesting(false); });
-    }, 420);
+    }, 200);
     onCleanup(() => { alive = false; clearTimeout(timer); });
   }));
 

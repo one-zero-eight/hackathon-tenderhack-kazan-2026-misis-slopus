@@ -39,6 +39,8 @@ const FILTER_MATCH_LIMIT = 800;
 let catalog: Catalog | undefined;
 const filterCache = new Map<string, FilterSets>();
 const specializationCache = new Map<string, KtruSpecialization | null>();
+const RECORD_CACHE_LIMIT = 128;
+const recordCache = new Map<string, KtruRecordSummary>();
 
 interface FilterSets {
   visible: Set<string>;
@@ -145,9 +147,11 @@ function getCatalog(): Catalog {
     }
     set.add(child);
   };
+  const seenOkpd = new Set<string>();
   for (const row of rows) {
     const okpd = row.okpd2 || row.code.split("-", 1)[0];
-    if (!okpd) continue;
+    if (!okpd || seenOkpd.has(okpd)) continue;
+    seenOkpd.add(okpd);
     const chain = okpdChain(okpd, okpdParentOf);
     addChild("", chain[0]!);
     for (let i = 1; i < chain.length; i++) addChild(chain[i - 1]!, chain[i]!);
@@ -190,19 +194,12 @@ function getCatalog(): Catalog {
   return catalog;
 }
 
-function cachedSpecialization(templateCode: string): KtruSpecialization | null {
-  if (specializationCache.has(templateCode)) return specializationCache.get(templateCode)!;
-  const result = getKtruSpecialization(templateCode);
-  specializationCache.set(templateCode, result);
-  return result;
-}
-
 function variantLabelFor(code: string, data: Catalog): string | null {
   const row = data.byCode.get(code);
   if (!row || row.isTemplate || !row.parentCode) return null;
   const parent = data.byCode.get(row.parentCode);
   if (!parent?.isTemplate) return null;
-  const spec = cachedSpecialization(row.parentCode);
+  const spec = specializationForTemplate(row.parentCode, data);
   const option = spec?.options.find(item => item.code === code);
   if (!spec || !option) return null;
   return `${spec.characteristicName}: ${option.value}`;
@@ -542,6 +539,12 @@ function parseKtruCharacteristics(raw: Record<string, unknown>, standards: strin
 
 export function getKtruRecord(code: string): KtruRecordSummary | null {
   if (!code || code.length > 64) return null;
+  const cached = recordCache.get(code);
+  if (cached) {
+    recordCache.delete(code);
+    recordCache.set(code, cached);
+    return structuredClone(cached);
+  }
   const data = getCatalog();
   const row = data.db.prepare("SELECT payload FROM ktru WHERE code=?").get(code) as { payload: Buffer } | undefined;
   if (!row) return null;
@@ -576,7 +579,7 @@ export function getKtruRecord(code: string): KtruRecordSummary | null {
   const parentRaw = raw.parent && typeof raw.parent === "object" ? raw.parent as { code?: string; version?: string } : null;
   const cancelRaw = raw.cancellation && typeof raw.cancellation === "object" ? raw.cancellation as { date?: string; reason?: string } : null;
   const printForm = raw.print_form && typeof raw.print_form === "object" ? raw.print_form as { url?: string } : null;
-  return {
+  const result: KtruRecordSummary = {
     code: String(raw.code ?? code),
     name: String(raw.name ?? ""),
     status: String(raw.status ?? ""),
@@ -596,6 +599,9 @@ export function getKtruRecord(code: string): KtruRecordSummary | null {
     cancellation: cancelRaw ? { date: formatDate(cancelRaw.date), reason: String(cancelRaw.reason ?? "").trim() } : null,
     characteristics: parseKtruCharacteristics(raw, standards),
   };
+  if (recordCache.size >= RECORD_CACHE_LIMIT) recordCache.delete(recordCache.keys().next().value!);
+  recordCache.set(code, result);
+  return structuredClone(result);
 }
 
 export function getKtruRaw(code: string): Record<string, unknown> | null {
@@ -678,6 +684,22 @@ export function getKtruSpecialization(code: string): KtruSpecialization | null {
     templateCode = parent.code;
   }
 
+  const cached = specializationForTemplate(templateCode, data);
+  if (!cached) return null;
+  return {
+    ...structuredClone(cached),
+    currentValue: cached.options.find(item => item.code === code)?.value ?? null,
+  };
+}
+
+function specializationForTemplate(templateCode: string, data: Catalog): KtruSpecialization | null {
+  if (!specializationCache.has(templateCode)) {
+    specializationCache.set(templateCode, buildKtruSpecialization(templateCode, data));
+  }
+  return specializationCache.get(templateCode)!;
+}
+
+function buildKtruSpecialization(templateCode: string, data: Catalog): KtruSpecialization | null {
   const childCodes = (data.ktruChildren.get(templateCode) ?? []).filter(child => {
     const childRow = data.byCode.get(child);
     return childRow && (!childRow.status || childRow.status === "ACTIVE");
@@ -737,7 +759,6 @@ export function getKtruSpecialization(code: string): KtruSpecialization | null {
 
   const [characteristicName, meta] = best;
   const options = [...meta.pairs].sort((a, b) => a.value.localeCompare(b.value, "ru") || a.code.localeCompare(b.code));
-  const current = options.find(item => item.code === code) ?? null;
   const templateRow = data.byCode.get(templateCode)!;
   return {
     templateCode,
@@ -745,7 +766,7 @@ export function getKtruSpecialization(code: string): KtruSpecialization | null {
     characteristicName,
     characteristicCode: meta.code,
     options,
-    currentValue: current?.value ?? null,
+    currentValue: null,
   };
 }
 

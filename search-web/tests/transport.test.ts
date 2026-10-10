@@ -7,7 +7,8 @@ import { apiSearchProducts as serverSearchProducts } from "../src/lib/server/sea
 import { GET, POST } from "../src/routes/api/search/[...path]";
 import type { APIEvent } from "@solidjs/start/server";
 import { suggestFromNeighbors } from "../src/lib/server/neighbor-suggest";
-import { getSoleSpgzForKpgz } from "../src/lib/server/classifiers";
+import { getCatalogSpecialization, getSoleSpgzForKpgz } from "../src/lib/server/classifiers";
+import { getKtruNodeByCode, getKtruRecord } from "../src/lib/server/ktru-tree";
 import { embedTexts } from "../src/lib/server/embeddings";
 import { DIMENSIONS, DOCUMENT_PROMPT, MODEL_ID, QUERY_PROMPT } from "../src/lib/server/config";
 
@@ -27,6 +28,14 @@ test("cabinet gets the sole active SPGZ schema even when STE neighbors have no S
     }
     assert.ok(draft.characteristics.some(field => field.name === "Требования к фурнитуре"));
     assert.equal(getSoleSpgzForKpgz("nonexistent"), null);
+    assert.deepEqual(draft.ktruNode, getKtruNodeByCode(draft.ktru!.code));
+    assert.deepEqual(draft.specialization, getCatalogSpecialization({
+      ktruCode: draft.ktru?.code, spgzCode: draft.spgz?.code, kpgzCode: draft.kpgz?.code,
+    }));
+    const templateCode = draft.specialization?.templateKtruCode;
+    assert.deepEqual(draft.templateCharacteristics,
+      templateCode && templateCode !== draft.ktru?.code
+        ? getKtruRecord(templateCode)?.characteristics ?? null : null);
   } finally {
     globalThis.fetch = originalFetch;
   }

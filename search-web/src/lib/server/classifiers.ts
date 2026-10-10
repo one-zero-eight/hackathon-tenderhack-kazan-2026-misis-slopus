@@ -831,32 +831,45 @@ export function getDirectoryRecord(tab: DirectoryTab, code: string): DirRecord |
   return null;
 }
 
+const rawParquetCache = new Map<string, ReturnType<typeof pl.scanParquet>>();
+const SPGZ_RAW_COLUMNS = [
+  "id", "name", "kpgzId", "okpd2Code", "okpdCode", "ktruId", "isExcluded", "spgzCharacteristics", "okeis", "descriptions",
+  "auctionProduct", "isStandartProduct", "innovationProduct", "niokr", "applyLifecycle", "allowLimited",
+  "allowTwoStage", "allowCall", "regulationRequired", "art", "project",
+];
+
+function rawParquet(path: string, columns: string[]) {
+  const key = `${path}:${columns.join(",")}`;
+  let frame = rawParquetCache.get(key);
+  if (!frame) {
+    // Cache only the query plan; push predicates/projections down before reading rows.
+    frame = pl.scanParquet(path, { cache: false, lowMemory: true, parallel: "none" }).select(...columns);
+    rawParquetCache.set(key, frame);
+  }
+  return frame;
+}
+
 export function getDirectoryRaw(tab: DirectoryTab, code: string): Record<string, unknown> | null {
   // Full source rows live in parquet; sqlite only keeps tree columns.
   try {
     if (tab === "okpd") {
-      const rows = pl.readParquet(okpd2ParquetPath(), {
-        columns: ["id", "code", "name", "parent", "level", "is_actual", "children_count", "comment", "visitors_count", "similar_products", "limitations"],
-      }).filter(pl.col("code").eq(pl.lit(code))).toRecords();
+      const rows = rawParquet(okpd2ParquetPath(), [
+        "id", "code", "name", "parent", "level", "is_actual", "children_count", "comment", "visitors_count", "similar_products", "limitations",
+      ]).filter(pl.col("code").eq(pl.lit(code))).collectSync({ engine: "streaming" }).toRecords();
       return (rows[0] as Record<string, unknown> | undefined) ?? null;
     }
     if (tab === "kpgz") {
-      const rows = pl.readParquet(kpgzParquetPath(), {
-        columns: ["id", "code", "name", "parentId", "externalId", "treeLevel", "isLastLevel", "okpd", "treePath", "innovation"],
-      }).filter(pl.col("code").eq(pl.lit(code))).toRecords();
+      const rows = rawParquet(kpgzParquetPath(), [
+        "id", "code", "name", "parentId", "externalId", "treeLevel", "isLastLevel", "okpd", "treePath", "innovation",
+      ]).filter(pl.col("code").eq(pl.lit(code))).collectSync({ engine: "streaming" }).toRecords();
       return (rows[0] as Record<string, unknown> | undefined) ?? null;
     }
     if (tab === "spgz") {
       const id = Number(code);
       if (!Number.isSafeInteger(id)) return null;
       if (spgzRawByIdCache.has(id)) return spgzRawByIdCache.get(id)!;
-      const rows = pl.readParquet(spgzParquetPath(), {
-        columns: [
-          "id", "name", "kpgzId", "okpd2Code", "okpdCode", "ktruId", "isExcluded", "spgzCharacteristics", "okeis", "descriptions",
-          "auctionProduct", "isStandartProduct", "innovationProduct", "niokr", "applyLifecycle", "allowLimited",
-          "allowTwoStage", "allowCall", "regulationRequired", "art", "project",
-        ],
-      }).filter(pl.col("id").eq(pl.lit(id))).toRecords();
+      const rows = rawParquet(spgzParquetPath(), SPGZ_RAW_COLUMNS)
+        .filter(pl.col("id").eq(pl.lit(id))).collectSync({ engine: "streaming" }).toRecords();
       const row = (rows[0] as Record<string, unknown> | undefined) ?? null;
       spgzRawByIdCache.set(id, row);
       return row;
@@ -968,7 +981,7 @@ export function listDirectoryProducts(tab: DirectoryTab, code: string, limit = 2
 
 const SPGZ_SPEC_SIBLING_LIMIT = 80;
 
-/** Filtered SPGZ row lookups — full-file toRecords() hangs the suggest RPC. */
+/** Convert only matched SPGZ rows — full-file toRecords() hangs the suggest RPC. */
 const spgzRawByIdCache = new Map<number, Record<string, unknown> | null>();
 const spgzSiblingRowsByKpgz = new Map<number, {
   id: number;
@@ -985,11 +998,11 @@ const spgzSiblingRowsByKpgz = new Map<number, {
 function loadSpgzSiblingRows(kpgzExternalId: number) {
   const cached = spgzSiblingRowsByKpgz.get(kpgzExternalId);
   if (cached) return cached;
-  const rows = pl.readParquet(spgzParquetPath(), {
-    columns: ["id", "name", "kpgzId", "isExcluded", "spgzCharacteristics"],
-  })
+  const rows = rawParquet(spgzParquetPath(), SPGZ_RAW_COLUMNS)
     .filter(pl.col("kpgzId").eq(pl.lit(kpgzExternalId)))
     .filter(pl.col("isExcluded").eq(pl.lit(0)))
+    .select("id", "name", "kpgzId", "isExcluded", "spgzCharacteristics")
+    .collectSync({ engine: "streaming" })
     .toRecords() as {
     id: number;
     name: string;

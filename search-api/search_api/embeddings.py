@@ -134,9 +134,8 @@ def decode_dense(payload: dict, count: int) -> list[bytes]:
     vector_bytes = settings.dimensions * 4
     if len(raw) != count * vector_bytes:
         raise RuntimeError("meow-embed вернул неполный набор векторов")
-    for i in range(0, len(raw), 4):
-        if not np.isfinite(struct.unpack_from("<f", raw, i)[0]):
-            raise RuntimeError("meow-embed вернул нечисловой вектор")
+    if not np.isfinite(np.frombuffer(raw, dtype="<f4")).all():
+        raise RuntimeError("meow-embed вернул нечисловой вектор")
     return [raw[i : i + vector_bytes] for i in range(0, len(raw), vector_bytes)]
 
 

@@ -6,7 +6,7 @@ import time
 from typing import Any, Literal
 
 from search_api.config import settings
-from search_api.database import get_db
+from search_api.database import get_db, has_vectors
 from search_api.embeddings import embed_query, embed_texts
 from search_api.ste_catalog import (
     category_stats,
@@ -158,9 +158,9 @@ async def run_search(
         return finish(hydrate_hits(ranked), total)
 
     stage = time.perf_counter()
-    has_vectors = db.execute("SELECT 1 FROM product_vectors LIMIT 1").fetchone() is not None
+    vectors_ready = has_vectors(db)
     timings["vectorCheck"] = round((time.perf_counter() - stage) * 1000)
-    if not has_vectors:
+    if not vectors_ready:
         # Vectors not ready yet — fall back to FTS instead of failing the request.
         mode = "text"
         stage = time.perf_counter()
@@ -215,7 +215,7 @@ async def run_search(
 async def find_similar(product_id: int) -> list[dict]:
     product = find_product(product_id)
     db = get_db()
-    if product is None or db.execute("SELECT 1 FROM product_vectors LIMIT 1").fetchone() is None:
+    if product is None or not has_vectors(db):
         return []
     row = db.execute("SELECT embedding FROM product_vectors WHERE product_id = ?", (product_id,)).fetchone()
     if row is not None:

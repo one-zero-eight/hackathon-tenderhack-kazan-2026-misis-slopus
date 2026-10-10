@@ -1,8 +1,8 @@
 import { apiSearchProducts } from "./search-api";
 import { isRangeCharacteristic } from "../characteristic-options";
 import { draftFromSpgzCharacteristic } from "../spgz-characteristics";
-import type { DraftCharacteristic, ProductHit, VotedCode } from "../types";
-import { getDirectoryRecord, getSoleSpgzForKpgz } from "./classifiers";
+import type { CatalogSpecialization, DraftCharacteristic, KtruTreeNode, ProductHit, VotedCode } from "../types";
+import { getCatalogSpecialization, getDirectoryRecord, getSoleSpgzForKpgz } from "./classifiers";
 import { getKtruNodeByCode, getKtruRecord, getSoleTemplateKtruForOkpd, type KtruCharacteristic } from "./ktru-tree";
 
 const NEIGHBOR_K = 25;
@@ -23,6 +23,9 @@ export type NeighborSuggestion = {
   noNewFeatures: boolean | null;
   noNewFeaturesReason: string;
   productName: string;
+  specialization: CatalogSpecialization | null;
+  ktruNode: KtruTreeNode | null;
+  templateCharacteristics: KtruCharacteristic[] | null;
 };
 
 function ktruFromProduct(product: ProductHit): string {
@@ -110,6 +113,7 @@ function resolveKtruFromVotes(neighbors: ProductHit[], okpd2: VotedCode | null):
   noNewFeatures: boolean | null;
   noNewFeaturesReason: string;
   okpdFromKtru: { code: string; name: string } | null;
+  node: KtruTreeNode | null;
 } {
   let best = voteCodes(
     neighbors.flatMap((product) => {
@@ -138,6 +142,7 @@ function resolveKtruFromVotes(neighbors: ProductHit[], okpd2: VotedCode | null):
       noNewFeatures: null,
       noNewFeaturesReason: "",
       okpdFromKtru: null,
+      node: null,
     };
   }
 
@@ -151,6 +156,7 @@ function resolveKtruFromVotes(neighbors: ProductHit[], okpd2: VotedCode | null):
       isTemplate: !!(node?.isTemplate ?? record?.isTemplate),
       variantLabel: node?.variantLabel ?? null,
     },
+    node,
     status: node?.status ?? record?.status ?? null,
     characteristics: record?.characteristics ?? [],
     standards: record?.standards ?? [],
@@ -178,6 +184,9 @@ export async function suggestFromNeighbors(description: string): Promise<Neighbo
       noNewFeatures: null,
       noNewFeaturesReason: "",
       productName: "",
+      specialization: null,
+      ktruNode: null,
+      templateCharacteristics: null,
     };
   }
 
@@ -218,6 +227,7 @@ export async function suggestFromNeighbors(description: string): Promise<Neighbo
     noNewFeatures,
     noNewFeaturesReason,
     okpdFromKtru,
+    node: ktruNode,
   } = resolveKtruFromVotes(neighbors, okpd2);
   if (okpdFromKtru && !okpd2) {
     okpd2 = enrichName({ code: okpdFromKtru.code, name: okpdFromKtru.name, score: ktru?.score ?? 1 }, "okpd");
@@ -232,6 +242,15 @@ export async function suggestFromNeighbors(description: string): Promise<Neighbo
   })();
   const characteristics = [...ktruCharacteristics, ...spgzCharacteristics];
   const productName = nameFromDescription(query) || ktru?.name || neighbors[0]?.name || "";
+  const specialization = getCatalogSpecialization({
+    ktruCode: ktru?.code,
+    spgzCode: spgz?.code,
+    kpgzCode: kpgz?.code,
+  });
+  const templateCode = specialization?.templateKtruCode;
+  const templateCharacteristics = templateCode && ktru && templateCode !== ktru.code
+    ? getKtruRecord(templateCode)?.characteristics ?? null
+    : null;
 
   return {
     neighbors: neighbors.slice(0, SHOW_NEIGHBORS),
@@ -245,5 +264,8 @@ export async function suggestFromNeighbors(description: string): Promise<Neighbo
     noNewFeatures,
     noNewFeaturesReason,
     productName,
+    specialization,
+    ktruNode,
+    templateCharacteristics,
   };
 }

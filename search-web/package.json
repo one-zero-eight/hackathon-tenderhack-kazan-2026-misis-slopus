@@ -13,7 +13,7 @@
     "db:migrate": "tsx --env-file-if-exists=.env scripts/migrate.ts",
     "meow:start": "tsx scripts/meow.ts",
     "bench:embed": "tsx --env-file-if-exists=.env scripts/bench-embed.ts",
-    "test": "tsx --test tests/*.test.ts"
+    "test": "tsx --test --test-concurrency=1 tests/*.test.ts"
   },
   "dependencies": {
     "@kobalte/core": "^0.13.14",

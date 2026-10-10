@@ -91,11 +91,29 @@ const vector = (x: number, y: number) => {
   return buffer;
 };
 
+const catalogEnvironment = {
+  CATEGORY_PARQUETS: process.env.CATEGORY_PARQUETS,
+  STE_PARQUET: process.env.STE_PARQUET,
+  STE_DETAILS_PARQUET: process.env.STE_DETAILS_PARQUET,
+};
+
 before(() => {
+  // Test retrieval against three fixture rows, never the full production catalog.
+  process.env.CATEGORY_PARQUETS = sourcePath;
+  delete process.env.STE_PARQUET;
+  delete process.env.STE_DETAILS_PARQUET;
   writeSource();
   catalog = openDatabase(join(directory, "search.sqlite"));
 });
-after(() => { catalog.sqlite.close(); rmSync(directory, { recursive: true }); });
+after(() => {
+  catalog?.sqlite.close();
+  resetSteCatalog();
+  for (const [key, value] of Object.entries(catalogEnvironment)) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+  rmSync(directory, { recursive: true });
+});
 
 test("normalize preserves zero/false characteristics and missing prices", () => {
   const product = normalizeProduct(raw(101, "Пылесос"));

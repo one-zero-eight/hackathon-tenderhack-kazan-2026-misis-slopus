@@ -43,6 +43,62 @@ def test_warm_search_loads_catalog_without_scanning_vectors(search_db):
     assert not any("product_vectors" in statement for statement in statements)
 
 
+def test_populated_index_is_checked_only_once(search_db, monkeypatch):
+    db, _ = search_db
+    monkeypatch.setattr(database, "_vector_ready_connection", None)
+    statements = []
+    db.set_trace_callback(statements.append)
+    assert database.has_vectors(db)
+    assert database.has_vectors(db)
+    assert sum("SELECT 1 FROM product_vectors" in sql for sql in statements) == 1
+
+
+def test_empty_index_is_rechecked_after_vectors_are_added(tmp_path, monkeypatch):
+    db = open_index_db(tmp_path / "building.sqlite")
+    monkeypatch.setattr(database, "_vector_ready_connection", None)
+    try:
+        assert not database.has_vectors(db)
+        vector = np.ones(settings.dimensions, dtype="<f4").tobytes()
+        with db:
+            db.execute(
+                "INSERT INTO product_vectors(product_id, embedding, category_id) VALUES(?,?,?)",
+                (1, vector, 7),
+            )
+        assert database.has_vectors(db)
+    finally:
+        db.close()
+
+
+def test_vector_readiness_is_not_shared_between_connections(search_db, tmp_path, monkeypatch):
+    db, _ = search_db
+    monkeypatch.setattr(database, "_vector_ready_connection", None)
+    assert database.has_vectors(db)
+    empty = open_index_db(tmp_path / "empty.sqlite")
+    try:
+        assert not database.has_vectors(empty)
+    finally:
+        empty.close()
+
+
+def test_vector_readiness_is_invalidated_by_index_writer(search_db, tmp_path, monkeypatch):
+    db, vector = search_db
+    monkeypatch.setattr(database, "_vector_ready_connection", None)
+    assert database.has_vectors(db)
+    writer = open_index_db(tmp_path / "index.sqlite")
+    try:
+        with writer:
+            writer.execute("DELETE FROM product_vectors")
+        assert not database.has_vectors(db)
+        with writer:
+            writer.execute(
+                "INSERT INTO product_vectors(product_id, embedding, category_id) VALUES(?,?,?)",
+                (2, vector, 7),
+            )
+        assert database.has_vectors(db)
+    finally:
+        writer.close()
+
+
 def test_lifespan_warms_before_accepting_requests(monkeypatch):
     events = []
     monkeypatch.setattr("search_api.main.warm_search", lambda: (
