@@ -73,7 +73,14 @@ export interface CatalogStats {
 
 export type DirectoryTab = "ktru" | "kpgz" | "spgz" | "okpd" | "okei";
 
-export type VotedCode = { code: string; name: string; score: number; isTemplate?: boolean };
+export type VotedCode = {
+  code: string;
+  name: string;
+  score: number;
+  isTemplate?: boolean;
+  /** Разделяющая характеристика варианта шаблона, например «Материал: Дерево». */
+  variantLabel?: string | null;
+};
 
 export type CharacteristicRange = {
   option: string;
@@ -163,6 +170,8 @@ export interface KtruTreeNode {
   isTemplate: boolean;
   childCount: number;
   hasChildren: boolean;
+  /** Разделяющая характеристика варианта шаблона, например «Материал: Дерево». */
+  variantLabel?: string | null;
 }
 
 export interface KtruChildrenPage {

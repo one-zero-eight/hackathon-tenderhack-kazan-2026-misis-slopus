@@ -21,6 +21,9 @@ function VoteRow(props: { label: string; tab: "okpd" | "ktru" | "kpgz" | "spgz";
           {vote().name}
           <Show when={props.tab === "ktru" && vote().isTemplate}>{" "}(Шаблон)</Show>
         </span>
+        <Show when={props.tab === "ktru" && vote().variantLabel}>
+          <span class="create-vote-variant">{vote().variantLabel}</span>
+        </Show>
       </dd>
     </div>
   }</Show>;

@@ -26,7 +26,7 @@ export const getKtruChildren = query(async (parentId: string | null = null, offs
   "use server";
   const { listKtruChildren } = await import("./server/ktru-tree");
   return listKtruChildren(parentId, offset, filter);
-}, "ktru-children");
+}, "ktru-children-v2");
 
 export const getKtruRecord = query(async (code: string) => {
   "use server";

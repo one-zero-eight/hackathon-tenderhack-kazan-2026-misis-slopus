@@ -51,6 +51,30 @@ def import_products(
                 ).fetchone()
                 if previous and previous["hash"] == content_hash and previous["categoryId"] == product.category_id:
                     continue
+                # Category-only change: keep embeddings, just retarget the filter id.
+                if previous and previous["hash"] == content_hash:
+                    conn.execute("DELETE FROM products_fts WHERE rowid=?", (product.id,))
+                    conn.execute(
+                        upsert_fts,
+                        (
+                            product.id,
+                            fts["name"],
+                            fts["manufacturer"],
+                            fts["part_number"],
+                            fts["description"],
+                            fts["category"],
+                            fts["characteristics"],
+                        ),
+                    )
+                    conn.execute(
+                        "UPDATE index_state SET category_id=? WHERE product_id=?",
+                        (product.category_id, product.id),
+                    )
+                    conn.execute(
+                        "UPDATE product_vectors SET category_id=? WHERE product_id=?",
+                        (product.category_id, product.id),
+                    )
+                    continue
                 if previous:
                     conn.execute("DELETE FROM products_fts WHERE rowid=?", (product.id,))
                     conn.execute("DELETE FROM product_vectors WHERE product_id=?", (product.id,))

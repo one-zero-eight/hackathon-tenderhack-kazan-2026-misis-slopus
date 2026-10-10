@@ -134,7 +134,7 @@ function withCatalogSpecialization(
       .map((item) => [normCharName(item.name), item.applyPositionRefine !== false]),
   );
   const refineIds = new Set<string>();
-  const mapped = fields.map((item) => {
+  const mapped = fields.map((item): DraftCharacteristic => {
     if (normCharName(item.name) !== normCharName(spec.characteristicName)) {
       return { ...item, refinesKtru: false };
     }
@@ -467,10 +467,14 @@ export default function NewProduct() {
     const refs: RefinedPositionRef[] = [];
     if (match.ktruCode) {
       const isTemplate = match.ktruCode === spec.templateKtruCode;
+      const baseName = match.ktruName ? `${match.ktruName}${isTemplate ? " (Шаблон)" : ""}` : (isTemplate ? "(Шаблон)" : "");
+      const variant = !isTemplate && item.value.trim()
+        ? `${spec.characteristicName}: ${item.value.trim()}`
+        : "";
       refs.push({
         tab: "ktru",
         code: match.ktruCode,
-        name: match.ktruName ? `${match.ktruName}${isTemplate ? " (Шаблон)" : ""}` : (isTemplate ? "(Шаблон)" : ""),
+        name: variant ? (baseName ? `${baseName} · ${variant}` : variant) : baseName,
         kindLabel: "КТРУ",
       });
     }
@@ -675,6 +679,7 @@ export default function NewProduct() {
           name: ktruNode.name,
           score: ktruVote()?.score ?? 1,
           isTemplate: ktruNode.isTemplate,
+          variantLabel: ktruNode.variantLabel ?? null,
         });
         if (input.ktruLocked != null) setKtruLocked(input.ktruLocked);
         setCharStandards(ktruRecord.standards ?? []);

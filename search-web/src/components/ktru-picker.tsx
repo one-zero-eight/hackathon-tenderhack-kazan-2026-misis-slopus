@@ -136,7 +136,12 @@ function TreeNode(props: {
       </button>
       <button type="button" class="ktru-node-main" onClick={openDetails}>
         <span class="ktru-node-code">{nodeCodeLabel(props.node)}</span>
-        <span class="ktru-node-name">{props.node.name}</span>
+        <span class="ktru-node-name">
+          {props.node.name}
+          <Show when={props.node.kind === "ktru" && props.node.variantLabel}>{label =>
+            <span class="ktru-node-variant"> · {label()}</span>
+          }</Show>
+        </span>
         <span class="ktru-node-meta">
           <Show when={props.node.kind === "ktru"}>{statusBadge(props.node.status)}</Show>
           <Show when={props.node.isTemplate}><span class="ktru-badge template">шаблон</span></Show>

@@ -19,8 +19,9 @@ def _format_characteristic(item: dict[str, str]) -> str:
 
 def embedding_document(product: Product) -> str:
     chars = product.characteristics[:MAX_CHARACTERISTICS]
+    # Portal STE leaf name (not КПГЗ) — must stay stable for sku_embeddings hashes.
     content_parts = [
-        f"Категория: {product.category}",
+        f"Категория: {product.portal_category or product.category}",
         f"Производитель: {product.manufacturer}" if product.manufacturer else "",
         f"Артикул: {product.part_number}" if product.part_number else "",
         f"ОКПД2: {product.okpd2}" if product.okpd2 else "",

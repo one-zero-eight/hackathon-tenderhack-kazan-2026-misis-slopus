@@ -38,6 +38,7 @@ const CHILDREN_PAGE = 200;
 const FILTER_MATCH_LIMIT = 800;
 let catalog: Catalog | undefined;
 const filterCache = new Map<string, FilterSets>();
+const specializationCache = new Map<string, KtruSpecialization | null>();
 
 interface FilterSets {
   visible: Set<string>;
@@ -189,6 +190,24 @@ function getCatalog(): Catalog {
   return catalog;
 }
 
+function cachedSpecialization(templateCode: string): KtruSpecialization | null {
+  if (specializationCache.has(templateCode)) return specializationCache.get(templateCode)!;
+  const result = getKtruSpecialization(templateCode);
+  specializationCache.set(templateCode, result);
+  return result;
+}
+
+function variantLabelFor(code: string, data: Catalog): string | null {
+  const row = data.byCode.get(code);
+  if (!row || row.isTemplate || !row.parentCode) return null;
+  const parent = data.byCode.get(row.parentCode);
+  if (!parent?.isTemplate) return null;
+  const spec = cachedSpecialization(row.parentCode);
+  const option = spec?.options.find(item => item.code === code);
+  if (!spec || !option) return null;
+  return `${spec.characteristicName}: ${option.value}`;
+}
+
 function okpdNode(code: string, data: Catalog, childCount?: number): KtruTreeNode {
   const okpdKids = data.okpdChildCodes.get(code) ?? [];
   const ktruRoots = okpdKids.length ? [] : (data.okpdKtruRoots.get(code) ?? []);
@@ -217,6 +236,7 @@ function ktruNode(code: string, data: Catalog, childCount?: number): KtruTreeNod
     isTemplate: !!row.isTemplate,
     childCount: count,
     hasChildren: count > 0,
+    variantLabel: variantLabelFor(code, data),
   };
 }
 

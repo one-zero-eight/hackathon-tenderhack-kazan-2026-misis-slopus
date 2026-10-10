@@ -147,6 +147,7 @@ function resolveKtruFromVotes(neighbors: ProductHit[], okpd2: VotedCode | null):
       name: record?.name || best.name,
       score: best.score,
       isTemplate: !!(node?.isTemplate ?? record?.isTemplate),
+      variantLabel: node?.variantLabel ?? null,
     },
     status: node?.status ?? record?.status ?? null,
     characteristics: record?.characteristics ?? [],

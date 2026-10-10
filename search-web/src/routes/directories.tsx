@@ -75,6 +75,11 @@ function statusBadge(status: string | null) {
   return <span class={`ktru-badge ${kind}`}>{status === "ACTIVE" ? "активна" : status === "TERMINATED" ? "исключена" : status}</span>;
 }
 
+function ktruVariantLabel(node: DirTreeNode | KtruTreeNode): string | null {
+  if (!("status" in node) || node.kind !== "ktru") return null;
+  return node.variantLabel?.trim() || null;
+}
+
 function nextPathId(pathIds: string[], parentId: string | null) {
   if (!pathIds.length) return null;
   if (parentId == null) return pathIds[0] ?? null;
@@ -194,7 +199,12 @@ function TreeNode(props: {
       </button>
       <button type="button" class="ktru-node-main" onClick={openDetails}>
         <span class="ktru-node-code">{nodeCodeLabel(props.node)}</span>
-        <span class="ktru-node-name">{props.node.name}</span>
+        <span class="ktru-node-name">
+          {props.node.name}
+          <Show when={ktruVariantLabel(props.node)}>{label =>
+            <span class="ktru-node-variant"> · {label()}</span>
+          }</Show>
+        </span>
         <span class="ktru-node-meta">
           <Show when={isKtru() && (props.node as KtruTreeNode).kind === "ktru"}>{statusBadge((props.node as KtruTreeNode).status)}</Show>
           <Show when={isKtru() && (props.node as KtruTreeNode).isTemplate}><span class="ktru-badge template">шаблон</span></Show>

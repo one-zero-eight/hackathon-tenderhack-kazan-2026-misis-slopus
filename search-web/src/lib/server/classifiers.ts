@@ -20,7 +20,7 @@ import {
   spgzParquetPath,
 } from "./config";
 import { getDatabase } from "./database";
-import { getKtruRecord, getKtruSpecialization, getSoleTemplateKtruForOkpd, listKtruByOkpd } from "./ktru-tree";
+import { getKtruNodeByCode, getKtruRecord, getKtruSpecialization, getSoleTemplateKtruForOkpd, listKtruByOkpd } from "./ktru-tree";
 import { getSteCatalog } from "./ste-catalog";
 
 const CLASSIFIERS_SCHEMA = "classifiers-slim-v2";
@@ -1296,11 +1296,15 @@ export function resolveProductCategoryVotes(input: {
   const ktruCode = input.ktruCode?.trim() || "";
   if (ktruCode) {
     const record = getKtruRecord(ktruCode);
-    ktru = vote(
-      ktruCode,
-      input.ktruName?.trim() || record?.name || ktruCode,
-      !!record?.isTemplate,
-    );
+    const node = getKtruNodeByCode(ktruCode);
+    ktru = {
+      ...vote(
+        ktruCode,
+        input.ktruName?.trim() || record?.name || ktruCode,
+        !!record?.isTemplate,
+      ),
+      variantLabel: node?.variantLabel ?? null,
+    };
   } else if (okpd2Code) {
     const sole = getSoleTemplateKtruForOkpd(okpd2Code);
     if (sole) ktru = vote(sole.code, sole.name, true);

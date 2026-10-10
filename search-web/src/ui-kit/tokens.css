@@ -1,31 +1,47 @@
-/* Override these custom properties after importing styles.css to theme the kit. */
+/* Portal поставщиков palette. Override --ui-* after importing styles.css to theme the kit. */
 :root {
-  --ui-background: #faf9f6;
-  --ui-foreground: #282e29;
+  /* Brand — основные */
+  --pp-main-blue: #264b82;
+  --pp-gray-blue: #d4dbe6;
+  --pp-pale-blue: #e7eef7;
+  --pp-red: #db2b21;
+  --pp-black: #1a1a1a;
+  --pp-pale-black: #8c8c8c;
+
+  /* Brand — дополнительные (статусы, иконки) */
+  --pp-green: #0d9b68;
+  --pp-sea-dark: #167c85;
+  --pp-sea-clear: #48b8c2;
+  --pp-orange: #f67319;
+  --pp-gray: #7f8792;
+  --pp-gray-light: #c9d1df;
+
+  --ui-background: #fff;
+  --ui-foreground: var(--pp-black);
   --ui-card: #fff;
-  --ui-card-foreground: #282e29;
-  --ui-primary: #285a40;
+  --ui-card-foreground: var(--pp-black);
+  --ui-primary: var(--pp-main-blue);
   --ui-primary-foreground: #fff;
-  --ui-secondary: #edf2e9;
-  --ui-secondary-foreground: #456345;
-  --ui-muted-foreground: #81867c;
-  --ui-border: #e4e4dc;
-  --ui-input: #dfdfd6;
-  --ui-accent: #eeeee7;
-  --ui-ring: #285a40;
-  --ui-selection: #dce9d2;
-  --ui-destructive: #976f49;
-  --ui-state-background: #f5f5ef;
-  --ui-state-border: #d9ddcd;
-  --ui-state-icon-background: #e9eddf;
-  --ui-state-icon: #7b8a67;
-  --ui-state-description: #8a9380;
-  --ui-error-background: #faf6ed;
-  --ui-error-border: #ded0bd;
-  --ui-error-icon-background: #f0e7d6;
-  --ui-error-icon: #987444;
-  --ui-skeleton: #e9ece2;
-  --ui-skeleton-highlight: #f3f4ed;
+  --ui-secondary: var(--pp-pale-blue);
+  --ui-secondary-foreground: var(--pp-main-blue);
+  --ui-muted-foreground: var(--pp-pale-black);
+  --ui-border: var(--pp-gray-blue);
+  --ui-input: var(--pp-gray-blue);
+  --ui-accent: #f3f6fb;
+  --ui-ring: var(--pp-main-blue);
+  --ui-selection: var(--pp-gray-blue);
+  --ui-destructive: var(--pp-red);
+  --ui-state-background: #f3f6fb;
+  --ui-state-border: var(--pp-gray-blue);
+  --ui-state-icon-background: var(--pp-gray-blue);
+  --ui-state-icon: var(--pp-main-blue);
+  --ui-state-description: var(--pp-pale-black);
+  --ui-error-background: #fdf0ef;
+  --ui-error-border: #f0c4c1;
+  --ui-error-icon-background: #f8d9d7;
+  --ui-error-icon: var(--pp-red);
+  --ui-skeleton: var(--pp-gray-blue);
+  --ui-skeleton-highlight: var(--pp-pale-blue);
   --ui-font-sans: "Inter", "Segoe UI", -apple-system, BlinkMacSystemFont, Arial, sans-serif;
   --ui-font-heading: Georgia, "Times New Roman", serif;
   --ui-radius-sm: .25rem;

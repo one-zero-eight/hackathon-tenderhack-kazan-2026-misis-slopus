@@ -116,7 +116,6 @@ export function CategoryPicker(props: {
     const ids = new Set<number>();
     const parents = new Set<number>();
     for (const node of props.nodes) {
-      if (node.id === 1 && node.parentId == null) continue;
       if (!matchesQuery(node, query)) continue;
       ids.add(node.id);
       let parent = node.parentId;
@@ -129,10 +128,7 @@ export function CategoryPicker(props: {
   });
 
   const roots = createMemo(() => {
-    // Hide the goods wrapper in the picker, keeping the source hierarchy intact.
-    const children = (byParent().get(null) ?? []).flatMap(node =>
-      node.id === 1 ? byParent().get(node.id) ?? [] : [node],
-    );
+    const children = byParent().get(null) ?? [];
     const matches = matchIds();
     if (!matches) return children;
     return children.filter(node => matches.ids.has(node.id) || matches.parents.has(node.id));
@@ -204,7 +200,7 @@ export function CategoryPicker(props: {
   };
 
   return <>
-    <button type="button" class="category-select category-trigger" aria-label="Категория товаров" onClick={() => setOpen(true)}>
+    <button type="button" class="category-select category-trigger" aria-label="Категория КПГЗ" onClick={() => setOpen(true)}>
       <SlidersHorizontal size={16} />
       <span class="category-trigger-label">{selectedNode()?.name ?? "Все категории"}</span>
       <Show when={selectedNode()}><span class="category-trigger-count">{formatNumber(selectedNode()!.count)}</span></Show>
@@ -214,8 +210,8 @@ export function CategoryPicker(props: {
     <Dialog open={open()} onOpenChange={setOpen}>
       <DialogContent class="category-dialog">
         <DialogHeader>
-          <DialogTitle>Категория товаров</DialogTitle>
-          <DialogDescription>Выберите раздел в дереве или найдите по названию. Можно выбрать любую ветку — покажем товары внутри неё.</DialogDescription>
+          <DialogTitle>Категория КПГЗ</DialogTitle>
+          <DialogDescription>Дерево по классификатору КПГЗ. Можно выбрать любую ветку — покажем товары внутри неё.</DialogDescription>
         </DialogHeader>
         <div class="category-picker-body">
           <label class="cat-filter">

@@ -8,10 +8,11 @@ from pathlib import Path
 import pyarrow.parquet as pq
 
 from search_api.category_taxonomy import (
-    CategoryEvidence,
+    UNRESOLVED_CATEGORY_ID,
     CategoryTaxonomy,
-    build_category_taxonomy,
-    load_category_reference,
+    _display_name,
+    build_kpgz_taxonomy,
+    load_kpgz_reference,
 )
 from search_api.config import DATA, settings
 
@@ -23,6 +24,8 @@ class Product:
     description: str
     category: str
     category_id: int
+    # Portal STE leaf name — kept for embedding_document stability / sku_embeddings.
+    portal_category: str
     manufacturer: str
     country: str
     unit: str
@@ -62,7 +65,15 @@ def _ktru_from_characteristics(chars: list[dict[str, str]]) -> str:
     return ""
 
 
-def _row_to_product(row: dict) -> Product:
+def _row_to_product(
+    row: dict,
+    *,
+    category_id: int,
+    category_name: str,
+    portal_category: str,
+    kpgz_code: str,
+    kpgz_name: str,
+) -> Product:
     chars = []
     for item in row.get("characteristics") or []:
         if not item:
@@ -82,8 +93,9 @@ def _row_to_product(row: dict) -> Product:
         id=int(row["id"]),
         name=(row.get("name") or "").strip(),
         description=(row.get("description") or "").strip(),
-        category=(row.get("category") or "").strip() or "Без категории",
-        category_id=int(row.get("category_id") or 0),
+        category=category_name,
+        category_id=category_id,
+        portal_category=portal_category,
         manufacturer=(row.get("manufacturer") or "").strip(),
         country=(row.get("oksm") or "").strip(),
         unit=(row.get("okei") or "").strip(),
@@ -91,8 +103,8 @@ def _row_to_product(row: dict) -> Product:
         model_name=(row.get("model") or "").strip(),
         okpd2=(row.get("okpd2_code") or "").strip(),
         okpd2_name=(row.get("okpd2_name") or "").strip(),
-        kpgz_code=(row.get("production_code") or "").strip(),
-        kpgz_name=(row.get("production_name") or "").strip(),
+        kpgz_code=kpgz_code,
+        kpgz_name=kpgz_name,
         spgz_id=None,
         price=float(price) if price is not None else None,
         image_ids=list(dict.fromkeys(images)),
@@ -101,39 +113,60 @@ def _row_to_product(row: dict) -> Product:
     )
 
 
+def _kpgz_path() -> Path:
+    return DATA / "pp-kpgz.parquet"
+
+
 def _paths_fingerprint(paths: list[Path]) -> tuple[tuple[str, float], ...]:
-    categories = DATA / "ste-categories.parquet"
-    return tuple((str(path.resolve()), path.stat().st_mtime) for path in [*paths, categories])
+    return tuple((str(path.resolve()), path.stat().st_mtime) for path in [*paths, _kpgz_path()])
 
 
 def _load(paths: list[Path]) -> None:
     global _fingerprint, _by_id, _image_ids, _category_stats, _taxonomy
+    reference = load_kpgz_reference(_kpgz_path())
+    code_to_id = {row["code"]: row["id"] for row in reference}
+    code_to_name = {row["code"]: row["name"] for row in reference}
     products: dict[int, Product] = {}
     images: set[int] = set()
-    direct_counts: Counter[int] = Counter()
-    evidence = CategoryEvidence()
+    direct_counts: Counter[str] = Counter()
     for path in paths:
         parquet = pq.ParquetFile(path)
         for batch in parquet.iter_batches(batch_size=5000, columns=_COLUMNS):
             for row in batch.to_pylist():
-                product = _row_to_product(row)
-                if product.id <= 0 or not product.name:
+                product_id = int(row["id"] or 0)
+                name = (row.get("name") or "").strip()
+                if product_id <= 0 or not name:
                     continue
-                # Keep observations from duplicate SKU snapshots, but count and
-                # hydrate each SKU once. Conflicting paths remain diagnostics.
-                evidence.observe(row, str(path.resolve()))
-                if product.id in products:
+                kpgz_code = (row.get("production_code") or "").strip()
+                kpgz_name = (row.get("production_name") or "").strip() or code_to_name.get(kpgz_code, "")
+                portal_category = (row.get("category") or "").strip() or "Без категории"
+                if kpgz_code in code_to_id:
+                    category_id = code_to_id[kpgz_code]
+                    category_name = _display_name(kpgz_code, kpgz_name or code_to_name[kpgz_code])
+                else:
+                    category_id = UNRESOLVED_CATEGORY_ID
+                    category_name = kpgz_name or "Без кода КПГЗ"
+                if product_id in products:
                     continue
-                products[product.id] = product
+                product = _row_to_product(
+                    row,
+                    category_id=category_id,
+                    category_name=category_name,
+                    portal_category=portal_category,
+                    kpgz_code=kpgz_code,
+                    kpgz_name=kpgz_name,
+                )
+                products[product_id] = product
                 images.update(product.image_ids)
-                direct_counts[product.category_id] += 1
-    taxonomy = build_category_taxonomy(
-        load_category_reference(DATA / "ste-categories.parquet"), direct_counts, evidence,
-    )
+                direct_counts[kpgz_code] += 1
+    taxonomy = build_kpgz_taxonomy(reference, dict(direct_counts))
     names = {node["id"]: node["name"] for node in taxonomy.tree}
+    leaf_counts: Counter[int] = Counter()
+    for code, count in direct_counts.items():
+        leaf_counts[code_to_id[code] if code in code_to_id else UNRESOLVED_CATEGORY_ID] += count
     stats = [
-        {"id": cid, "name": names[cid], "count": count}
-        for cid, count in sorted(direct_counts.items(), key=lambda item: (-item[1], names[item[0]], item[0]))
+        {"id": cid, "name": names.get(cid, f"КПГЗ #{cid}"), "count": count}
+        for cid, count in sorted(leaf_counts.items(), key=lambda item: (-item[1], names.get(item[0], ""), item[0]))
     ]
     # Publish a complete snapshot only after validation and construction succeed.
     _by_id, _image_ids, _category_stats, _taxonomy = products, images, stats, taxonomy
@@ -152,7 +185,7 @@ def reset_catalog() -> None:
 
 def catalog_paths() -> list[Path]:
     paths = settings.catalog_parquet_paths()
-    missing = [path for path in [*paths, DATA / "ste-categories.parquet"] if not path.exists()]
+    missing = [path for path in [*paths, _kpgz_path()] if not path.exists()]
     if missing:
         raise FileNotFoundError("Не найдены parquet каталога: " + ", ".join(str(p) for p in missing))
     return paths
