@@ -5,13 +5,16 @@ import json
 import signal
 import time
 import uuid
+from contextlib import ExitStack
 from dataclasses import dataclass
+from pathlib import Path
 
 import sqlite3
+import lmdb
 from tqdm import tqdm
 
 from search_api.config import settings
-from search_api.embeddings import embed_client, embed_texts
+from search_api.embeddings import cached_document_vectors, embed_client, embed_texts
 from search_api.normalize import document_hash, embedding_document
 from search_api.ste_catalog import find_product, get_catalog, product_count
 
@@ -45,6 +48,7 @@ async def embed_pending(
     limit: int | None = None,
     batch_size: int | None = None,
     concurrency: int | None = None,
+    cache_path: Path | None = None,
 ) -> int:
     batch_size = batch_size or settings.embed_batch_size
     concurrency = concurrency or settings.embed_concurrency
@@ -131,7 +135,12 @@ async def embed_pending(
             unit_scale=False,
             dynamic_ncols=True,
             bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]",
-        ) as bar:
+        ) as bar, ExitStack() as resources:
+            cache_transaction = None
+            if cache_path is not None:
+                cache = lmdb.open(str(cache_path.resolve()), readonly=True, lock=False, create=False)
+                resources.callback(cache.close)
+                cache_transaction = resources.enter_context(cache.begin())
             async with embed_client() as client:
                 while not stopped and (limit is None or completed < limit):
                     lease()
@@ -164,7 +173,10 @@ async def embed_pending(
 
                     async def run_one(batch: _ReadyBatch) -> tuple[_ReadyBatch, list[bytes], float]:
                         t0 = time.perf_counter()
-                        vectors = await embed_texts(batch.documents, "document", client=client)
+                        if cache_transaction is not None:
+                            vectors = cached_document_vectors(cache_transaction, batch.documents)
+                        else:
+                            vectors = await embed_texts(batch.documents, "document", client=client)
                         return batch, vectors, time.perf_counter() - t0
 
                     results = await asyncio.gather(*[run_one(b) for b in prepared])
@@ -206,7 +218,8 @@ def embed_pending_sync(
     limit: int | None = None,
     batch_size: int | None = None,
     concurrency: int | None = None,
+    cache_path: Path | None = None,
 ) -> int:
     return asyncio.run(
-        embed_pending(conn, limit=limit, batch_size=batch_size, concurrency=concurrency)
+        embed_pending(conn, limit=limit, batch_size=batch_size, concurrency=concurrency, cache_path=cache_path)
     )

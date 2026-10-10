@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import sys
 import time
+from pathlib import Path
 
 from search_api.config import settings
 from search_api.embedder import embed_pending_sync
@@ -43,6 +44,7 @@ def _cmd_embed(args: argparse.Namespace) -> int:
             limit=args.limit,
             batch_size=args.batch,
             concurrency=args.concurrency,
+            cache_path=args.cache,
         )
         return 0
     finally:
@@ -73,12 +75,14 @@ def main(argv: list[str] | None = None) -> None:
     p_embed.add_argument("--limit", type=int, default=None)
     p_embed.add_argument("--batch", type=int, default=None)
     p_embed.add_argument("--concurrency", type=int, default=None)
+    p_embed.add_argument("--cache", type=Path, help="Load vectors only from an existing meow-embed LMDB cache")
     p_embed.set_defaults(func=_cmd_embed)
 
     p_all = sub.add_parser("all", help="import then embed")
     p_all.add_argument("--limit", type=int, default=None)
     p_all.add_argument("--batch", type=int, default=None)
     p_all.add_argument("--concurrency", type=int, default=None)
+    p_all.add_argument("--cache", type=Path, help="Load vectors only from an existing meow-embed LMDB cache")
     p_all.set_defaults(func=_cmd_index)
 
     args = parser.parse_args(argv)

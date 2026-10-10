@@ -1,16 +1,41 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import struct
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
 import httpx
+import lmdb
 import numpy as np
 
 from search_api.config import settings
 
 _query_cache: dict[str, bytes] = {}
+
+
+def cached_document_vectors(transaction: lmdb.Transaction, texts: list[str]) -> list[bytes]:
+    vectors = []
+    for text in texts:
+        key = hashlib.blake2b(
+            b"\0".join([
+                b"dense", settings.model_id.encode("utf-8"), (0).to_bytes(4, "little"),
+                b"dense_prompt", settings.document_prompt.encode("utf-8"),
+                b"dense_task", b"document", text.encode("utf-8"),
+            ]),
+            digest_size=32,
+        ).digest()
+        raw = transaction.get(key)
+        if raw is None:
+            raise RuntimeError(f"Нет эмбеддинга в LMDB-кеше: {text[:160]}")
+        if len(raw) != settings.dimensions * 2:
+            raise RuntimeError(f"Неверная размерность вектора в LMDB: {len(raw)} байт")
+        vector = np.frombuffer(raw, dtype="<f2").astype("<f4")
+        if not np.isfinite(vector).all():
+            raise RuntimeError("Нечисловой вектор в LMDB-кеше")
+        vectors.append(vector.tobytes())
+    return vectors
 
 
 def _endpoint() -> str:

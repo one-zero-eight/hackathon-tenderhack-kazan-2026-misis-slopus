@@ -1,0 +1,19 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+models/
+data-archived/raw/
+data-archived/cache/
+data/cache/
+data-archived/ktru_real.json
+reports/
+
+# Секреты
+.env

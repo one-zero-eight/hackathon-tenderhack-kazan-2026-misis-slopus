@@ -1,0 +1,61 @@
+[project]
+name = "ktru-autofill"
+version = "0.1.0"
+description = "Автозаполнение характеристик КТРУ по тексту позиции"
+readme = "README.md"
+authors = [
+    { name = "mainStorne", email = "dbevzpr@mail.ru" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.143.0",
+    "laya>=0.4.0",
+    "numpy>=2.5.3",
+    "pymorphy3>=2.0.6",
+    "rapidfuzz>=3.14.6",
+    "typesafe-sdk>=0.7.3",
+    "uvicorn>=0.54.0",
+]
+
+[project.scripts]
+ktru-autofill = "ktru_autofill:main"
+ktru-eval = "ktru_autofill.evaluate:main"
+
+[project.optional-dependencies]
+embeddings = [
+    "pillow>=12.3.0",
+    "sentence-transformers>=6.1.0",
+    "torch>=2.14.1",
+    "torchvision>=0.29.1",
+]
+data = [
+    "openpyxl>=3.1.5",
+]
+laya = [
+    "laya>=0.4.0",
+]
+jev-local = [
+    "peft>=0.21.2",
+]
+bge = [
+    "flagembedding>=1.4.2",
+]
+
+[build-system]
+requires = ["uv_build>=0.12.10,<0.13.0"]
+build-backend = "uv_build"
+
+# CUDA 12.6: последняя линия с поддержкой Volta (V100 на inh-compute); CPU-индекс ломал сервер при uv sync.
+[[tool.uv.index]]
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu126" }
+torchvision = { index = "pytorch-cu126" }
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]

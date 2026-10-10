@@ -13,6 +13,7 @@ dependencies = [
     "sqlite-vec>=0.1.6",
     "tqdm>=4.66",
     "uvicorn[standard]>=0.32",
+    "lmdb>=1.5",
 ]
 
 [project.scripts]
