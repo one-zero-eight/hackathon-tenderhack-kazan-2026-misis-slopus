@@ -16,16 +16,123 @@
   border-color: #6e8965;
   box-shadow: 0 0 0 3px #285a400c, 0 5px 24px #403c2710;
 }
-.create-describe-field textarea {
+.create-describe-spell {
+  position: relative;
   min-height: 140px;
-  resize: vertical;
+}
+.create-describe-spell-backdrop,
+.create-describe-field textarea {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 140px;
+  margin: 0;
+  padding: 8px 13px;
   border: 0 !important;
   border-radius: 0;
-  background: transparent;
-  padding: 8px 13px;
+  font: inherit;
   font-size: 15px;
   line-height: 1.55;
+  letter-spacing: inherit;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+  overflow: auto;
+}
+.create-describe-spell-backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  color: transparent;
+  background: transparent;
+  scrollbar-width: none;
+}
+.create-describe-spell-backdrop::-webkit-scrollbar { display: none; }
+.create-describe-spell-backdrop .spell-error {
+  position: relative;
+  color: transparent;
+  background: transparent;
+  border-radius: 0;
+  pointer-events: none;
+  text-decoration: underline wavy #d94841;
+  text-decoration-thickness: from-font;
+  text-underline-offset: 1px;
+  text-decoration-skip-ink: none;
+}
+/* Hit target only on the underline, so the word stays editable via textarea. */
+.create-describe-spell-backdrop .spell-error::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 5px;
+  pointer-events: auto;
+  cursor: help;
+}
+.create-describe-spell-backdrop .spell-error:hover,
+.create-describe-spell-backdrop .spell-error.is-active {
+  text-decoration-color: #c0392b;
+}
+.create-describe-spell-tip {
+  position: absolute;
+  z-index: 5;
+  max-width: min(280px, calc(100% - 16px));
+  padding: 8px 10px;
+  border: 1px solid #ddd6c8;
+  border-radius: 8px;
+  background: #fffcf7;
+  box-shadow: 0 8px 24px #403c2718;
+  color: #4a4f45;
+  font-size: 12px;
+  line-height: 1.45;
+  pointer-events: auto;
+}
+.create-describe-spell-tip-label {
+  margin: 0 0 4px;
+  color: #8a8176;
+  font-size: 11px;
+}
+.create-describe-spell-tip-word {
+  margin: 0 0 6px;
+  font-weight: 600;
+  color: #5c534a;
+}
+.create-describe-spell-tip-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.create-describe-spell-tip-list button {
+  margin: 0;
+  padding: 2px 7px;
+  border: 1px solid #ddd6c8;
+  border-radius: 5px;
+  background: #fff;
+  color: #4a5540;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.create-describe-spell-tip-list button:hover {
+  border-color: #b7c4a8;
+  background: #f4f7f0;
+}
+.create-describe-spell-tip-empty {
+  margin: 0;
+  color: #9a9186;
+  font-size: 11px;
+}
+.create-describe-field textarea {
+  position: relative;
+  z-index: 1;
+  resize: vertical;
+  background: transparent;
   color: inherit;
+  caret-color: currentColor;
   box-shadow: none;
 }
 .create-describe-field textarea:focus-visible {

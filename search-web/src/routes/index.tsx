@@ -95,6 +95,7 @@ import {
 } from "~/lib/create-product-state";
 import { draftFromSpgzCharacteristic } from "~/lib/spgz-characteristics";
 import type { CatalogSpecialization, DirTreeNode, DraftCharacteristic, KtruTreeNode, VotedCode } from "~/lib/types";
+import { checkSpelling, highlightSpellingErrors, spellerErrorLabel, type SpellerError } from "~/lib/yandex-speller";
 import { Badge, Button, Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, Select, SelectContent, SelectItem, SelectTrigger, SelectValue, Skeleton, TextField, TextFieldInput, TextFieldLabel, TextFieldTextarea } from "~/ui-kit";
 import "./create-product.css";
 import "./directories.css";
@@ -426,7 +427,13 @@ export default function NewProduct() {
   const [ktruPickerOpen, setKtruPickerOpen] = createSignal(false);
   const [spgzPickerOpen, setSpgzPickerOpen] = createSignal(false);
   const [photoDragging, setPhotoDragging] = createSignal(false);
+  const [spellErrors, setSpellErrors] = createSignal<SpellerError[]>([]);
+  const [spellTip, setSpellTip] = createSignal<{ index: number; left: number; top: number } | null>(null);
   let photoInput: HTMLInputElement | undefined;
+  let describeTextarea: HTMLTextAreaElement | undefined;
+  let spellBackdrop: HTMLDivElement | undefined;
+  let spellWrap: HTMLDivElement | undefined;
+  let spellTipHideTimer: ReturnType<typeof setTimeout> | undefined;
 
   const fingerprint = () => `${selected()?.code ?? ""}\u0000${description()}`;
   const outdated = () => !!generatedFor() && generatedFor() !== fingerprint();
@@ -838,6 +845,93 @@ export default function NewProduct() {
   };
 
   createEffect(on(description, (text) => {
+    setSpellErrors((prev) => {
+      if (!text.trim() || !prev.length) return [];
+      return prev.filter((err) => text.slice(err.pos, err.pos + err.len) === err.word);
+    });
+    if (!text.trim()) return;
+    let alive = true;
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => {
+      void checkSpelling(text, ctrl.signal)
+        .then((errors) => { if (alive) setSpellErrors(errors); })
+        .catch((err: unknown) => {
+          if (!alive || (err instanceof DOMException && err.name === "AbortError")) return;
+          setSpellErrors([]);
+        });
+    }, 450);
+    onCleanup(() => {
+      alive = false;
+      clearTimeout(timer);
+      ctrl.abort();
+    });
+  }));
+
+  const spellHighlight = createMemo(() => highlightSpellingErrors(description(), spellErrors()));
+
+  const syncSpellScroll = () => {
+    if (!describeTextarea || !spellBackdrop) return;
+    spellBackdrop.scrollTop = describeTextarea.scrollTop;
+    spellBackdrop.scrollLeft = describeTextarea.scrollLeft;
+    setSpellTip(null);
+  };
+
+  const clearSpellTipSoon = () => {
+    clearTimeout(spellTipHideTimer);
+    spellTipHideTimer = setTimeout(() => setSpellTip(null), 120);
+  };
+
+  const showSpellTip = (index: number, anchor: HTMLElement) => {
+    if (!spellWrap) return;
+    clearTimeout(spellTipHideTimer);
+    const wrapRect = spellWrap.getBoundingClientRect();
+    const rect = anchor.getBoundingClientRect();
+    const left = Math.min(
+      Math.max(8, rect.left - wrapRect.left),
+      Math.max(8, wrapRect.width - 200),
+    );
+    const top = rect.bottom - wrapRect.top + 6;
+    setSpellTip({ index, left, top });
+  };
+
+  const onSpellBackdropOver = (event: MouseEvent) => {
+    const el = event.target as HTMLElement | null;
+    // Events come from the underline ::after hit strip (target = .spell-error).
+    if (!el?.classList?.contains("spell-error")) return;
+    const index = Number(el.dataset.spellIndex);
+    if (!Number.isFinite(index)) return;
+    showSpellTip(index, el);
+  };
+
+  const applySpellSuggestion = (suggestion: string) => {
+    const tip = spellTip();
+    const err = tip ? spellErrors()[tip.index] : null;
+    if (!err || !describeTextarea) return;
+    const text = description();
+    const next = `${text.slice(0, err.pos)}${suggestion}${text.slice(err.pos + err.len)}`;
+    setDescription(next);
+    setSpellTip(null);
+    const caret = err.pos + suggestion.length;
+    queueMicrotask(() => {
+      describeTextarea?.focus();
+      describeTextarea?.setSelectionRange(caret, caret);
+    });
+  };
+
+  createEffect(() => {
+    spellHighlight();
+    const tip = spellTip();
+    if (!spellBackdrop) return;
+    for (const node of spellBackdrop.querySelectorAll(".spell-error.is-active")) {
+      node.classList.remove("is-active");
+    }
+    if (tip == null) return;
+    spellBackdrop.querySelector(`.spell-error[data-spell-index="${tip.index}"]`)?.classList.add("is-active");
+  });
+
+  onCleanup(() => clearTimeout(spellTipHideTimer));
+
+  createEffect(on(description, (text) => {
     const query = text.trim().replace(/\s+/g, " ");
     if (query.length < 12) {
       batch(() => {
@@ -1078,7 +1172,59 @@ export default function NewProduct() {
       <div class="section-heading"><FileText size={20} strokeWidth={1.6} /><h2 id="describe-heading">Описание</h2></div>
       <TextField class="create-describe-field" name="product-description" value={description()} onChange={setDescription}>
         <TextFieldLabel class="sr-only">Описание товара</TextFieldLabel>
-        <TextFieldTextarea id="product-description" rows={5} placeholder="Опишите товар своими словами: назначение, материал, размеры, комплектацию…" maxlength={3000} />
+        <div class="create-describe-spell" ref={spellWrap}>
+          <TextFieldTextarea
+            id="product-description"
+            ref={(el) => { describeTextarea = el; }}
+            rows={5}
+            placeholder="Опишите товар своими словами: назначение, материал, размеры, комплектацию…"
+            maxlength={3000}
+            spellcheck={false}
+            onScroll={syncSpellScroll}
+          />
+          <div
+            ref={spellBackdrop}
+            class="create-describe-spell-backdrop"
+            aria-hidden="true"
+            innerHTML={spellHighlight()}
+            onMouseOver={onSpellBackdropOver}
+            onMouseLeave={clearSpellTipSoon}
+          />
+          <Show when={spellTip()}>
+            {(tip) => (
+              <Show when={spellErrors()[tip().index]}>
+                {(err) => (
+                  <div
+                    class="create-describe-spell-tip"
+                    role="tooltip"
+                    style={{ left: `${tip().left}px`, top: `${tip().top}px` }}
+                    onMouseEnter={() => clearTimeout(spellTipHideTimer)}
+                    onMouseLeave={clearSpellTipSoon}
+                  >
+                    <p class="create-describe-spell-tip-label">{spellerErrorLabel(err().code)}</p>
+                    <p class="create-describe-spell-tip-word">«{err().word}»</p>
+                    <Show
+                      when={err().s.length}
+                      fallback={<p class="create-describe-spell-tip-empty">Вариантов нет</p>}
+                    >
+                      <ul class="create-describe-spell-tip-list">
+                        <For each={err().s.slice(0, 5)}>
+                          {(suggestion) => (
+                            <li>
+                              <button type="button" onClick={() => applySpellSuggestion(suggestion)}>
+                                {suggestion}
+                              </button>
+                            </li>
+                          )}
+                        </For>
+                      </ul>
+                    </Show>
+                  </div>
+                )}
+              </Show>
+            )}
+          </Show>
+        </div>
       </TextField>
       <div class="create-describe-meta"><span>Начните с типа товара, затем отличительные признаки: материал, размер, назначение. Без рекламных формулировок.</span><span>{description().length} / 3000</span></div>
     </section>
