@@ -4,7 +4,7 @@
   box-sizing: border-box;
   min-height: 100%;
   padding-top: 28px;
-  padding-bottom: 0;
+  padding-bottom: 24px;
 }
 .ktru-hero { position: relative; flex-shrink: 0; margin-bottom: 20px; padding-bottom: 8px; }
 .ktru-hero p { margin: 0; color: #8c8c8c; font-size: 14px; line-height: 1.55; max-width: 62ch; }
@@ -46,7 +46,7 @@
 .dir-characteristics-table > div { grid-template-columns: minmax(140px, 34%) 1fr; gap: 12px; padding: 12px; font-size: 12px; align-items: start; }
 .dir-char-name { display: block; }
 .dir-char-badges { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
-.dir-char-required { display: inline-block; font-size: 9px; letter-spacing: .2px; text-transform: uppercase; color: #f67319; border: 1px solid #f0c4c1; border-radius: 3px; padding: 1px 5px; vertical-align: middle; }
+.dir-char-required { display: inline-block; font-size: 9px; letter-spacing: .2px; text-transform: uppercase; color: var(--pp-gray); border: 1px solid var(--pp-gray-blue); border-radius: 3px; padding: 1px 5px; vertical-align: middle; }
 .dir-char-code { display: block; margin-top: 5px; font-size: 10px; color: #8c8c8c; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .dir-char-parts { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
 .dir-char-parts li { display: flex; flex-direction: column; align-items: flex-start; gap: 3px; }

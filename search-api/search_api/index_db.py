@@ -28,6 +28,8 @@ def open_index_db(path: Path | None = None, *, readonly: bool = False) -> sqlite
         conn.execute("PRAGMA foreign_keys=ON")
 
     conn.row_factory = sqlite3.Row
+    conn.execute(f"PRAGMA mmap_size={settings.search_mmap_size}")
+    conn.execute(f"PRAGMA cache_size=-{settings.search_cache_size_kib}")
     conn.enable_load_extension(True)
     sqlite_vec.load(conn)
     conn.enable_load_extension(False)

@@ -62,7 +62,7 @@ export default function Home() {
     onCleanup(() => clearInterval(timer));
   });
   const query = () => param(params.q).trim();
-  const mode = (): SearchMode => ["hybrid", "semantic", "text"].includes(param(params.mode)) ? param(params.mode) as SearchMode : "text";
+  const mode = (): SearchMode => ["hybrid", "semantic", "text"].includes(param(params.mode)) ? param(params.mode) as SearchMode : "hybrid";
   const category = () => categoryIdParam(param(params.category));
   const [draft, setDraft] = createSignal(query());
   createEffect(() => setDraft(query()));

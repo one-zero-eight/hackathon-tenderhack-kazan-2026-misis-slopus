@@ -43,6 +43,18 @@ export function mapValueToOptions(value: string, options: string[]): string {
   return options.find((option) => normalizeOptionKey(option) === key) ?? raw;
 }
 
+export function mapOptionProbabilities(
+  probabilities: DraftCharacteristic["optionProbabilities"], options: string[],
+): DraftCharacteristic["optionProbabilities"] {
+  if (!probabilities) return undefined;
+  const values: Record<string, number> = {};
+  for (const option of options) {
+    const match = Object.keys(probabilities.values).find((value) => normalizeOptionKey(value) === normalizeOptionKey(option));
+    if (match !== undefined) values[option] = probabilities.values[match];
+  }
+  return { text: probabilities.text, values };
+}
+
 export type DisplayCharacteristic = DraftCharacteristic & {
   /** Underlying stored row ids this display row writes back to. */
   linkedIds: string[];
@@ -60,17 +72,21 @@ function mergePair(ktru: DraftCharacteristic, spgz: DraftCharacteristic): Displa
   let rangeOption = ktru.rangeOption;
   if (isRangeCharacteristic(ktru) && !rangeOption) {
     const fromSpgz = mapValueToOptions(spgz.rangeOption || spgz.value, ktru.options);
-    const number = parseCharacteristicNumber(spgz.value);
-    rangeOption = fromSpgz
-      || (number == null ? "" : (matchNumberToRange(number, ktru.ranges) ?? ""));
+    const number = parseCharacteristicNumber(value);
+    rangeOption = number == null
+      ? (ktru.options.includes(fromSpgz) ? fromSpgz : "")
+      : (matchNumberToRange(number, ktru.ranges) ?? "");
   }
   return {
     ...ktru,
     id: `merge:${ktru.id}:${spgz.id}`,
     value,
     rangeOption,
+    autofill: ktru.value.trim() || ktru.rangeOption.trim() ? ktru.autofill : spgz.autofill,
+    optionProbabilities: mapOptionProbabilities(ktru.optionProbabilities ?? spgz.optionProbabilities, ktru.options),
     required: ktru.required || spgz.required,
     multiple: ktru.multiple || spgz.multiple,
+    numeric: ktru.numeric || spgz.numeric,
     source: "both",
     hint: ktru.hint || spgz.hint,
     linkedIds: [ktru.id, spgz.id],
@@ -118,7 +134,31 @@ export function buildDisplayCharacteristics(items: DraftCharacteristic[]): Displ
   ];
 }
 
-export function characteristicSourceLabel(source: DraftCharacteristic["source"]): string {
+export function retainTemplateCharacteristics(
+  position: DraftCharacteristic[],
+  template: DraftCharacteristic[],
+  templateCode: string,
+): DraftCharacteristic[] {
+  const retainedPosition = position.filter((item) => !item.templateKtruCode || item.value.trim() || item.rangeOption.trim());
+  const names = new Set(retainedPosition.map((item) => normName(item.name)));
+  const ids = new Set(retainedPosition.map((item) => item.id));
+  return [
+    ...retainedPosition,
+    ...template.filter((item) => (item.value.trim() || item.rangeOption.trim())
+      && !names.has(normName(item.name)) && !ids.has(item.id))
+      .map((item) => ({ ...item, templateKtruCode: templateCode })),
+  ];
+}
+
+export function autofillConfidencePresentation(confidence: number): { percent: number; level: "high" | "medium" | "low"; label: string } {
+  const percent = Math.round(confidence * 100);
+  if (confidence > 0.8) return { percent, level: "high", label: "Высокая уверенность" };
+  if (confidence >= 0.7) return { percent, level: "medium", label: "Средняя уверенность" };
+  return { percent, level: "low", label: "Низкая уверенность — проверьте значение" };
+}
+
+export function characteristicSourceLabel(source: DraftCharacteristic["source"], templateKtruCode?: string): string {
+  if (templateKtruCode) return source === "both" ? "из шаблона КТРУ, СПГЗ" : "из шаблона КТРУ";
   switch (source) {
     case "both": return "из КТРУ, СПГЗ";
     case "spgz": return "из СПГЗ";

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 import time
 from typing import Any, Literal
@@ -17,6 +18,8 @@ from search_api.ste_catalog import (
     product_to_dict,
     resolve_category_ids,
 )
+
+logger = logging.getLogger("uvicorn.error")
 
 SearchMode = Literal["hybrid", "semantic", "text"]
 
@@ -79,19 +82,30 @@ async def run_search(
 ) -> dict:
     query, mode, page, category_id = validate_search(query, mode, page, category_id)
     started = time.perf_counter()
+    timings: dict[str, int] = {}
     offset = (page - 1) * settings.page_size
     db = get_db()
     category_ids = resolve_category_ids(category_id)
     category_list = sorted(category_ids) if category_ids is not None else None
+    timings["setup"] = round((time.perf_counter() - started) * 1000)
+
+    def hydrate_hits(ranked: list[dict]) -> list[dict]:
+        stage = time.perf_counter()
+        items = _hydrate_hits(ranked)
+        timings["hydrate"] = round((time.perf_counter() - stage) * 1000)
+        return items
 
     def finish(items: list[dict], total: int) -> dict:
+        duration_ms = round((time.perf_counter() - started) * 1000)
+        logger.info("Search mode=%s duration_ms=%s stages_ms=%s", mode, duration_ms, timings)
         return {
             "items": items,
             "total": total,
             "hasMore": offset + len(items) < total,
             "page": page,
             "mode": mode,
-            "durationMs": round((time.perf_counter() - started) * 1000),
+            "durationMs": duration_ms,
+            "timingsMs": dict(timings),
         }
 
     if not query:
@@ -128,6 +142,7 @@ async def run_search(
         return [{"id": int(row["id"])} for row in db.execute(sql, [tokens, *category_params, limit, skip]).fetchall()]
 
     if mode == "text":
+        stage = time.perf_counter()
         total = 0
         if tokens:
             total = int(db.execute(
@@ -139,11 +154,16 @@ async def run_search(
                 [tokens, *category_params],
             ).fetchone()["n"])
         ranked = [{"id": row["id"], "score": None, "match": "text"} for row in text_rows(settings.page_size, offset)]
-        return finish(_hydrate_hits(ranked), total)
+        timings["text"] = round((time.perf_counter() - stage) * 1000)
+        return finish(hydrate_hits(ranked), total)
 
-    if db.execute("SELECT 1 FROM product_vectors LIMIT 1").fetchone() is None:
+    stage = time.perf_counter()
+    has_vectors = db.execute("SELECT 1 FROM product_vectors LIMIT 1").fetchone() is not None
+    timings["vectorCheck"] = round((time.perf_counter() - stage) * 1000)
+    if not has_vectors:
         # Vectors not ready yet — fall back to FTS instead of failing the request.
         mode = "text"
+        stage = time.perf_counter()
         total = 0
         if tokens:
             total = int(db.execute(
@@ -155,9 +175,12 @@ async def run_search(
                 [tokens, *category_params],
             ).fetchone()["n"])
         ranked = [{"id": row["id"], "score": None, "match": "text"} for row in text_rows(settings.page_size, offset)]
-        return finish(_hydrate_hits(ranked), total)
+        timings["text"] = round((time.perf_counter() - stage) * 1000)
+        return finish(hydrate_hits(ranked), total)
 
+    stage = time.perf_counter()
     vector = await embed_query(query)
+    timings["embedding"] = round((time.perf_counter() - stage) * 1000)
     if category_list is None:
         vec_sql = """
             SELECT product_id AS id, distance FROM product_vectors
@@ -174,15 +197,19 @@ async def run_search(
             ORDER BY distance
         """
         vec_params = [vector, settings.retrieval_limit, *category_list]
+    stage = time.perf_counter()
     vector_rows = [{"id": int(r["id"]), "distance": float(r["distance"])} for r in db.execute(vec_sql, vec_params).fetchall()]
+    timings["knn"] = round((time.perf_counter() - stage) * 1000)
 
+    stage = time.perf_counter()
     if mode == "hybrid":
         ranked = fuse_ranks(vector_rows, text_rows(settings.retrieval_limit))[: settings.retrieval_limit]
     else:
         ranked = [{"id": row["id"], "score": 1 - row["distance"], "match": "semantic"} for row in vector_rows]
 
+    timings["ranking"] = round((time.perf_counter() - stage) * 1000)
     page_rows = ranked[offset: offset + settings.page_size]
-    return finish(_hydrate_hits(page_rows), len(ranked))
+    return finish(hydrate_hits(page_rows), len(ranked))
 
 
 async def find_similar(product_id: int) -> list[dict]:

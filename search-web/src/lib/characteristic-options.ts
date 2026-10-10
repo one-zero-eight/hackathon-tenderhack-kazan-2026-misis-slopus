@@ -54,6 +54,23 @@ export function matchNumberToRange(value: number, ranges: CharacteristicRange[])
   return undefined;
 }
 
+/** Validate the number independently of the selected catalog bucket, including manual edits. */
+export function characteristicRangeProblem(item: {
+  value: string;
+  unit: string;
+  ranges: CharacteristicRange[];
+  optionLabels: Record<string, string>;
+}): string | null {
+  const raw = item.value.trim();
+  if (!raw || !item.ranges.length) return null;
+  const value = Number(raw.replace(",", "."));
+  if (!Number.isFinite(value)) return "Введите числовое значение характеристики.";
+  if (matchNumberToRange(value, item.ranges) !== undefined) return null;
+  const shown = [raw, shortUnitName(item.unit)].filter(Boolean).join(" ");
+  const allowed = item.ranges.map((range) => item.optionLabels[range.option] || range.option).join("; ");
+  return `Значение ${shown} не входит ни в один допустимый диапазон характеристики. Допустимые диапазоны: ${allowed}. Проверьте число и единицу измерения.`;
+}
+
 /** Short OKEI name for option labels («Миллиметр» → «мм»). */
 export function shortUnitName(name: string | null | undefined): string {
   const full = String(name ?? "").split(";")[0]?.trim() ?? "";

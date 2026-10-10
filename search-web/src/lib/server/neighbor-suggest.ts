@@ -2,7 +2,7 @@ import { apiSearchProducts } from "../api";
 import { isRangeCharacteristic } from "../characteristic-options";
 import { draftFromSpgzCharacteristic } from "../spgz-characteristics";
 import type { DraftCharacteristic, ProductHit, VotedCode } from "../types";
-import { getDirectoryRecord } from "./classifiers";
+import { getDirectoryRecord, getSoleSpgzForKpgz } from "./classifiers";
 import { getKtruNodeByCode, getKtruRecord, getSoleTemplateKtruForOkpd, type KtruCharacteristic } from "./ktru-tree";
 
 const NEIGHBOR_K = 25;
@@ -86,10 +86,10 @@ function enrichName(vote: VotedCode | null, tab: "okpd" | "kpgz" | "spgz"): Vote
   return record?.name ? { ...vote, name: record.name } : vote;
 }
 
-function resolveSpgz(neighbors: ProductHit[]): VotedCode | null {
+function resolveSpgz(neighbors: ProductHit[], kpgz: VotedCode | null): VotedCode | null {
   const fromNeighbors = voteCodes(
     neighbors.flatMap((product) => {
-      if (!product.spgzId) return [];
+      if (!product.spgzId || (kpgz && product.kpgzCode !== kpgz.code)) return [];
       return [{
         code: String(product.spgzId),
         name: String(product.spgzId),
@@ -97,7 +97,9 @@ function resolveSpgz(neighbors: ProductHit[]): VotedCode | null {
       }];
     }),
   )[0] ?? null;
-  return fromNeighbors ? enrichName(fromNeighbors, "spgz") : null;
+  if (fromNeighbors) return enrichName(fromNeighbors, "spgz");
+  const sole = kpgz ? getSoleSpgzForKpgz(kpgz.code) : null;
+  return sole && kpgz ? { ...sole, score: kpgz.score } : null;
 }
 
 function resolveKtruFromVotes(neighbors: ProductHit[], okpd2: VotedCode | null): {
@@ -221,7 +223,7 @@ export async function suggestFromNeighbors(description: string): Promise<Neighbo
     okpd2 = enrichName({ code: okpdFromKtru.code, name: okpdFromKtru.name, score: ktru?.score ?? 1 }, "okpd");
   }
 
-  const spgz = resolveSpgz(neighbors);
+  const spgz = resolveSpgz(neighbors, kpgz);
   const ktruCharacteristics = fillCharacteristics(schema);
   const spgzCharacteristics = (() => {
     if (!spgz) return [] as DraftCharacteristic[];

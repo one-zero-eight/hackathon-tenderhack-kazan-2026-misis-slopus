@@ -6,23 +6,42 @@ import type { VotedCode } from "~/lib/types";
 import { Button } from "~/ui-kit";
 import "~/routes/create-product.css";
 
-function VoteRow(props: { label: string; tab: "okpd" | "ktru" | "kpgz" | "spgz"; vote: VotedCode | null | undefined }) {
+function VoteRow(props: { label: string; tab: "okpd" | "ktru" | "kpgz" | "spgz"; vote: VotedCode | null | undefined; highlighted?: boolean; previousVote?: VotedCode | null }) {
   return <Show when={props.vote} fallback={
     <div>
       <dt>{props.label}</dt>
       <dd><span class="create-vote-name">—</span></dd>
     </div>
   }>{vote =>
-    <div>
-      <dt>{props.label}</dt>
-      <dd>
-        <A class="create-vote-code" href={directoryHref(props.tab, vote().code)}>{vote().code}</A>
-        <span class="create-vote-name">
-          {vote().name}
-          <Show when={props.tab === "ktru" && vote().isTemplate}>{" "}(Шаблон)</Show>
-        </span>
+    <div classList={{ "create-vote-row-refined": props.highlighted }}>
+      <dt class="create-vote-label">
+        {props.label}
+        <Show when={props.highlighted}><span class="create-vote-refined-badge">Уточнено</span></Show>
+      </dt>
+      <dd class="create-vote-value">
+        <div class="create-vote-value-main">
+          <A class="create-vote-code" href={directoryHref(props.tab, vote().code)}>{vote().code}</A>
+          <span class="create-vote-name">
+            {vote().name}
+            <Show when={props.tab === "ktru" && vote().isTemplate}>{" "}(Шаблон)</Show>
+          </span>
+        </div>
         <Show when={props.tab === "ktru" && vote().variantLabel}>
-          <span class="create-vote-variant">{vote().variantLabel}</span>
+          <div class="create-vote-value-meta">
+            <Show when={props.tab === "ktru" && vote().variantLabel}>
+              <span class="create-vote-variant">{vote().variantLabel}</span>
+            </Show>
+          </div>
+        </Show>
+        <Show when={props.highlighted}>
+          <div class="create-vote-previous">
+            <span>Было:</span>
+            <Show when={props.previousVote} fallback={<span>не выбрано</span>}>{previous => <>
+              <A href={directoryHref(props.tab, previous().code)}>{previous().code}</A>
+              <span>{previous().name}{previous().isTemplate ? " (Шаблон)" : ""}</span>
+              <Show when={previous().variantLabel}><span>{previous().variantLabel}</span></Show>
+            </>}</Show>
+          </div>
         </Show>
       </dd>
     </div>
@@ -34,6 +53,10 @@ export function CategoryPairs(props: {
   ktru: VotedCode | null;
   kpgz: VotedCode | null;
   spgz: VotedCode | null;
+  highlightedKtru?: boolean;
+  highlightedSpgz?: boolean;
+  previousKtru?: VotedCode | null;
+  previousSpgz?: VotedCode | null;
   onEditKtru?: () => void;
   onEditSpgz?: () => void;
   class?: string;
@@ -48,7 +71,7 @@ export function CategoryPairs(props: {
       </div>
       <dl class="create-vote-rows">
         <VoteRow label="ОКПД2" tab="okpd" vote={props.okpd2} />
-        <VoteRow label="КТРУ" tab="ktru" vote={props.ktru} />
+        <VoteRow label="КТРУ" tab="ktru" vote={props.ktru} highlighted={props.highlightedKtru} previousVote={props.previousKtru} />
       </dl>
     </div>
     <div class="create-vote-group">
@@ -60,7 +83,7 @@ export function CategoryPairs(props: {
       </div>
       <dl class="create-vote-rows">
         <VoteRow label="КПГЗ" tab="kpgz" vote={props.kpgz} />
-        <VoteRow label="СПГЗ" tab="spgz" vote={props.spgz} />
+        <VoteRow label="СПГЗ" tab="spgz" vote={props.spgz} highlighted={props.highlightedSpgz} previousVote={props.previousSpgz} />
       </dl>
     </div>
   </div>;

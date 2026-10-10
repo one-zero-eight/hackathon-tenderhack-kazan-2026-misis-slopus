@@ -103,13 +103,35 @@ export type DraftCharacteristic = {
   optionLabels: Record<string, string>;
   ranges: CharacteristicRange[];
   unit: string;
+  /** Quantitative schema field, including SPGZ fields without a declared unit. */
+  numeric?: boolean;
   multiple: boolean;
   source: "ktru" | "spgz" | "both" | "custom";
+  /** Missing from the selected child position, retained from this KTRU template. */
+  templateKtruCode?: string;
+  /** Confidence for the current model-filled value; removed on manual edits. */
+  autofill?: { confidence: number; model: string };
+  /** Model estimates for schema options, independent of the manually selected value. */
+  optionProbabilities?: { text: string; values: Record<string, number> };
   custom?: boolean;
   /** Choice partitions siblings and sets refined KTRU / СПГЗ. */
   refinesKtru?: boolean;
   /** When false, value is kept but does not switch KTRU / СПГЗ. Default true. */
   applyPositionRefine?: boolean;
+};
+
+export type CharacteristicAutofillInput = {
+  text: string;
+  characteristics: Pick<DraftCharacteristic, "id" | "name" | "options" | "optionLabels" | "ranges" | "unit" | "numeric" | "multiple" | "hint">[];
+  standards: string[];
+};
+
+export type CharacteristicAutofillResult = {
+  characteristics: { id: string; value: string; rangeOption: string; confidence: number; evidence: string }[];
+  optionProbabilities: Record<string, Record<string, number>>;
+  model: string;
+  durationMs: number;
+  usage: { input_tokens: number; output_tokens: number };
 };
 
 export type KtruSpecializationOption = { value: string; code: string; name: string };

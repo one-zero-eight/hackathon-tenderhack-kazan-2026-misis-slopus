@@ -1,6 +1,9 @@
 import { Meta, Title } from "@solidjs/meta";
 import { A } from "@solidjs/router";
+import * as Tooltip from "@kobalte/core/tooltip";
 import CircleAlert from "lucide-solid/icons/circle-alert";
+import Check from "lucide-solid/icons/check";
+import LoaderCircle from "lucide-solid/icons/loader-circle";
 import FileText from "lucide-solid/icons/file-text";
 import ImagePlus from "lucide-solid/icons/image-plus";
 import Lightbulb from "lucide-solid/icons/lightbulb";
@@ -10,12 +13,14 @@ import RotateCcw from "lucide-solid/icons/rotate-ccw";
 import Sparkles from "lucide-solid/icons/sparkles";
 import Tags from "lucide-solid/icons/tags";
 import X from "lucide-solid/icons/x";
-import { batch, createEffect, createMemo, createSignal, For, Index, on, onCleanup, Show } from "solid-js";
+import { batch, createEffect, createMemo, createSignal, For, Index, on, onCleanup, onMount, Show } from "solid-js";
 import { directoryHref, ProductCard } from "~/components/catalog";
 import { CategoryPairs } from "~/components/category-pairs";
 import { KtruPickerActions, KtruPickerBody } from "~/components/ktru-picker";
 import { SpgzPickerActions, SpgzPickerBody } from "~/components/spgz-picker";
+import { apiAutofillCharacteristics } from "~/lib/api";
 import {
+  characteristicRangeProblem,
   isRangeCharacteristic,
   isYesNoOptions,
   matchCharacteristicOption,
@@ -26,14 +31,22 @@ import {
 } from "~/lib/characteristic-options";
 import { getCatalogSpecialization, getDirectoryNode, getDirectoryRecord, getDirectoryRevealPath, getKtruNode, getKtruRecord, getKtruRevealPath, suggestFromNeighbors } from "~/lib/rpc";
 import {
+  autofillConfidencePresentation,
   buildDisplayCharacteristics,
   characteristicSourceLabel,
   mapValueToOptions,
+  mapOptionProbabilities,
+  retainTemplateCharacteristics,
 } from "~/lib/merge-characteristics";
 import {
+  autofilledCharacteristicValues,
   brand,
   catalogSpecialization,
+  initialTemplateKtruCode,
+  setInitialTemplateKtruCode,
+  characteristicEditKey,
   characteristics,
+  preserveManualCharacteristics,
   charStandards,
   clearCharMeta,
   clearPhotos,
@@ -46,7 +59,10 @@ import {
   ktruPickerPath,
   ktruPickerSelected,
   ktruVote,
+  lastAutofillKey,
   lastSuggestQuery,
+  manuallyEditedCharacteristics,
+  manuallyEditedCharacteristicValues,
   model,
   name,
   nextRefineSeq,
@@ -67,6 +83,7 @@ import {
   setKtruPickerPath,
   setKtruPickerSelected,
   setKtruVote,
+  setLastAutofillKey,
   setLastSuggestQuery,
   setModel,
   setName,
@@ -191,6 +208,41 @@ type RefinedPositionRef = {
   kindLabel: string;
 };
 
+function AutofillConfidence(props: { item: DraftCharacteristic; inSelect?: boolean }) {
+  const score = () => props.item.autofill;
+  const presentation = () => autofillConfidencePresentation(score()!.confidence);
+  return <Show when={score() && props.item.value.trim()}>
+    <Tooltip.Root placement="top" openDelay={200} closeDelay={100} gutter={8}>
+      <Tooltip.Trigger
+        as="span"
+        class={`create-char-confidence ${presentation().level}`}
+        tabindex={props.inSelect ? -1 : 0}
+        aria-label={`Уверенность автозаполнения: ${presentation().percent}%`}
+      >
+        {presentation().percent}%
+      </Tooltip.Trigger>
+      <Tooltip.Portal>
+        <Tooltip.Content class="create-char-confidence-tooltip">
+          <strong>{presentation().label} · {presentation().percent}%</strong>
+          <p>Так модель оценивает выбранное значение по описанию товара. Это не гарантия правильности.</p>
+          <Tooltip.Arrow />
+        </Tooltip.Content>
+      </Tooltip.Portal>
+    </Tooltip.Root>
+  </Show>;
+}
+
+function OptionProbability(props: { item: DraftCharacteristic; option: string }) {
+  const probability = () => props.item.optionProbabilities?.text === description().trim()
+    ? props.item.optionProbabilities.values[props.option] : undefined;
+  const presentation = () => autofillConfidencePresentation(probability()!);
+  return <Show when={probability() !== undefined}>
+    <span class={`create-char-option-probability ${presentation().level}`} aria-label={`Оценка модели для варианта: ${presentation().percent}%`}>
+      {presentation().percent}%
+    </span>
+  </Show>;
+}
+
 function CreateCharRow(props: {
   item: () => DraftCharacteristic;
   choiceOptions: (item: DraftCharacteristic) => string[];
@@ -205,6 +257,7 @@ function CreateCharRow(props: {
   onPickOption: (item: DraftCharacteristic, option: string) => void;
 }) {
   const item = () => props.item();
+  const rangeProblem = createMemo(() => characteristicRangeProblem(item()));
   const refineEnabled = () => item().applyPositionRefine !== false;
   return (
             <div class="create-char-row" classList={{ "create-char-row-detached": !!item().refinesKtru && !refineEnabled() }}>
@@ -213,7 +266,7 @@ function CreateCharRow(props: {
                   <span class="dir-char-name">
                     {item().name}
                     <Show when={item().required}><span class="create-char-req" aria-label="обязательная">*</span></Show>
-                    <span class="create-char-source">{characteristicSourceLabel(item().source)}</span>
+                    <span class="create-char-source" title={item().templateKtruCode ? `Шаблон КТРУ ${item().templateKtruCode}` : undefined}>{characteristicSourceLabel(item().source, item().templateKtruCode)}</span>
                   </span>
                 }>
                   <div class="create-char-custom-name">
@@ -234,13 +287,18 @@ function CreateCharRow(props: {
                 </Show>
               </dt>
               <dd>
+                <div class="create-char-value" classList={{ "has-confidence": !!item().autofill && !!item().value.trim() }}>
                 <Show when={isRangeCharacteristic(item())} fallback={
                   <Show when={(item().options ?? []).length} fallback={
                     <TextField class="create-inline-field" value={item().value} onChange={(value) => props.onUpdate(item().id, value)}>
                       <TextFieldLabel class="sr-only">{item().name || "Значение характеристики"}</TextFieldLabel>
-                      <TextFieldInput
-                        placeholder={item().custom ? "Значение" : item().hint ? `Напр.: ${item().hint.split(" · ")[0]}` : "Укажите значение"}
-                      />
+                      <div class="create-char-text-input" classList={{ "has-confidence": !!item().autofill && !!item().value.trim() }}>
+                        <TextFieldInput
+                          style={item().autofill && item().value.trim() ? { width: `${Math.max(3, item().value.length + 1)}ch` } : undefined}
+                          placeholder={item().custom ? "Значение" : item().hint ? `Напр.: ${item().hint.split(" · ")[0]}` : "Укажите значение"}
+                        />
+                        <AutofillConfidence item={item()} />
+                      </div>
                     </TextField>
                   }>
                     <Show when={isYesNoOptions(props.choiceOptions(item()))} fallback={
@@ -250,26 +308,25 @@ function CreateCharRow(props: {
                           options={props.choiceOptions(item())}
                           value={item().value || null}
                           onChange={(value) => {
-                            if (!item().required && value == null) {
-                              props.onUpdate(item().id, "");
-                              return;
-                            }
-                            if (value && value === item().value) {
-                              if (!item().required) props.onUpdate(item().id, "");
-                              return;
-                            }
+                            if (item().required && !item().refinesKtru && value == null) return;
                             props.onUpdate(item().id, value ?? "");
                           }}
                           placeholder="Выберите значение"
-                          disallowEmptySelection={item().required}
-                          selectionBehavior={item().required ? "replace" : "toggle"}
-                          itemComponent={(selectProps) => <SelectItem item={selectProps.item}>{props.optionLabel(item(), selectProps.item.rawValue)}</SelectItem>}
+                          disallowEmptySelection={item().required && !item().refinesKtru}
+                          selectionBehavior={item().required && !item().refinesKtru ? "replace" : "toggle"}
+                          itemComponent={(selectProps) => <SelectItem class="create-char-option-item" item={selectProps.item}>
+                            <span class="create-char-option-label">{props.optionLabel(item(), selectProps.item.rawValue)}</span>
+                            <OptionProbability item={item()} option={selectProps.item.rawValue} />
+                          </SelectItem>}
                         >
                           <SelectTrigger class="create-char-select-trigger" aria-label={item().name}>
-                            <SelectValue<string>>{(state) => {
-                              const selected = state.selectedOption();
-                              return selected ? props.optionLabel(item(), selected) : "Выберите значение";
-                            }}</SelectValue>
+                            <span class="create-char-selection">
+                              <SelectValue<string>>{(state) => {
+                                const selected = state.selectedOption();
+                                return selected ? props.optionLabel(item(), selected) : "Выберите значение";
+                              }}</SelectValue>
+                              <AutofillConfidence item={item()} inSelect />
+                            </span>
                           </SelectTrigger>
                           <SelectContent />
                         </Select>
@@ -282,13 +339,19 @@ function CreateCharRow(props: {
                           onChange={(values) => { props.onUpdate(item().id, values.join(" · ")); }}
                           placeholder="Выберите значения"
                           disallowEmptySelection={item().required}
-                          itemComponent={(selectProps) => <SelectItem item={selectProps.item}>{props.optionLabel(item(), selectProps.item.rawValue)}</SelectItem>}
+                          itemComponent={(selectProps) => <SelectItem class="create-char-option-item" item={selectProps.item}>
+                            <span class="create-char-option-label">{props.optionLabel(item(), selectProps.item.rawValue)}</span>
+                            <OptionProbability item={item()} option={selectProps.item.rawValue} />
+                          </SelectItem>}
                         >
                           <SelectTrigger class="create-char-select-trigger" aria-label={item().name}>
-                            <SelectValue<string>>{(state) => {
-                              const selected = state.selectedOptions();
-                              return selected.length ? selected.map((value) => props.optionLabel(item(), value)).join(" · ") : "Выберите значения";
-                            }}</SelectValue>
+                            <span class="create-char-selection">
+                              <SelectValue<string>>{(state) => {
+                                const selected = state.selectedOptions();
+                                return selected.length ? selected.map((value) => props.optionLabel(item(), value)).join(" · ") : "Выберите значения";
+                              }}</SelectValue>
+                              <AutofillConfidence item={item()} inSelect />
+                            </span>
                           </SelectTrigger>
                           <SelectContent />
                         </Select>
@@ -309,22 +372,44 @@ function CreateCharRow(props: {
                             {props.optionLabel(item(), option)}
                           </button>
                         }</For>
+                        <AutofillConfidence item={item()} />
                       </div>
                     </Show>
                   </Show>
                 }>
                   <div class="create-char-quantity">
-                    <label class="create-char-quantity-input">
+                    <div class="create-char-number" classList={{ "has-confidence": !!item().autofill && !!item().value.trim() }}>
+                    <div
+                      class="create-char-quantity-input"
+                      onClick={(event) => event.currentTarget.querySelector("input")?.focus()}
+                    >
                       <span class="sr-only">{item().name}</span>
-                      <input
-                        type="text"
-                        inputmode="decimal"
-                        value={item().value}
-                        placeholder="Число"
-                        onInput={(event) => props.onUpdate(item().id, event.currentTarget.value)}
-                      />
+                      <Tooltip.Root placement="top" openDelay={200} closeDelay={100} gutter={8} disabled={!rangeProblem()}>
+                        <Tooltip.Trigger as="span" class="create-char-range-trigger" tabindex={-1}>
+                          <input
+                            type="text"
+                            inputmode="decimal"
+                            classList={{ "create-char-range-problem": !!rangeProblem() }}
+                            aria-label={[item().name, item().unit].filter(Boolean).join(", ")}
+                            aria-invalid={rangeProblem() ? "true" : undefined}
+                            style={{ width: `${item().value ? Math.max(3, item().value.length) : 7}ch` }}
+                            value={item().value}
+                            placeholder="Число"
+                            onInput={(event) => props.onUpdate(item().id, event.currentTarget.value)}
+                          />
+                        </Tooltip.Trigger>
+                        <Tooltip.Portal>
+                          <Tooltip.Content class="create-char-confidence-tooltip">
+                            <strong>Проверьте значение</strong>
+                            <p>{rangeProblem()}</p>
+                            <Tooltip.Arrow />
+                          </Tooltip.Content>
+                        </Tooltip.Portal>
+                      </Tooltip.Root>
                       <Show when={item().unit}><span class="create-char-unit">{item().unit}</span></Show>
-                    </label>
+                      <AutofillConfidence item={item()} />
+                    </div>
+                    </div>
                     <Select<string>
                       class="create-char-select create-char-range-select"
                       options={item().options}
@@ -334,16 +419,14 @@ function CreateCharRow(props: {
                           props.onUpdateRange(item().id, "");
                           return;
                         }
-                        if (!item().required && value && value === item().rangeOption) {
-                          props.onUpdateRange(item().id, "");
-                          return;
-                        }
                         props.onUpdateRange(item().id, value ?? "");
                       }}
                       placeholder="Категория КТРУ"
                       disallowEmptySelection={item().required}
                       selectionBehavior={item().required ? "replace" : "toggle"}
-                      itemComponent={(selectProps) => <SelectItem item={selectProps.item}>{props.optionLabel(item(), selectProps.item.rawValue)}</SelectItem>}
+                      itemComponent={(selectProps) => <SelectItem class="create-char-option-item" item={selectProps.item}>
+                        <span class="create-char-option-label">{props.optionLabel(item(), selectProps.item.rawValue)}</span>
+                      </SelectItem>}
                     >
                       <SelectTrigger class="create-char-select-trigger" aria-label={`${item().name}: категория КТРУ`}>
                         <SelectValue<string>>{(state) => props.optionLabel(item(), state.selectedOption())}</SelectValue>
@@ -352,11 +435,28 @@ function CreateCharRow(props: {
                     </Select>
                   </div>
                 </Show>
+                </div>
                 <Show when={item().refinesKtru && props.onTogglePositionRefine} fallback={
-                  <Show when={item().hint}><p class="create-char-hint">{item().hint}</p></Show>
+                  <Show when={item().hint}>
+                    <p class="create-char-hint">
+                      <Show when={/^ГОСТ(?:\s|$)/i.test(item().hint)} fallback={item().hint}>
+                        <a href={`https://yandex.ru/search/?text=${encodeURIComponent(item().hint)}`} target="_blank" rel="noopener noreferrer" title="Найти ГОСТ в Яндексе">
+                          {item().hint}
+                        </a>
+                      </Show>
+                    </p>
+                  </Show>
                 }>
                   <div class="create-char-hint-row" classList={{ detached: !refineEnabled() }}>
-                    <Show when={item().hint}><p class="create-char-hint">{item().hint}</p></Show>
+                    <Show when={item().hint}>
+                      <p class="create-char-hint">
+                        <Show when={/^ГОСТ(?:\s|$)/i.test(item().hint)} fallback={item().hint}>
+                          <a href={`https://yandex.ru/search/?text=${encodeURIComponent(item().hint)}`} target="_blank" rel="noopener noreferrer" title="Найти ГОСТ в Яндексе">
+                            {item().hint}
+                          </a>
+                        </Show>
+                      </p>
+                    </Show>
                     <label class="create-char-refine-toggle">
                       <input
                         type="checkbox"
@@ -370,10 +470,12 @@ function CreateCharRow(props: {
                     <div class="create-char-refine-bar" classList={{ detached: !refineEnabled() }}>
                       <div class="create-char-ktru-ref">
                         <For each={props.refinedRefs}>{ref =>
-                          <A class="create-char-ktru-ref-link" href={directoryHref(ref.tab, ref.code)} title={`Открыть ${ref.kindLabel} в справочнике`}>
-                            <span class="create-char-ktru-ref-code">{ref.kindLabel} {ref.code}</span>
+                          <div class="create-char-ktru-ref-row">
+                            <A class="create-char-ktru-ref-link" href={directoryHref(ref.tab, ref.code)} title={`Открыть ${ref.kindLabel} в справочнике`}>
+                              <span class="create-char-ktru-ref-code">{ref.kindLabel} {ref.code}</span>
+                            </A>
                             <Show when={ref.name}><span class="create-char-ktru-ref-name">{ref.name}</span></Show>
-                          </A>
+                          </div>
                         }</For>
                       </div>
                     </div>
@@ -386,8 +488,8 @@ function CreateCharRow(props: {
 
 function CategorySuggestSkeleton() {
   return (
-    <div class="create-suggest-status" role="status" aria-live="polite" aria-label="Ищем ближайшие товары и голосуем за категории">
-      <p class="create-live-hint create-live-hint-pulse">Ищем ближайшие товары и голосуем за категории…</p>
+    <div class="create-suggest-status" role="status" aria-live="polite" aria-label="Ищем подходящую категорию">
+      <p class="create-live-hint create-live-hint-pulse">Ищем подходящую категорию</p>
       <div class="create-vote-card create-vote-card-skeleton" aria-hidden="true">
         <For each={["ОКПД2 и КТРУ", "КПГЗ и СПГЗ"]}>{title =>
           <div class="create-vote-group create-vote-group-skeleton">
@@ -427,6 +529,91 @@ export default function NewProduct() {
   const [ktruPickerOpen, setKtruPickerOpen] = createSignal(false);
   const [spgzPickerOpen, setSpgzPickerOpen] = createSignal(false);
   const [photoDragging, setPhotoDragging] = createSignal(false);
+  const [autofilling, setAutofilling] = createSignal(false);
+  const [autofillError, setAutofillError] = createSignal("");
+  const [autofillDurationMs, setAutofillDurationMs] = createSignal<number | null>(null);
+  const [autofillRequestedText, setAutofillRequestedText] = createSignal<string | null>(null);
+  const [autofillCompletedText, setAutofillCompletedText] = createSignal<string | null>(null);
+  const autofillBusy = () => autofilling() || autofillRequestedText() !== null;
+  const autofillCompleted = () => autofillCompletedText() === description().trim();
+  let categorySection: HTMLDivElement | undefined;
+  let characteristicsSection: HTMLElement | undefined;
+  let descriptionSection: HTMLElement | undefined;
+  const [categoriesNearCharacteristics, setCategoriesNearCharacteristics] = createSignal(false);
+  const categorySwapAnimations = new Map<HTMLElement, Animation>();
+  const moveCategories = (nearCharacteristics: boolean) => {
+    if (categoriesNearCharacteristics() === nearCharacteristics) return;
+    const blocks = Array.from(categorySection?.parentElement?.children ?? []) as HTMLElement[];
+    const previousTops = blocks.map((block) => block.getBoundingClientRect().top);
+    for (const animation of categorySwapAnimations.values()) animation.cancel();
+    categorySwapAnimations.clear();
+    setCategoriesNearCharacteristics(nearCharacteristics);
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    blocks.forEach((block, index) => {
+      const distance = previousTops[index] - block.getBoundingClientRect().top;
+      if (Math.abs(distance) < 1) return;
+      const animation = block.animate([
+        { transform: `translateY(${distance}px)` },
+        { transform: "translateY(0)" },
+      ], { duration: 520, easing: "cubic-bezier(0.4, 0, 0.2, 1)" });
+      categorySwapAnimations.set(block, animation);
+      animation.onfinish = () => categorySwapAnimations.delete(block);
+    });
+  };
+  onCleanup(() => {
+    for (const animation of categorySwapAnimations.values()) animation.cancel();
+    categorySwapAnimations.clear();
+  });
+  onMount(() => {
+    const content = descriptionSection!.closest<HTMLElement>(".app-content")!;
+    let previousScrollTop = content.scrollTop;
+    let frame: number | undefined;
+    const updateOrder = () => {
+      frame = undefined;
+      const scrollingUp = content.scrollTop < previousScrollTop;
+      previousScrollTop = content.scrollTop;
+      const viewport = content.getBoundingClientRect();
+      const descriptionBottom = descriptionSection!.getBoundingClientRect().bottom;
+      const characteristicsTop = characteristicsSection?.getBoundingClientRect().top;
+      if (content.scrollTop === 0 || (scrollingUp && descriptionBottom > viewport.top + 100)) {
+        moveCategories(false);
+      } else if (characteristicsTop !== undefined && descriptionBottom <= viewport.top
+        && characteristicsTop <= viewport.top + content.clientHeight * 0.85) {
+        moveCategories(true);
+      }
+    };
+    const scheduleUpdate = () => {
+      if (frame === undefined) frame = requestAnimationFrame(updateOrder);
+    };
+    content.addEventListener("scroll", scheduleUpdate, { passive: true });
+    const observer = new ResizeObserver(scheduleUpdate);
+    observer.observe(content);
+    observer.observe(descriptionSection!.closest("main")!);
+    scheduleUpdate();
+    onCleanup(() => {
+      content.removeEventListener("scroll", scheduleUpdate);
+      observer.disconnect();
+      if (frame !== undefined) cancelAnimationFrame(frame);
+    });
+  });
+  const [refinedCategories, setRefinedCategories] = createSignal({ ktru: false, spgz: false });
+  const [categoriesBeforeAutofill, setCategoriesBeforeAutofill] = createSignal<{ ktru: VotedCode | null; spgz: VotedCode | null }>({ ktru: null, spgz: null });
+  const clearCategoryHighlight = () => {
+    setRefinedCategories({ ktru: false, spgz: false });
+  };
+  const scrollToResult = (section: HTMLElement) => {
+    const content = section.closest<HTMLElement>(".app-content")!;
+    const offset = parseFloat(window.getComputedStyle(content).scrollPaddingTop);
+    const translation = new DOMMatrixReadOnly(window.getComputedStyle(section).transform).m42;
+    content.scrollTo({
+      top: content.scrollTop + section.getBoundingClientRect().top - translation - content.getBoundingClientRect().top - offset,
+      behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth",
+    });
+  };
+  createEffect(on(description, clearCategoryHighlight, { defer: true }));
+  onCleanup(clearCategoryHighlight);
+  let autofillController: AbortController | undefined;
+  let catalogPositionsSeq = 0;
   const [spellErrors, setSpellErrors] = createSignal<SpellerError[]>([]);
   const [spellTip, setSpellTip] = createSignal<{ index: number; left: number; top: number } | null>(null);
   let photoInput: HTMLInputElement | undefined;
@@ -570,6 +757,8 @@ export default function NewProduct() {
           unit: item.unit || "",
           multiple: !!item.multiple,
           source: "ktru" as const,
+          autofill: prior?.value.trim() ? prior.autofill : undefined,
+          optionProbabilities: mapOptionProbabilities(prior?.optionProbabilities, options),
         };
       }
       return {
@@ -589,6 +778,8 @@ export default function NewProduct() {
         unit: item.unit || "",
         multiple: !!item.multiple,
         source: "ktru" as const,
+        autofill: prior?.value.trim() ? prior.autofill : undefined,
+        optionProbabilities: mapOptionProbabilities(prior?.optionProbabilities, options),
       };
     });
   };
@@ -606,13 +797,14 @@ export default function NewProduct() {
     return (record.characteristics ?? []).map((item) => {
       const draft = draftFromSpgzCharacteristic(item);
       const prior = keepPrevious ? previousByName.get(normCharName(draft.name)) : undefined;
-      if (prior?.value.trim()) {
-        return {
-          ...draft,
-          value: draft.options.length ? mapValueToOptions(prior.value, draft.options) || prior.value : prior.value,
-        };
-      }
-      return draft;
+      return {
+        ...draft,
+        value: prior?.value.trim()
+          ? draft.options.length ? mapValueToOptions(prior.value, draft.options) || prior.value : prior.value
+          : draft.value,
+        autofill: prior?.value.trim() ? prior.autofill : undefined,
+        optionProbabilities: mapOptionProbabilities(prior?.optionProbabilities, draft.options),
+      };
     });
   };
 
@@ -628,6 +820,8 @@ export default function NewProduct() {
     /** Reuse already-loaded specialization (refine path) — skips a heavy RPC. */
     reuseSpecialization?: boolean;
   }) => {
+    clearCategoryHighlight();
+    const seq = ++catalogPositionsSeq;
     const text = description();
     const keepPrevious = input.discriminatorValue !== undefined;
     const previous = characteristics();
@@ -651,9 +845,24 @@ export default function NewProduct() {
         }),
     ]);
 
-    const ktruFields = (wantKtru && ktruRecord && ktruNode?.kind === "ktru")
+    if (seq !== catalogPositionsSeq || text !== description()) return;
+
+    const templateCode = spec?.templateKtruCode;
+    const templateRecord = wantKtru && ktruRecord && templateCode && templateCode !== input.ktruCode
+      ? await getKtruRecord(templateCode)
+      : null;
+    if (seq !== catalogPositionsSeq || text !== description()) return;
+
+    let ktruFields = (wantKtru && ktruRecord && ktruNode?.kind === "ktru")
       ? buildKtruDraftFields(ktruRecord, previous, keepPrevious)
       : previous.filter((item) => item.source === "ktru");
+    if (templateRecord && templateCode) {
+      ktruFields = retainTemplateCharacteristics(
+        ktruFields,
+        preserveManualCharacteristics(buildKtruDraftFields(templateRecord, previous, keepPrevious), previous),
+        templateCode,
+      );
+    }
     const spgzFields = (wantSpgz && spgzRecord && spgzNode?.kind === "spgz")
       ? buildSpgzDraftFields(spgzRecord, previous, keepPrevious)
       : keepSpgzRows
@@ -669,10 +878,12 @@ export default function NewProduct() {
       nextChars = nextChars.map((item) => item.refinesKtru ? { ...item, applyPositionRefine: false } : item);
     }
 
+    nextChars = preserveManualCharacteristics(nextChars, characteristics());
     const kpgzLink = spgzRecord?.links.find((link) => link.tab === "kpgz");
 
     batch(() => {
       if (wantKtru && ktruNode?.kind === "ktru" && ktruRecord) {
+        if (!keepPrevious) setInitialTemplateKtruCode(ktruNode.isTemplate ? ktruNode.code : null);
         setSelected(ktruNode);
         setKtruVote({
           code: ktruNode.code,
@@ -741,7 +952,7 @@ export default function NewProduct() {
       return;
     }
     const seq = nextRefineSeq();
-    void applyCatalogPositions({
+    return applyCatalogPositions({
       ktruCode: !ktruLocked() && nextKtru && !ktruSame ? nextKtru : (ktruVote()?.code ?? null),
       spgzCode: !spgzLocked() && nextSpgz && !spgzSame ? nextSpgz : undefined,
       clearSpgz: !spgzLocked() && !nextSpgz && !!spgz(),
@@ -814,7 +1025,42 @@ export default function NewProduct() {
     else void applySpgz(node.code, true);
   };
 
+  const clearAutofill = () => {
+    clearCategoryHighlight();
+    autofillController?.abort();
+    setAutofillRequestedText(null);
+    setAutofilling(false);
+    catalogPositionsSeq++;
+    manuallyEditedCharacteristics.clear();
+    manuallyEditedCharacteristicValues.clear();
+    autofilledCharacteristicValues.clear();
+    setLastAutofillKey("");
+    setAutofillError("");
+    setAutofillDurationMs(null);
+    setAutofillCompletedText(null);
+  };
+
+  const resetCharacteristics = async () => {
+    const templateCode = initialTemplateKtruCode();
+    batch(() => {
+      clearAutofill();
+      nextRefineSeq();
+      setCharacteristics((items) => items
+        .filter((item) => !item.templateKtruCode)
+        .map((item) => ({ ...item, value: "", rangeOption: "", autofill: undefined, optionProbabilities: undefined })));
+    });
+    if (templateCode && ktruVote()?.code !== templateCode) {
+      await applyCatalogPositions({
+        ktruCode: templateCode,
+        discriminatorValue: null,
+        clearSpgz: !spgzLocked(),
+        reuseSpecialization: true,
+      });
+    }
+  };
+
   const fillExample = () => {
+    clearAutofill();
     batch(() => {
       setName("");
       setSku("");
@@ -839,6 +1085,7 @@ export default function NewProduct() {
   };
 
   const reset = () => {
+    clearAutofill();
     batch(() => {
       setName(""); setSku(""); setModel(""); setBrand(""); setDescription("");
       setSelected(null); setOkpd2(null); setKpgz(null); setSpgz(null); setKtruVote(null);
@@ -964,10 +1211,13 @@ export default function NewProduct() {
       setSuggesting(false);
       return;
     }
-    setSuggesting(true);
+    const started = performance.now();
+    batch(() => {
+      setSuggestDurationMs(null);
+      setSuggesting(true);
+    });
     let alive = true;
     const timer = setTimeout(() => {
-      const started = performance.now();
       void suggestFromNeighbors(query).then(async (draft) => {
         if (!alive) return;
         try {
@@ -980,10 +1230,18 @@ export default function NewProduct() {
             })
             : null;
           if (!alive) return;
-          setLastSuggestQuery(query);
-          setSuggestDurationMs(Math.round(performance.now() - started));
-
-          const draftKtru = draft.characteristics.filter((item) => item.source === "ktru");
+          let draftKtru = draft.characteristics.filter((item) => item.source === "ktru");
+          if (!ktruLocked() && draft.ktru && spec?.templateKtruCode && spec.templateKtruCode !== draft.ktru.code) {
+            const template = await getKtruRecord(spec.templateKtruCode);
+            if (!alive) return;
+            if (template) {
+              draftKtru = retainTemplateCharacteristics(
+                draftKtru,
+                preserveManualCharacteristics(buildKtruDraftFields(template, characteristics(), false), characteristics()),
+                spec.templateKtruCode,
+              );
+            }
+          }
           const draftSpgz = draft.characteristics.filter((item) => item.source === "spgz");
           const customKeep = characteristics().filter((item) => item.source === "custom" || item.custom);
           let nextChars: DraftCharacteristic[];
@@ -991,7 +1249,7 @@ export default function NewProduct() {
           else if (!ktruLocked()) nextChars = [...draftKtru, ...characteristics().filter((item) => item.source !== "ktru")];
           else if (!spgzLocked()) nextChars = [...characteristics().filter((item) => item.source !== "spgz"), ...draftSpgz];
           else nextChars = characteristics();
-          nextChars = withCatalogSpecialization(nextChars, spec);
+          nextChars = preserveManualCharacteristics(withCatalogSpecialization(nextChars, spec), characteristics());
 
           const refineItem = nextChars.find((item) =>
             item.refinesKtru && item.applyPositionRefine !== false && item.value.trim());
@@ -1006,11 +1264,16 @@ export default function NewProduct() {
             ? refineMatch.spgzCode
             : (!spgzLocked() ? draft.spgz?.code : null);
 
+          const draftNode = !ktruLocked() && !refineMatch && draft.ktru
+            ? await getKtruNode(draft.ktru.code)
+            : null;
+          if (!alive) return;
+
           batch(() => {
             setSimilar(draft.neighbors);
-            setSuggesting(false);
             setCatalogSpecialization(spec);
             if (!ktruLocked()) {
+              setInitialTemplateKtruCode(draft.ktru?.isTemplate ? draft.ktru.code : null);
               setOkpd2(draft.okpd2);
               setCharStandards(draft.standards);
               setNoNewFeatures(draft.noNewFeatures);
@@ -1025,11 +1288,10 @@ export default function NewProduct() {
             if (!ktruLocked() && !refineMatch) {
               setKtruVote(draft.ktru);
               if (draft.ktru) {
-                void getKtruNode(draft.ktru.code).then((node) => {
-                  if (!alive || ktruLocked() || !node) return;
-                  setSelected(node);
-                  setGeneratedFor(`${node.code}\u0000${query}`);
-                });
+                if (draftNode) {
+                  setSelected(draftNode);
+                  setGeneratedFor(`${draftNode.code}\u0000${query}`);
+                }
               } else {
                 setSelected(null);
                 setGeneratedFor(`\u0000${query}`);
@@ -1038,6 +1300,9 @@ export default function NewProduct() {
           });
 
           if (refineMatch) {
+            // Retain current values while the refined schema is loaded; manual
+            // edits must survive the intermediate template-only schema.
+            setCharacteristics(nextChars);
             await applyCatalogPositions({
               ktruCode: resolvedKtruCode && !ktruLocked() ? resolvedKtruCode : null,
               spgzCode: resolvedSpgzCode && !spgzLocked() ? resolvedSpgzCode : null,
@@ -1046,6 +1311,12 @@ export default function NewProduct() {
               reuseSpecialization: true,
             });
           }
+          if (!alive) return;
+          batch(() => {
+            setLastSuggestQuery(query);
+            setSuggestDurationMs(Math.round(performance.now() - started));
+            setSuggesting(false);
+          });
         } catch {
           if (alive) setSuggesting(false);
         }
@@ -1054,20 +1325,148 @@ export default function NewProduct() {
     onCleanup(() => { alive = false; clearTimeout(timer); });
   }));
 
+  const autofillInput = createMemo(() => JSON.stringify({
+    text: description().trim(),
+    characteristics: displayCharacteristics()
+      .filter((item) => !item.custom && item.source !== "custom")
+      .map(({ id, name, options, optionLabels, ranges, unit, numeric, multiple, hint }) =>
+        ({ id, name, options, optionLabels, ranges, unit, numeric, multiple, hint })),
+    standards: charStandards(),
+  }));
+
+  const requestAutofill = () => {
+    const text = description().trim();
+    if (text.length < 12 || autofilling() || autofillRequestedText() !== null) return;
+    clearCategoryHighlight();
+    setCategoriesBeforeAutofill({ ktru: ktruVote(), spgz: spgz() });
+    batch(() => {
+      setLastAutofillKey("");
+      setAutofillError("");
+      setAutofillCompletedText(null);
+      setAutofillRequestedText(text);
+    });
+  };
+
+  createEffect(on([autofillInput, suggesting, autofillRequestedText], ([key, categoryLoading, requestedText]) => {
+    setAutofilling(false);
+    const input = JSON.parse(key) as Parameters<typeof apiAutofillCharacteristics>[0];
+    if (requestedText === null) return;
+    if (requestedText !== input.text || input.text.length < 12) {
+      setAutofillRequestedText(null);
+      return;
+    }
+    if (categoryLoading) return;
+    if (!input.characteristics.length || key === lastAutofillKey()) {
+      setAutofillRequestedText(null);
+      return;
+    }
+    const snapshot = new Map(characteristics().map((item) => [item.id, item]));
+    const rows = displayCharacteristics();
+    const ctrl = new AbortController();
+    autofillController = ctrl;
+    let alive = true;
+    setAutofilling(true);
+    setAutofillDurationMs(null);
+    const timer = setTimeout(() => {
+      void apiAutofillCharacteristics(input, ctrl.signal).then(async (result) => {
+        if (!alive || autofillInput() !== key) return;
+        const byId = new Map(result.characteristics.map((item) => [item.id, item]));
+        const updates = new Map<string, { value: string; rangeOption: string; autofill: DraftCharacteristic["autofill"] }>();
+        for (const row of rows) {
+          const answer = byId.get(row.id);
+          for (const id of row.linkedIds) {
+            const prior = snapshot.get(id);
+            const current = characteristics().find((item) => item.id === id);
+            if (!prior || !current || manuallyEditedCharacteristics.has(characteristicEditKey(current))) continue;
+            if (current.value !== prior.value || current.rangeOption !== prior.rangeOption) continue;
+            const previousAuto = autofilledCharacteristicValues.get(characteristicEditKey(current));
+            const isEmpty = !current.value.trim() && !current.rangeOption.trim();
+            const isPreviousAuto = previousAuto?.value === current.value && previousAuto?.rangeOption === current.rangeOption;
+            if (!isEmpty && !isPreviousAuto) continue;
+            const value = answer?.value ?? "";
+            const rangeOption = isRangeCharacteristic(current)
+              ? (value ? matchNumberToRange(Number(value), current.ranges) ?? "" : "")
+              : "";
+            updates.set(id, {
+              value, rangeOption,
+              autofill: answer && value.trim() ? { confidence: answer.confidence, model: result.model } : undefined,
+            });
+            autofilledCharacteristicValues.set(characteristicEditKey(current), { value, rangeOption });
+          }
+        }
+        setLastAutofillKey(key);
+        const probabilitiesById = new Map<string, DraftCharacteristic["optionProbabilities"]>();
+        for (const row of rows) {
+          const values = result.optionProbabilities[row.id];
+          if (!values) continue;
+          for (const id of row.linkedIds) {
+            const current = characteristics().find((item) => item.id === id);
+            if (current) probabilitiesById.set(id, mapOptionProbabilities({ text: input.text, values }, current.options));
+          }
+        }
+        setCharacteristics((items) => items.map((item) => {
+          const update = updates.get(item.id);
+          return { ...item, ...update, optionProbabilities: probabilitiesById.get(item.id) };
+        }).filter((item) => !item.templateKtruCode || item.value.trim() || item.rangeOption.trim()));
+        setAutofillDurationMs(result.durationMs);
+        setAutofilling(false);
+        const discriminator = characteristics().find((item) =>
+          updates.has(item.id) && item.refinesKtru && item.applyPositionRefine !== false && item.value.trim());
+        if (discriminator) await refineFromDiscriminator(discriminator.value);
+        if (alive && autofillInput() === key) {
+          batch(() => {
+            setAutofillCompletedText(input.text);
+            setAutofillRequestedText(null);
+          });
+          const changed = {
+            ktru: !!ktruVote()?.code && ktruVote()!.code !== categoriesBeforeAutofill().ktru?.code,
+            spgz: !!spgz()?.code && spgz()!.code !== categoriesBeforeAutofill().spgz?.code,
+          };
+          setRefinedCategories(changed);
+          requestAnimationFrame(() => {
+            if (!autofillCompleted() || autofillBusy() || !categorySection?.isConnected) return;
+            moveCategories(true);
+            scrollToResult(categorySection);
+          });
+        }
+      }).catch((error: unknown) => {
+        if (!alive || ctrl.signal.aborted) return;
+        setAutofilling(false);
+        setAutofillRequestedText(null);
+        setAutofillError(error instanceof Error ? error.message : "Не удалось заполнить характеристики");
+      });
+    }, 350);
+    onCleanup(() => { alive = false; clearTimeout(timer); ctrl.abort(); });
+  }));
+
+  const markCharacteristicEdited = (ids: Set<string>) => {
+    for (const item of characteristics()) {
+      if (ids.has(item.id)) {
+        manuallyEditedCharacteristics.add(characteristicEditKey(item));
+        manuallyEditedCharacteristicValues.set(characteristicEditKey(item), { ...item });
+      }
+    }
+  };
+
   const updateCharacteristic = (id: string, value: string) => {
     const ids = new Set(linkedIdsFor(id));
     const target = characteristics().find((item) => ids.has(item.id));
     const next = target?.options.length ? mapValueToOptions(value, target.options) : value;
+    if (!target || target.value === next) return;
+    markCharacteristicEdited(ids);
     setCharacteristics((items) => items.map((item) => {
       if (!ids.has(item.id)) return item;
-      if (!isRangeCharacteristic(item)) return { ...item, value: next };
+      if (!isRangeCharacteristic(item)) return { ...item, value: next, autofill: undefined };
       const number = parseCharacteristicNumber(next);
       return {
         ...item,
         value: next,
-        rangeOption: number == null ? "" : (matchNumberToRange(number, item.ranges) ?? mapValueToOptions(next, item.options)),
+        autofill: undefined,
+        rangeOption: number == null ? "" : (matchNumberToRange(number, item.ranges) ?? ""),
       };
     }));
+    markCharacteristicEdited(ids);
+    setCharacteristics((items) => items.filter((item) => !item.templateKtruCode || item.value.trim() || item.rangeOption.trim()));
     if (target?.refinesKtru && target.applyPositionRefine !== false) {
       refineFromDiscriminator(next);
     }
@@ -1106,10 +1505,15 @@ export default function NewProduct() {
 
   const updateCharacteristicRange = (id: string, rangeOption: string) => {
     const ids = new Set(linkedIdsFor(id));
+    const target = characteristics().find((item) => ids.has(item.id));
+    if (!target || target.rangeOption === rangeOption) return;
+    markCharacteristicEdited(ids);
     setCharacteristics((items) => items.map((item) => {
       if (!ids.has(item.id)) return item;
-      return { ...item, rangeOption: mapValueToOptions(rangeOption, item.options) || rangeOption };
+      return { ...item, rangeOption: mapValueToOptions(rangeOption, item.options) || rangeOption, autofill: undefined };
     }));
+    markCharacteristicEdited(ids);
+    setCharacteristics((items) => items.filter((item) => !item.templateKtruCode || item.value.trim() || item.rangeOption.trim()));
   };
 
   const removeCharacteristic = (id: string) => {
@@ -1166,15 +1570,17 @@ export default function NewProduct() {
     <section class="create-hero">
       <div class="create-hero-row">
         <h1>Сначала<br />опишите <em>товар</em><span class="hero-asterisk" aria-hidden="true"><Sparkles strokeWidth={1.1} /></span></h1>
-        <div class="create-top-actions">
-          <Button variant="outline" size="sm" type="button" onClick={fillExample}><Lightbulb size={15} />Пример</Button>
-          <Button variant="ghost" size="sm" type="button" onClick={reset} disabled={!hasDraft()}><RotateCcw size={14} />Очистить</Button>
-        </div>
       </div>
     </section>
 
-    <section class="create-describe" aria-labelledby="describe-heading">
-      <div class="section-heading"><FileText size={20} strokeWidth={1.6} /><h2 id="describe-heading">Описание</h2></div>
+    <section ref={descriptionSection} class="create-describe" aria-labelledby="describe-heading">
+      <div class="section-heading create-describe-heading">
+        <FileText size={20} strokeWidth={1.6} /><h2 id="describe-heading">Описание</h2>
+        <div class="create-top-actions">
+          <Button variant="ghost" size="sm" type="button" onClick={reset} disabled={!hasDraft()}><RotateCcw size={14} />Очистить</Button>
+          <Button variant="secondary" size="sm" class="create-example-button" type="button" onClick={fillExample}><Lightbulb size={15} />Пример</Button>
+        </div>
+      </div>
       <TextField class="create-describe-field" name="product-description" value={description()} onChange={setDescription}>
         <TextFieldLabel class="sr-only">Описание товара</TextFieldLabel>
         <div class="create-describe-spell" ref={spellWrap}>
@@ -1232,11 +1638,40 @@ export default function NewProduct() {
         </div>
       </TextField>
       <div class="create-describe-meta"><span>Начните с типа товара, затем отличительные признаки: материал, размер, назначение. Без рекламных формулировок.</span><span>{description().length} / 3000</span></div>
+      <div class="create-describe-actions">
+        <Button
+          type="button"
+          variant="default"
+          class="create-char-autofill-button"
+          disabled={description().trim().length < 12 || (!suggesting() && !displayCharacteristics().some((item) => !item.custom && item.source !== "custom")) || autofillBusy()}
+          aria-busy={autofillBusy()}
+          onClick={requestAutofill}
+        >
+          <Show when={autofillBusy()} fallback={
+            <Show when={autofillCompleted()} fallback={<Sparkles size={16} />}><Check size={16} /></Show>
+          }><LoaderCircle size={16} class="create-autofill-spinner" /></Show>
+          {autofillBusy() ? "Подбираем характеристики…" : autofillCompleted() ? "Характеристики подобраны" : "Подобрать характеристики"}
+        </Button>
+      </div>
+      <Show when={autofillError()}>
+        <div class="create-autofill-error" role="alert">
+          <span>{autofillError()}</span>
+          <Button type="button" variant="outline" size="sm" onClick={requestAutofill}>Повторить</Button>
+        </div>
+      </Show>
     </section>
 
     <Show when={description().trim().length >= 12}>
-      <section class="create-live" aria-live="polite">
-        <div class="create-live-category">
+      <section class="create-live" classList={{ "create-live-near-characteristics": categoriesNearCharacteristics() }} aria-live="polite">
+        <div class="create-live-similar">
+          <div class="section-heading"><Sparkles size={18} strokeWidth={1.6} /><h2>Похожие товары</h2></div>
+          <Show when={!suggesting()} fallback={<SimilarSuggestSkeleton />}>
+            <Show when={similar().length} fallback={<p class="create-live-hint">Похожих товаров пока нет — уточните описание.</p>}>
+              <div class="create-similar-row"><For each={similar()}>{product => <ProductCard product={product} returnTo="/" />}</For></div>
+            </Show>
+          </Show>
+        </div>
+        <div ref={categorySection} class="create-live-category">
           <div class="section-heading">
             <Tags size={18} strokeWidth={1.6} />
             <h2>Категории</h2>
@@ -1251,17 +1686,13 @@ export default function NewProduct() {
                 ktru={ktruVote()}
                 kpgz={kpgz()}
                 spgz={spgz()}
+                highlightedKtru={refinedCategories().ktru}
+                highlightedSpgz={refinedCategories().spgz}
+                previousKtru={categoriesBeforeAutofill().ktru}
+                previousSpgz={categoriesBeforeAutofill().spgz}
                 onEditKtru={openKtruPicker}
                 onEditSpgz={openSpgzPicker}
               />
-            </Show>
-          </Show>
-        </div>
-        <div class="create-live-similar">
-          <div class="section-heading"><Sparkles size={18} strokeWidth={1.6} /><h2>Похожие товары</h2></div>
-          <Show when={!suggesting()} fallback={<SimilarSuggestSkeleton />}>
-            <Show when={similar().length} fallback={<p class="create-live-hint">Похожих товаров пока нет — уточните описание.</p>}>
-              <div class="create-similar-row"><For each={similar()}>{product => <ProductCard product={product} returnTo="/" />}</For></div>
             </Show>
           </Show>
         </div>
@@ -1269,6 +1700,63 @@ export default function NewProduct() {
     </Show>
 
     <Show when={hasDraft()}>
+      <section ref={characteristicsSection} class="characteristics-section create-characteristics" aria-labelledby="create-chars-heading">
+        <div class="section-heading create-char-heading">
+          <Tags size={21} strokeWidth={1.6} /><h2 id="create-chars-heading">Характеристики</h2>
+          <Show when={displayCharacteristics().length}><span>{filledCount()} / {displayCharacteristics().length}</span></Show>
+          <Show when={!autofillBusy() && autofillDurationMs() != null}>
+            <span>{formatSuggestTiming(autofillDurationMs()!)}</span>
+          </Show>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            class="create-char-reset-button"
+            disabled={!characteristics().some((item) => item.value.trim() || item.rangeOption.trim() || item.autofill || item.optionProbabilities) && !autofilling() && autofillRequestedText() === null}
+            onClick={resetCharacteristics}
+          >
+            <RotateCcw size={14} />Сбросить
+          </Button>
+        </div>
+        <Show when={charStandards().length}>
+          <p class="create-char-standards">{charStandards().join(", ")}</p>
+        </Show>
+        <Show when={displayCharacteristics().length} fallback={<p class="no-characteristics">Выберите КТРУ или СПГЗ — появятся поля из справочников.</p>}>
+          <dl class="characteristics-table create-char-fields dir-characteristics-table"><Index each={displayCharacteristics()}>{item =>
+            <CreateCharRow
+              item={item}
+              choiceOptions={choiceOptions}
+              optionLabel={optionLabel}
+              selectedOptions={selectedOptions}
+              refinedRefs={refinedPositionRefs(item())}
+              onUpdate={updateCharacteristic}
+              onUpdateName={updateCharacteristicName}
+              onUpdateRange={updateCharacteristicRange}
+              onTogglePositionRefine={togglePositionRefine}
+              onRemove={removeCharacteristic}
+              onPickOption={pickCharacteristicOption}
+            />
+          }</Index></dl>
+        </Show>
+        <Show when={hasKtruPosition()}>
+          <Show when={noNewFeatures()} fallback={
+            <div class="create-char-footer">
+              <button type="button" class="create-char-add" onClick={addCustomCharacteristic}>
+                <Plus size={13} strokeWidth={1.8} />Добавить характеристику
+              </button>
+            </div>
+          }>
+            <div class="create-char-alert" role="alert">
+              <CircleAlert size={18} strokeWidth={1.6} />
+              <div>
+                <p>Эта позиция КТРУ не допускает новых характеристик — доступны только поля из справочника.</p>
+                <Show when={noNewFeaturesReason()}><p class="create-char-alert-reason">{noNewFeaturesReason()}</p></Show>
+              </div>
+            </div>
+          </Show>
+        </Show>
+      </section>
+
       <section class="product-detail create-detail">
         <div class="product-gallery create-gallery">
           <input
@@ -1357,51 +1845,10 @@ export default function NewProduct() {
               <dd><TextField class="create-inline-field" name="product-model" value={model()} onChange={setModel}><TextFieldLabel class="sr-only">Модель</TextFieldLabel><TextFieldInput id="product-model" placeholder="Необязательно" maxlength={120} /></TextField></dd>
             </div>
           </dl>
-          <Show when={outdated()}><div class="create-summary-actions"><Badge variant="outline">Описание изменилось</Badge></div></Show>
           <input type="hidden" name="product-category" value={selected()?.code ?? ""} />
         </div>
       </section>
 
-      <section class="characteristics-section create-characteristics" aria-labelledby="create-chars-heading">
-        <div class="section-heading"><Tags size={21} strokeWidth={1.6} /><h2 id="create-chars-heading">Характеристики</h2><Show when={displayCharacteristics().length}><span>{filledCount()} / {displayCharacteristics().length}</span></Show></div>
-        <Show when={charStandards().length}>
-          <p class="create-char-standards">{charStandards().join(", ")}</p>
-        </Show>
-        <Show when={displayCharacteristics().length} fallback={<p class="no-characteristics">Выберите КТРУ или СПГЗ — появятся поля из справочников.</p>}>
-          <dl class="characteristics-table create-char-fields dir-characteristics-table"><Index each={displayCharacteristics()}>{item =>
-            <CreateCharRow
-              item={item}
-              choiceOptions={choiceOptions}
-              optionLabel={optionLabel}
-              selectedOptions={selectedOptions}
-              refinedRefs={refinedPositionRefs(item())}
-              onUpdate={updateCharacteristic}
-              onUpdateName={updateCharacteristicName}
-              onUpdateRange={updateCharacteristicRange}
-              onTogglePositionRefine={togglePositionRefine}
-              onRemove={removeCharacteristic}
-              onPickOption={pickCharacteristicOption}
-            />
-          }</Index></dl>
-        </Show>
-        <Show when={hasKtruPosition()}>
-          <Show when={noNewFeatures()} fallback={
-            <div class="create-char-footer">
-              <button type="button" class="create-char-add" onClick={addCustomCharacteristic}>
-                <Plus size={13} strokeWidth={1.8} />Добавить характеристику
-              </button>
-            </div>
-          }>
-            <div class="create-char-alert" role="alert">
-              <CircleAlert size={18} strokeWidth={1.6} />
-              <div>
-                <p>Эта позиция КТРУ не допускает новых характеристик — доступны только поля из справочника.</p>
-                <Show when={noNewFeaturesReason()}><p class="create-char-alert-reason">{noNewFeaturesReason()}</p></Show>
-              </div>
-            </div>
-          </Show>
-        </Show>
-      </section>
     </Show>
 
     <Dialog open={ktruPickerOpen()} onOpenChange={setKtruPickerOpen}>

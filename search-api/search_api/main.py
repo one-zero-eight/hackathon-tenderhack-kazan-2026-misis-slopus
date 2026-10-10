@@ -1,16 +1,43 @@
 from __future__ import annotations
 
+import asyncio
+import logging
+import time
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from pydantic import BaseModel
 
 from search_api import search as search_mod
+from search_api.characteristic_autofill import (
+    AutofillConfigError, AutofillError, AutofillRequest, autofill_characteristics,
+)
 from search_api.config import settings
+from search_api.database import close_database, warm_search
 from search_api.images import get_image
 from search_api.ste_catalog import category_diagnostics, find_product, product_to_dict
 
-app = FastAPI(title="zakupki-search-api", version="0.1.0")
+logger = logging.getLogger("uvicorn.error")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    started = time.perf_counter()
+    try:
+        warmed = await asyncio.to_thread(warm_search)
+        logger.info(
+            "Search ready in %.2fs: products=%s mmap=%s cache_kib=%s",
+            time.perf_counter() - started,
+            warmed["products"], warmed["mmap_size"], warmed["cache_size_kib"],
+        )
+        yield
+    finally:
+        close_database()
+
+
+app = FastAPI(title="zakupki-search-api", version="0.1.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[o.strip() for o in settings.cors_origins.split(",") if o.strip()],
@@ -62,6 +89,18 @@ async def catalog_search(body: SearchBody):
         raise HTTPException(503, str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(503, str(exc)) from exc
+
+
+@app.post("/characteristics/autofill")
+async def characteristic_autofill(body: AutofillRequest):
+    try:
+        return await autofill_characteristics(body)
+    except AutofillConfigError as exc:
+        raise HTTPException(503, str(exc)) from exc
+    except AutofillError as exc:
+        raise HTTPException(502, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 @app.get("/catalog/products/{product_id}")

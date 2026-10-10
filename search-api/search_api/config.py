@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from pydantic import field_validator
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -22,6 +22,8 @@ class Settings(BaseSettings):
     ste_parquet: Path | None = None
 
     search_database: Path = ROOT / "search-web" / "data" / "search-index.sqlite"
+    search_mmap_size: int = Field(default=2 * 1024**3, ge=0)
+    search_cache_size_kib: int = Field(default=64 * 1024, gt=0)
     # Disk cache for portal images; default: <SEARCH_DATABASE>/../images
     image_cache_dir: Path | None = None
     # sku_id → float16[768]: .parquet (Git LFS) or LMDB dir; preferred over text meow cache
@@ -39,6 +41,11 @@ class Settings(BaseSettings):
     host: str = "127.0.0.1"
     port: int = 8070
     cors_origins: str = "http://127.0.0.1:3000,http://localhost:3000"
+    typesafe_api_key: SecretStr | None = None
+    typesafe_base_url: str = "https://api.typesafe.ai"
+    typesafe_model: str = "jev-latest"
+    typesafe_timeout: float = Field(default=120, gt=0)
+    typesafe_confidence: float = Field(default=0.5, ge=0, le=1)
 
     @field_validator("ste_parquet", "image_cache_dir", mode="before")
     @classmethod

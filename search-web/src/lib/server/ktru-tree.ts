@@ -508,20 +508,17 @@ function parseKtruCharacteristics(raw: Record<string, unknown>, standards: strin
     if (row.actual === false) return [];
     const name = String(row.name ?? "").trim();
     if (!name) return [];
+    const ranges = buildCharacteristicRanges(row.values ?? []);
     const badges: string[] = [];
     if (row.required) badges.push("обязательная");
     if (String(row.type) === "1") badges.push("качественная");
     if (String(row.type) === "2") badges.push("количественная");
     // kind — режим для заказчика в закупке (ТЗ), не блокировка поля у поставщика.
     // choice_type в выгрузке часто = «есть варианты в справочнике», а не мультивыбор.
-    if (String(row.kind) === "1") badges.push("неизменяемая заказчиком");
-    if (String(row.kind) === "2") badges.push("заказчик выбирает одно");
-    if (String(row.kind) === "3") badges.push("заказчик выбирает несколько");
     const multiple = String(row.kind) === "3";
     const parts = (row.values ?? []).flatMap(formatKtruValueParts);
     const values = parts.map(part => part.text).filter(Boolean).join(" · ") || "—";
     const options = dedupeCharacteristicOptions(parts.map(part => part.text).filter(Boolean));
-    const ranges = buildCharacteristicRanges(row.values ?? []);
     const unit = shortUnitName(parts.find((part) => part.okeiName)?.okeiName)
       || shortUnitName((row.values ?? []).find((entry) => entry.unit?.name)?.unit?.name);
     const optionLabels = buildCharacteristicOptionLabels(name, options, standards);

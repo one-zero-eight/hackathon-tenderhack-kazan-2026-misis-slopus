@@ -1154,6 +1154,17 @@ export function getSpgzSpecialization(input: {
   };
 }
 
+/** Resolve only an unambiguous active child; never pick the first SPGZ sibling. */
+export function getSoleSpgzForKpgz(kpgzCode: string): { code: string; name: string } | null {
+  const rows = ensureDb().prepare(`
+    SELECT s.id, s.name FROM spgz s
+    JOIN kpgz k ON k.external_id = s.kpgz_external_id
+    WHERE k.code=? AND s.is_excluded=0
+    LIMIT 2
+  `).all(kpgzCode) as { id: number; name: string }[];
+  return rows.length === 1 ? { code: String(rows[0].id), name: rows[0].name } : null;
+}
+
 export function getCatalogSpecialization(input: {
   ktruCode?: string | null;
   spgzCode?: string | null;

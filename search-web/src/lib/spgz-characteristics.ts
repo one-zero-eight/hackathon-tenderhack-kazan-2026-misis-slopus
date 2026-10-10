@@ -7,6 +7,7 @@ export function draftFromSpgzCharacteristic(
     name: string;
     code?: string;
     required?: boolean;
+    value?: string;
     badges?: string[];
     options?: string[];
     parts?: { text: string; okeiName?: string }[];
@@ -25,11 +26,12 @@ export function draftFromSpgzCharacteristic(
     rangeOption: "",
     required,
     badges,
-    hint: "",
+    hint: item.value && item.value !== "—" ? `Ограничение СПГЗ: ${item.value}` : "",
     options,
     optionLabels: {},
     ranges: [],
     unit,
+    numeric: (item.badges ?? []).some((badge) => /^количественная$/i.test(badge)),
     multiple: false,
     source: "spgz",
   };

@@ -3,6 +3,7 @@
 .faq-block:first-of-type { margin-top: 8px; }
 .faq-main .section-heading h1 { margin: 0; color: #1a1a1a; font-weight: 500; font-size: 20px; letter-spacing: -.4px; }
 .faq-lead { margin: -8px 0 0; font-size: 13px; color: #8c8c8c; line-height: 1.7; }
+.faq-legal-note { margin: 14px 0 0; font-size: 12px; color: #8c8c8c; line-height: 1.7; }
 .faq-block .term-list, .faq-block .faq-list { border-top: 1px solid #d4dbe6; margin-top: 16px; }
 .term-item, .faq-item { border-bottom: 1px solid #d4dbe6; }
 .term-item summary, .faq-item summary { display: flex; align-items: center; gap: 10px; padding: 14px 0; font-size: 13px; line-height: 1.45; cursor: pointer; list-style: none; color: #1a1a1a; }
