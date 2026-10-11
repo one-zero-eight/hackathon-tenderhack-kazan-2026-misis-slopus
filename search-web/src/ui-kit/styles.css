@@ -12,8 +12,8 @@ button, a, input, select { outline-offset: 4px; }
 :focus-visible { outline: 2px solid var(--ui-ring); }
 ::selection { background: var(--ui-selection); }
 
-.state-panel { border: 1px dashed var(--ui-state-border); border-radius: 10px; padding: 46px 24px; text-align: center; background: var(--ui-state-background); display: flex; flex-direction: column; align-items: center; }
-.state-icon { border-radius: 50%; width: 56px; height: 56px; background: var(--ui-state-icon-background); color: var(--ui-state-icon); display: grid; place-items: center; margin-bottom: 17px; }
+.state-panel { border: 1px dashed var(--ui-state-border); border-radius: 0; padding: 46px 24px; text-align: center; background: var(--ui-state-background); display: flex; flex-direction: column; align-items: center; }
+.state-icon { border-radius: 0; width: 56px; height: 56px; background: var(--ui-state-icon-background); color: var(--ui-state-icon); display: grid; place-items: center; margin-bottom: 17px; }
 .state-panel h3 { margin: 0 0 9px; font-size: 20px; font-weight: 500; }
 .state-panel p { margin: 0 0 20px; color: var(--ui-state-description); font-size: 13px; line-height: 1.6; max-width: 450px; }
 .error-panel { border-color: var(--ui-error-border); background: var(--ui-error-background); }
@@ -39,7 +39,7 @@ button, a, input, select { outline-offset: 4px; }
   height: min(820px, calc(100vh - 48px));
   transform: translate(-50%, -50%);
   border: 1px solid var(--ui-border, #d4dbe6);
-  border-radius: 12px;
+  border-radius: 0;
   background: var(--ui-background);
   box-shadow: 0 24px 80px color-mix(in srgb, var(--ui-foreground) 18%, transparent);
   outline: none;

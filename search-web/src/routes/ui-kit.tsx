@@ -34,7 +34,7 @@ export default function UiKitPage() {
 
     <Example title="Цвета и типографика" description="Семантические CSS-токены в tokens.css. Тему можно переопределять через переменные --ui-*.">
       <div class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
-        <For each={colors}>{color => <div class="overflow-hidden rounded-lg border border-input bg-card">
+        <For each={colors}>{color => <div class="overflow-hidden rounded-none border border-input bg-card">
           <div class="h-16 border-b border-input" style={{ "background-color": `var(--ui-${color})` }} />
           <p class="break-all p-3 font-mono text-xs">{color}</p>
         </div>}</For>
@@ -101,7 +101,7 @@ export default function UiKitPage() {
 
     <Example title="Skeleton" description="Произвольная форма через class; скрыт от скринридера, анимация учитывает prefers-reduced-motion.">
       <Card class="max-w-lg" role="status" aria-label="Пример состояния загрузки">
-        <CardContent class="space-y-4 pt-6"><Skeleton class="h-36 w-full rounded-lg" /><Skeleton class="h-4 w-3/4" /><Skeleton class="h-4 w-1/2" /></CardContent>
+        <CardContent class="space-y-4 pt-6"><Skeleton class="h-36 w-full rounded-none" /><Skeleton class="h-4 w-3/4" /><Skeleton class="h-4 w-1/2" /></CardContent>
       </Card>
     </Example>
   </main>;

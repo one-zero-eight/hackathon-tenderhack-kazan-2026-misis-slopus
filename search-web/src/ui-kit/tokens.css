@@ -22,6 +22,8 @@
   --ui-card-foreground: var(--pp-black);
   --ui-primary: var(--pp-main-blue);
   --ui-primary-foreground: #fff;
+  --ui-cta: var(--pp-red);
+  --ui-cta-foreground: #fff;
   --ui-secondary: var(--pp-pale-blue);
   --ui-secondary-foreground: var(--pp-main-blue);
   --ui-muted-foreground: var(--pp-pale-black);
@@ -44,9 +46,9 @@
   --ui-skeleton-highlight: var(--pp-pale-blue);
   --ui-font-sans: "Inter", "Segoe UI", -apple-system, BlinkMacSystemFont, Arial, sans-serif;
   --ui-font-heading: Georgia, "Times New Roman", serif;
-  --ui-radius-sm: .25rem;
-  --ui-radius-md: .375rem;
-  --ui-radius-lg: .5rem;
+  --ui-radius-sm: 0;
+  --ui-radius-md: 0;
+  --ui-radius-lg: 0;
 }
 
 @theme inline {
