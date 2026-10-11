@@ -100,7 +100,7 @@ export function CategoryPairs(props: {
       <div class="create-vote-group-head">
         <h3>ОКПД2 и КТРУ</h3>
         <Show when={props.onEditKtru}>{(edit) =>
-          <Button type="button" variant="outline" size="xs" onClick={edit()}><ClipboardList size={12} />Изменить</Button>
+          <Button type="button" variant="outline" size="xs" onClick={edit()}><ClipboardList size={12} />{props.okpd2 || props.ktru ? "Изменить" : "Выбрать"}</Button>
         }</Show>
       </div>
       <dl class="create-vote-rows">
@@ -113,7 +113,7 @@ export function CategoryPairs(props: {
       <div class="create-vote-group-head">
         <h3>Из каталога Портала Поставщиков</h3>
         <Show when={props.onEditSpgz}>{(edit) =>
-          <Button type="button" variant="outline" size="xs" onClick={edit()}><ClipboardList size={12} />Изменить</Button>
+          <Button type="button" variant="outline" size="xs" onClick={edit()}><ClipboardList size={12} />{props.kpgz || props.spgz ? "Изменить" : "Выбрать"}</Button>
         }</Show>
       </div>
       <dl class="create-vote-rows">

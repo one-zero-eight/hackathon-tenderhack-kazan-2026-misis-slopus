@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
 
 from search_api import search as search_mod
@@ -124,6 +125,42 @@ async def categories_suggest(body: CategorySuggestionBody):
         raise HTTPException(400, str(exc)) from exc
     except (FileNotFoundError, RuntimeError) as exc:
         raise HTTPException(503, str(exc)) from exc
+
+
+@app.post("/categories/suggest/stream")
+async def categories_suggest_stream(body: CategorySuggestionBody):
+    from search_api.category_suggestion import suggest_categories
+    from search_api.config import MAX_DESCRIPTION_LENGTH
+
+    if len(body.description) > MAX_DESCRIPTION_LENGTH:
+        raise HTTPException(400, f"Описание должно содержать не более {MAX_DESCRIPTION_LENGTH} символов")
+
+    async def events():
+        queue: asyncio.Queue[dict] = asyncio.Queue()
+
+        async def run():
+            try:
+                result = await suggest_categories(
+                    body.description, force=body.force,
+                    on_progress=lambda data: queue.put_nowait({"type": "progress", "data": data}),
+                )
+                queue.put_nowait({"type": "result", "data": result})
+            except Exception as exc:
+                logger.exception("Category suggestion stream failed")
+                queue.put_nowait({"type": "error", "detail": str(exc)})
+
+        task = asyncio.create_task(run())
+        try:
+            while True:
+                event = await queue.get()
+                yield json.dumps(event, ensure_ascii=False) + "\n"
+                if event["type"] in ("result", "error"):
+                    break
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    return StreamingResponse(events(), media_type="application/x-ndjson", headers={"Cache-Control": "no-store"})
 
 
 class ClassifierSearchBody(BaseModel):

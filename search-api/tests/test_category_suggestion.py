@@ -480,3 +480,76 @@ def test_quality_gate_skips_retrieve_until_forced(monkeypatch):
     forced = asyncio.run(suggest.suggest_categories("товар для офиса", force=True))
     assert calls == {"n": 1, "c": 1}
     assert forced["queryQuality"]["verdict"] == "suspicious"
+
+
+def test_progress_precedes_classifier_completion_and_family_selection(monkeypatch):
+    import asyncio
+
+    async def exercise():
+        events = []
+        products_ready = asyncio.Event()
+
+        def progress(data):
+            events.append(data)
+            if "neighbors" in data:
+                products_ready.set()
+
+        async def neighbors(query):
+            assert events[0]["queryQuality"]["verdict"] == "ok"
+            return {"neighbors": [{"id": 1, "score": 0.9}], "error": None}
+
+        async def classifiers(query):
+            await products_ready.wait()
+            assert events[1]["neighbors"][0]["id"] == 1
+            return {"result": {"okpdKtru": [], "kpgzSpgz": [], "hits": []}, "error": None}
+
+        async def rerank(*args, **kwargs):
+            return [{"id": 2, "score": 0.95}], None
+
+        async def resolve(query, neighbors, classifiers):
+            assert events[-1]["neighbors"][0]["id"] == 2
+            return {side: (None, {"needsChoice": False, "reason": None, "alternatives": []})
+                    for side in suggest.PAIR_FIELDS}
+
+        monkeypatch.setattr("search_api.query_quality.check_query_quality", _quality_ok)
+        monkeypatch.setattr(suggest, "_neighbors_retrieve", neighbors)
+        monkeypatch.setattr(suggest, "_classifiers_retrieve", classifiers)
+        monkeypatch.setattr("search_api.jev_rerank.rerank_suggest_shortlists", rerank)
+        monkeypatch.setattr(suggest, "_resolve_category_choices", resolve)
+        result = await asyncio.wait_for(suggest.suggest_categories("молоток", on_progress=progress), timeout=2)
+        assert result["neighbors"][0]["id"] == 2
+        assert len(events) == 3
+
+    asyncio.run(exercise())
+
+
+def test_category_stream_forwards_progress_result_and_errors(monkeypatch):
+    import json
+    from fastapi.testclient import TestClient
+    from search_api.main import app
+
+    async def handler(description, *, force=False, on_progress):
+        assert description == "молоток"
+        assert force
+        on_progress({"queryQuality": {"verdict": "ok", "durationMs": 10}})
+        on_progress({"neighbors": [{"id": 1}]})
+        return {"neighbors": [{"id": 1}], "characteristics": []}
+
+    monkeypatch.setattr(suggest, "suggest_categories", handler)
+    client = TestClient(app)
+    response = client.post("/categories/suggest/stream", json={"description": "молоток", "force": True})
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("application/x-ndjson")
+    events = [json.loads(line) for line in response.iter_lines()]
+    assert [event["type"] for event in events] == ["progress", "progress", "result"]
+    assert events[0]["data"]["queryQuality"]["verdict"] == "ok"
+    assert events[1]["data"]["neighbors"] == [{"id": 1}]
+    assert events[2]["data"]["characteristics"] == []
+
+    async def broken(*args, **kwargs):
+        raise RuntimeError("Нет индекса")
+
+    monkeypatch.setattr(suggest, "suggest_categories", broken)
+    response = client.post("/categories/suggest/stream", json={"description": "молоток"})
+    assert response.json() == {"type": "error", "detail": "Нет индекса"}
+    assert client.post("/categories/suggest/stream", json={"description": "а" * 20_001}).status_code == 400

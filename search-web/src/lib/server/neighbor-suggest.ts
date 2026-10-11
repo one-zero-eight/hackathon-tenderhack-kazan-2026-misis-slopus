@@ -23,6 +23,8 @@ export type QueryQuality = {
 
 export type NeighborSuggestion = {
   neighbors: ProductHit[];
+  /** Browser request time until the first neighbor results arrive, including quality checking. */
+  neighborsDurationMs?: number;
   okpd2: VotedCode | null;
   kpgz: VotedCode | null;
   spgz: VotedCode | null;
@@ -44,6 +46,8 @@ export type NeighborSuggestion = {
   neighborError: string | null;
   queryQuality: QueryQuality | null;
 };
+
+export type NeighborSuggestionProgress = Partial<Pick<NeighborSuggestion, "queryQuality" | "neighbors" | "neighborError" | "neighborsDurationMs">>;
 
 /** Python owns retrieval, relevance filtering, pair voting and catalog schemas. */
 export function suggestFromNeighbors(

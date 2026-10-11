@@ -5,7 +5,7 @@ async function proxy({ request, params }: Pick<APIEvent, "request" | "params">):
   const path = `/${params.path}`;
   const allowed = request.method === "GET"
     ? /^\/(?:catalog\/stats|catalog\/products\/[1-9]\d*(?:\/similar)?|images\/[1-9]\d*)$/.test(path)
-    : request.method === "POST" && ["/catalog/search", "/characteristics/autofill", "/classifiers/search", "/categories/suggest"].includes(path);
+    : request.method === "POST" && ["/catalog/search", "/characteristics/autofill", "/classifiers/search", "/categories/suggest", "/categories/suggest/stream"].includes(path);
   if (!allowed) return new Response("Not found", { status: 404 });
 
   const headers = new Headers({ Accept: request.headers.get("Accept") || "application/json" });

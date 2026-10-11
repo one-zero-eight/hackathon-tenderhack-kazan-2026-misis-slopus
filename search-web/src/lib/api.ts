@@ -1,9 +1,9 @@
-import type { NeighborSuggestion } from "./server/neighbor-suggest";
+import type { NeighborSuggestion, NeighborSuggestionProgress } from "./server/neighbor-suggest";
 import type { CatalogStats, CharacteristicAutofillInput, CharacteristicAutofillResult, Product, ProductHit, SearchInput, SearchResult } from "./types";
 
-export type { NeighborSuggestion };
+export type { NeighborSuggestion, NeighborSuggestionProgress };
 
-async function api<T>(path: string, init?: RequestInit): Promise<T> {
+async function fetchApi(path: string, init?: RequestInit): Promise<Response> {
   const response = await fetch(`/api/search${path}`, {
     ...init,
     headers: { Accept: "application/json", ...(init?.headers ?? {}) },
@@ -17,7 +17,11 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
     }
     throw new Error(detail.slice(0, 400) || `API HTTP ${response.status}`);
   }
-  return response.json() as Promise<T>;
+  return response;
+}
+
+async function api<T>(path: string, init?: RequestInit): Promise<T> {
+  return (await fetchApi(path, init)).json() as Promise<T>;
 }
 
 export function isAbortError(error: unknown): boolean {
@@ -62,5 +66,55 @@ export const apiSuggestCategories = (
     body: JSON.stringify({ description, force: options.force === true }),
     signal,
   });
+
+export async function apiSuggestCategoriesStream(
+  description: string,
+  options: { force?: boolean },
+  signal: AbortSignal,
+  onProgress: (progress: NeighborSuggestionProgress) => void,
+): Promise<NeighborSuggestion> {
+  const started = performance.now();
+  let neighborsDurationMs: number | undefined;
+  const response = await fetchApi("/categories/suggest/stream", {
+    method: "POST",
+    headers: { Accept: "application/x-ndjson", "Content-Type": "application/json" },
+    body: JSON.stringify({ description, force: options.force === true }),
+    signal,
+  });
+  if (!response.body) throw new Error("Сервер не вернул поток результатов.");
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  type Event =
+    | { type: "progress"; data: NeighborSuggestionProgress }
+    | { type: "result"; data: NeighborSuggestion }
+    | { type: "error"; detail: string };
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      buffer += decoder.decode(value, { stream: !done });
+      let newline: number;
+      while ((newline = buffer.indexOf("\n")) >= 0 || (done && buffer.length > 0)) {
+        const line = newline >= 0 ? buffer.slice(0, newline) : buffer;
+        buffer = newline >= 0 ? buffer.slice(newline + 1) : "";
+        if (!line.trim()) continue;
+        signal.throwIfAborted();
+        const event = JSON.parse(line) as Event;
+        if (event.type === "error") throw new Error(event.detail);
+        if (event.type === "result") return { ...event.data, neighborsDurationMs };
+        if (event.data.neighbors !== undefined) {
+          neighborsDurationMs ??= Math.round(performance.now() - started);
+          onProgress({ ...event.data, neighborsDurationMs });
+        } else {
+          onProgress(event.data);
+        }
+      }
+      if (done) throw new Error("Поток результатов завершился до получения категорий.");
+    }
+  } finally {
+    await reader.cancel();
+    reader.releaseLock();
+  }
+}
 
 export const apiImageUrl = (id: number) => `/api/search/images/${id}`;

@@ -5,6 +5,7 @@ export type QueuedQuery<T> = {
   text: string;
   status: QueryStatus;
   result?: T;
+  progress?: Partial<T>;
   durationMs?: number;
   error?: string;
 };
@@ -35,7 +36,7 @@ export class QueryQueue<T> {
   private stopped = false;
 
   constructor(
-    private process: (text: string, signal: AbortSignal) => Promise<T>,
+    private process: (text: string, signal: AbortSignal, reportProgress: (progress: Partial<T>) => void) => Promise<T>,
     private changed: (items: QueuedQuery<T>[]) => void,
     private started: (text: string) => void = () => {},
   ) {}
@@ -95,7 +96,11 @@ export class QueryQueue<T> {
     const request = Promise.resolve().then(() => {
       this.started(item.text);
       if (controller.signal.aborted) throw new DOMException("Aborted", "AbortError");
-      const work = this.process(item.text, controller.signal);
+      const work = this.process(item.text, controller.signal, (progress) => {
+        if (controller.signal.aborted) return;
+        const current = this.entries.find((entry) => entry.id === id);
+        this.update(id, { progress: { ...current?.progress, ...progress } });
+      });
       // Always settle on abort even if process ignores the signal.
       const aborted = new Promise<never>((_, reject) => {
         const onAbort = () => reject(new DOMException("Aborted", "AbortError"));
@@ -120,7 +125,7 @@ export class QueryQueue<T> {
       if (!controller.signal.aborted) this.resume();
     });
     this.requests.set(id, request);
-    this.update(id, { status: "processing", error: undefined });
+    this.update(id, { status: "processing", error: undefined, progress: undefined });
     return request;
   }
 

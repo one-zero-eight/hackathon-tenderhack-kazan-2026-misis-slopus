@@ -271,7 +271,7 @@ export type CharacteristicAutofillResult = {
     conversion?: AutofillDiagnostics["conversion"];
   }[];
   additional_allowed: boolean | null;
-  product: Record<"model" | "manufacturer" | "article", {
+  product: Record<"name" | "model" | "manufacturer" | "article", {
     name: string;
     value: string | null;
     quote: string | null;

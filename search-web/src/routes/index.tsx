@@ -21,10 +21,12 @@ import { batch, createEffect, createMemo, createSignal, For, Index, on, onCleanu
 import { directoryHref, ProductCard } from "~/components/catalog";
 import { CategoryPairs, PairChoices } from "~/components/category-pairs";
 import { CatalogCharacteristicInput } from "~/components/catalog-characteristic-input";
+import { CharacteristicEditor } from "~/components/characteristic-editor";
+import { characteristicNameKey, isVisibleCharacteristic } from "~/lib/characteristic-editor";
 import { QueryDropdown } from "~/components/query-dropdown";
 import { KtruPickerActions, KtruPickerBody } from "~/components/ktru-picker";
 import { SpgzPickerActions, SpgzPickerBody } from "~/components/spgz-picker";
-import { apiAutofillCharacteristics, apiSuggestCategories, isAbortError, type NeighborSuggestion } from "~/lib/api";
+import { apiAutofillCharacteristics, apiSuggestCategoriesStream, isAbortError, type NeighborSuggestion } from "~/lib/api";
 import {
   characteristicRangeProblem,
   isRangeCharacteristic,
@@ -66,6 +68,8 @@ import {
   setKpgzSpgzDecision,
   brand,
   catalogSpecialization,
+  catalogCharacteristicSuggestions,
+  setCatalogCharacteristicSuggestions,
   initialTemplateKtruCode,
   setInitialTemplateKtruCode,
   characteristicEditKey,
@@ -118,6 +122,7 @@ import {
   setPhotos,
   setSelected,
   setSimilar,
+  setSimilarDurationMs,
   setSku,
   setSpgz,
   setSpgzLocked,
@@ -126,6 +131,7 @@ import {
   setSuggestDurationMs,
   setSuggesting,
   similar,
+  similarDurationMs,
   sku,
   spgz,
   spgzLocked,
@@ -369,7 +375,7 @@ function OptionPopularity(props: { item: DraftCharacteristic; option: string }) 
   return <Show when={popularity()}>{(stats) =>
     <span
       class="create-char-combobox-popularity"
-      title={props.option === "-"
+      title={props.option === "—"
         ? `Каталог: характеристика не указана у ${stats().count} из ${stats().total} товаров`
         : `Каталог: ${stats().count} из ${stats().total} товаров с этой характеристикой`}
       aria-label={`Популярность в каталоге: ${stats().percent}%`}
@@ -386,7 +392,7 @@ function CreateCharRow(props: {
   selectedOptions: (value: string) => string[];
   refinedRefs?: RefinedPositionRef[];
   onUpdate: (id: string, value: string) => void;
-  onUpdateName: (id: string, name: string) => void;
+  onEditSchema: (item: DraftCharacteristic) => void;
   onUpdateRange: (id: string, rangeOption: string) => void;
   onTogglePositionRefine?: (id: string, enabled: boolean) => void;
   onRemove: (id: string) => void;
@@ -408,14 +414,22 @@ function CreateCharRow(props: {
                     <Show when={item().required}><span class="create-char-req" aria-label="обязательная">*</span></Show>
                     <span class="create-char-source" title={item().catalogFrequency ? catalogFrequencyLabel(item().catalogFrequency!) : item().templateKtruCode ? `Шаблон КТРУ ${item().templateKtruCode}` : undefined}>{characteristicSourceLabel(item().source, item().templateKtruCode)}</span>
                     {locate()}
+                    <Show when={item().source === "catalog"}>
+                      <button type="button" class="create-char-remove" aria-label={`Изменить схему: ${item().name}`} title="Изменить тип, единицы и схему" onClick={() => props.onEditSchema(item())}>
+                        <Pencil size={14} />
+                      </button>
+                    </Show>
                   </span>
                 }>
                   <div class="create-char-custom-name">
-                    <TextField class="create-inline-field" value={item().name} onChange={(value) => props.onUpdateName(item().id, value)}>
-                      <TextFieldLabel class="sr-only">Название характеристики</TextFieldLabel>
-                      <TextFieldInput placeholder="Название характеристики" />
-                    </TextField>
+                    <span class="dir-char-name">
+                      {item().name}
+                      <Show when={item().required}><span class="create-char-req" aria-label="обязательная">*</span></Show>
+                    </span>
                     <span class="create-char-source">{characteristicSourceLabel("custom")}</span>
+                    <button type="button" class="create-char-remove" aria-label={`Изменить схему: ${item().name}`} title="Изменить тип, единицы и схему" onClick={() => props.onEditSchema(item())}>
+                      <Pencil size={14} />
+                    </button>
                     {locate()}
                     <button type="button" class="create-char-remove" aria-label="Удалить характеристику" onClick={() => props.onRemove(item().id)}>
                       <X size={14} />
@@ -423,22 +437,24 @@ function CreateCharRow(props: {
                   </div>
                 </Show>
                 <Show when={item().badges.length}>
-                  <span class="dir-char-badges">
-                    <For each={item().badges}>{badge => <span class="dir-char-required">{badge}</span>}</For>
+                  <span class="create-char-badges">
+                    <For each={item().badges}>{badge => <span class="create-char-badge">{badge}</span>}</For>
                   </span>
                 </Show>
               </dt>
               <dd>
                 <div class="create-char-value" classList={{ "has-confidence": !!item().autofill && !!item().value.trim() }}>
-                <Show when={item().source === "catalog"} fallback={
+                <Show when={item().source === "catalog" || (item().custom && !!item().catalogFrequency && !item().options.length && !item().ranges.length)} fallback={
                 <Show when={isRangeCharacteristic(item())} fallback={
                   <Show when={(item().options ?? []).length} fallback={
                     <TextField class="create-inline-field" value={item().value} onChange={(value) => props.onUpdate(item().id, value)}>
                       <TextFieldLabel class="sr-only">{item().name || "Значение характеристики"}</TextFieldLabel>
                       <div class="create-char-text-input" classList={{ "has-confidence": !!item().autofill && !!item().value.trim() }}>
                         <TextFieldInput
-                          placeholder={item().custom ? "Значение" : item().hint ? `Напр.: ${item().hint.split(" · ")[0]}` : "Укажите значение"}
+                          inputmode={item().numeric ? "decimal" : "text"}
+                          placeholder={item().numeric ? "Число" : item().custom ? "Значение" : item().hint ? `Напр.: ${item().hint.split(" · ")[0]}` : "Укажите значение"}
                         />
+                        <Show when={item().unit}><span class="create-char-unit">{item().unit}</span></Show>
                         <AutofillConfidence item={item()} />
                       </div>
                     </TextField>
@@ -447,13 +463,13 @@ function CreateCharRow(props: {
                       <Show when={item().multiple} fallback={
                         <Select<string>
                           class="create-char-select"
-                          options={["-", ...props.choiceOptions(item())]}
-                          value={item().value || "-"}
-                          onChange={(value) => props.onUpdate(item().id, value === "-" ? "" : value ?? "")}
+                          options={["—", ...props.choiceOptions(item())]}
+                          value={item().value || "—"}
+                          onChange={(value) => props.onUpdate(item().id, value === "—" ? "" : value ?? "")}
                           placeholder="Выберите значение"
                           selectionBehavior="replace"
                           itemComponent={(selectProps) => <SelectItem class="create-char-option-item" item={selectProps.item}>
-                            <span class="create-char-option-label">{props.optionLabel(item(), selectProps.item.rawValue)}</span>
+                            <span class="create-char-option-label" classList={{ "create-char-placeholder": selectProps.item.rawValue === "—" }}>{props.optionLabel(item(), selectProps.item.rawValue)}</span>
                             <OptionPopularity item={item()} option={selectProps.item.rawValue} />
                           </SelectItem>}
                         >
@@ -461,7 +477,9 @@ function CreateCharRow(props: {
                             <span class="create-char-selection">
                               <SelectValue<string>>{(state) => {
                                 const selected = state.selectedOption();
-                                return selected ? props.optionLabel(item(), selected) : "Выберите значение";
+                                return selected === "—"
+                                  ? <span class="create-char-placeholder">—</span>
+                                  : selected ? props.optionLabel(item(), selected) : "Выберите значение";
                               }}</SelectValue>
                               <AutofillConfidence item={item()} inSelect />
                             </span>
@@ -472,15 +490,15 @@ function CreateCharRow(props: {
                         <Select<string>
                           class="create-char-select"
                           multiple
-                          options={["-", ...props.choiceOptions(item())]}
-                          value={item().value ? props.selectedOptions(item().value) : ["-"]}
+                          options={["—", ...props.choiceOptions(item())]}
+                          value={item().value ? props.selectedOptions(item().value) : ["—"]}
                           onChange={(values) => {
-                            const cleared = values.includes("-") && !!item().value;
-                            props.onUpdate(item().id, cleared ? "" : values.filter((value) => value !== "-").join(" · "));
+                            const cleared = values.includes("—") && !!item().value;
+                            props.onUpdate(item().id, cleared ? "" : values.filter((value) => value !== "—").join(" · "));
                           }}
                           placeholder="Выберите значения"
                           itemComponent={(selectProps) => <SelectItem class="create-char-option-item" item={selectProps.item}>
-                            <span class="create-char-option-label">{props.optionLabel(item(), selectProps.item.rawValue)}</span>
+                            <span class="create-char-option-label" classList={{ "create-char-placeholder": selectProps.item.rawValue === "—" }}>{props.optionLabel(item(), selectProps.item.rawValue)}</span>
                             <OptionPopularity item={item()} option={selectProps.item.rawValue} />
                           </SelectItem>}
                         >
@@ -488,7 +506,9 @@ function CreateCharRow(props: {
                             <span class="create-char-selection">
                               <SelectValue<string>>{(state) => {
                                 const selected = state.selectedOptions();
-                                return selected.length ? selected.map((value) => props.optionLabel(item(), value)).join(" · ") : "Выберите значения";
+                                return selected.length === 1 && selected[0] === "—"
+                                  ? <span class="create-char-placeholder">—</span>
+                                  : selected.length ? selected.map((value) => props.optionLabel(item(), value)).join(" · ") : "Выберите значения";
                               }}</SelectValue>
                               <AutofillConfidence item={item()} inSelect />
                             </span>
@@ -552,25 +572,29 @@ function CreateCharRow(props: {
                     </div>
                     <Select<string>
                       class="create-char-select create-char-range-select"
-                      options={["-", ...item().options]}
-                      value={item().rangeOption || "-"}
+                      options={["—", ...item().options]}
+                      value={item().rangeOption || "—"}
                       onChange={(value) => {
-                        if (value === "-") {
+                        if (value === "—") {
                           props.onUpdate(item().id, "");
                           props.onUpdateRange(item().id, "");
                           return;
                         }
                         props.onUpdateRange(item().id, value ?? "");
                       }}
-                      placeholder="Категория КТРУ"
+                      placeholder="Диапазон"
                       selectionBehavior="replace"
                       itemComponent={(selectProps) => <SelectItem class="create-char-option-item" item={selectProps.item}>
-                        <span class="create-char-option-label">{props.optionLabel(item(), selectProps.item.rawValue)}</span>
+                        <span class="create-char-option-label" classList={{ "create-char-placeholder": selectProps.item.rawValue === "—" }}>{props.optionLabel(item(), selectProps.item.rawValue)}</span>
                         <OptionPopularity item={item()} option={selectProps.item.rawValue} />
                       </SelectItem>}
                     >
-                      <SelectTrigger class="create-char-select-trigger" aria-label={`${item().name}: категория КТРУ`}>
-                        <SelectValue<string>>{(state) => props.optionLabel(item(), state.selectedOption())}</SelectValue>
+                      <SelectTrigger class="create-char-select-trigger" aria-label={`${item().name}: диапазон`}>
+                        <SelectValue<string>>{(state) =>
+                          !state.selectedOption() || state.selectedOption() === "—"
+                            ? <span class="create-char-placeholder">Диапазон</span>
+                            : props.optionLabel(item(), state.selectedOption())
+                        }</SelectValue>
                       </SelectTrigger>
                       <SelectContent />
                     </Select>
@@ -692,6 +716,7 @@ export default function NewProduct() {
   const [historyError, setHistoryError] = createSignal("");
   const [suggestError, setSuggestError] = createSignal("");
   const [queryQuality, setQueryQuality] = createSignal<NonNullable<Suggestion["queryQuality"]> | null>(null);
+  const [similarReady, setSimilarReady] = createSignal(false);
   const [forceSuggestQuery, setForceSuggestQuery] = createSignal<string | null>(null);
   const [suggestAcceptedQuery, setSuggestAcceptedQuery] = createSignal("");
   const [readingQueries, setReadingQueries] = createSignal(false);
@@ -713,11 +738,26 @@ export default function NewProduct() {
       setHistoryError("Не удалось сохранить историю: localStorage недоступен или переполнен.");
     }
   };
-  const queryQueue = new QueryQueue<Suggestion>(async (text, signal) => {
+  const queryQueue = new QueryQueue<Suggestion>(async (text, signal, reportProgress) => {
     const query = normalizeQuery(text);
     if (query.length < 3) throw new Error("Для поиска нужно не менее 3 символов.");
-    return apiSuggestCategories(query, { force: forceSuggestQuery() === query }, signal);
+    return apiSuggestCategoriesStream(query, { force: forceSuggestQuery() === query }, signal, reportProgress);
   }, (items) => { if (mounted) setQueuedQueries(items); }, saveHistory);
+  createEffect(() => {
+    const item = queuedQueries().find((entry) => entry.id === activeQueryId());
+    if (!item || normalizeQuery(item.text) !== normalizeQuery(description())) return;
+    const progress = item.result ?? item.progress;
+    if (!progress) return;
+    batch(() => {
+      if (progress.queryQuality !== undefined) setQueryQuality(progress.queryQuality);
+      if (progress.neighbors !== undefined) {
+        setSimilar(progress.neighbors);
+        setSimilarDurationMs(progress.neighborsDurationMs ?? null);
+        setSimilarReady(true);
+      }
+      if (progress.neighborError) setSuggestError(progress.neighborError);
+    });
+  });
   onMount(() => {
     try { setQueryHistory(parseQueryHistory(localStorage.getItem(QUERY_HISTORY_KEY))); }
     catch { setHistoryError("Не удалось прочитать историю запросов."); }
@@ -742,6 +782,8 @@ export default function NewProduct() {
   const [autofillError, setAutofillError] = createSignal("");
   const [catalogCharacteristicsLoading, setCatalogCharacteristicsLoading] = createSignal(false);
   const [catalogCharacteristicsError, setCatalogCharacteristicsError] = createSignal("");
+  const [characteristicEditorOpen, setCharacteristicEditorOpen] = createSignal(false);
+  const [editingCharacteristic, setEditingCharacteristic] = createSignal<DraftCharacteristic>();
   const [autofillDurationMs, setAutofillDurationMs] = createSignal<number | null>(null);
   const [autofillRequestedText, setAutofillRequestedText] = createSignal<string | null>(null);
   const [autofillCompletedText, setAutofillCompletedText] = createSignal<string | null>(null);
@@ -751,65 +793,7 @@ export default function NewProduct() {
   const autofillCompleted = () => autofillCompletedText() === description().trim();
   const autofillNeedsReview = () => autofillCompleted() && autofillStatus() === "needs_review";
   let categorySection: HTMLDivElement | undefined;
-  let characteristicsSection: HTMLElement | undefined;
   let descriptionSection: HTMLElement | undefined;
-  const [categoriesNearCharacteristics, setCategoriesNearCharacteristics] = createSignal(false);
-  const categorySwapAnimations = new Map<HTMLElement, Animation>();
-  const moveCategories = (nearCharacteristics: boolean) => {
-    if (categoriesNearCharacteristics() === nearCharacteristics) return;
-    const blocks = Array.from(categorySection?.parentElement?.children ?? []) as HTMLElement[];
-    const previousTops = blocks.map((block) => block.getBoundingClientRect().top);
-    for (const animation of categorySwapAnimations.values()) animation.cancel();
-    categorySwapAnimations.clear();
-    setCategoriesNearCharacteristics(nearCharacteristics);
-    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-    blocks.forEach((block, index) => {
-      const distance = previousTops[index] - block.getBoundingClientRect().top;
-      if (Math.abs(distance) < 1) return;
-      const animation = block.animate([
-        { transform: `translateY(${distance}px)` },
-        { transform: "translateY(0)" },
-      ], { duration: 520, easing: "cubic-bezier(0.4, 0, 0.2, 1)" });
-      categorySwapAnimations.set(block, animation);
-      animation.onfinish = () => categorySwapAnimations.delete(block);
-    });
-  };
-  onCleanup(() => {
-    for (const animation of categorySwapAnimations.values()) animation.cancel();
-    categorySwapAnimations.clear();
-  });
-  onMount(() => {
-    const content = descriptionSection!.closest<HTMLElement>(".app-content")!;
-    let previousScrollTop = content.scrollTop;
-    let frame: number | undefined;
-    const updateOrder = () => {
-      frame = undefined;
-      const scrollingUp = content.scrollTop < previousScrollTop;
-      previousScrollTop = content.scrollTop;
-      const viewport = content.getBoundingClientRect();
-      const descriptionBottom = descriptionSection!.getBoundingClientRect().bottom;
-      const characteristicsTop = characteristicsSection?.getBoundingClientRect().top;
-      if (content.scrollTop === 0 || (scrollingUp && descriptionBottom > viewport.top + 100)) {
-        moveCategories(false);
-      } else if (characteristicsTop !== undefined && descriptionBottom <= viewport.top
-        && characteristicsTop <= viewport.top + content.clientHeight * 0.85) {
-        moveCategories(true);
-      }
-    };
-    const scheduleUpdate = () => {
-      if (frame === undefined) frame = requestAnimationFrame(updateOrder);
-    };
-    content.addEventListener("scroll", scheduleUpdate, { passive: true });
-    const observer = new ResizeObserver(scheduleUpdate);
-    observer.observe(content);
-    observer.observe(descriptionSection!.closest("main")!);
-    scheduleUpdate();
-    onCleanup(() => {
-      content.removeEventListener("scroll", scheduleUpdate);
-      observer.disconnect();
-      if (frame !== undefined) cancelAnimationFrame(frame);
-    });
-  });
   const [refinedCategories, setRefinedCategories] = createSignal({ ktru: false, spgz: false });
   const [categoriesBeforeAutofill, setCategoriesBeforeAutofill] = createSignal<{ ktru: VotedCode | null; spgz: VotedCode | null }>({ ktru: null, spgz: null });
   const clearCategoryHighlight = () => {
@@ -844,7 +828,7 @@ export default function NewProduct() {
   const fingerprint = () => `${selected()?.code ?? ""}\u0000${description()}`;
   const outdated = () => !!generatedFor() && generatedFor() !== fingerprint();
   const displayCharacteristics = createMemo(() => buildDisplayCharacteristics(characteristics()));
-  const filledCount = () => displayCharacteristics().filter((item) => item.value.trim() || item.rangeOption.trim()).length;
+  const visibleCharacteristics = createMemo(() => displayCharacteristics().filter(isVisibleCharacteristic));
   const linkedIdsFor = (id: string) =>
     displayCharacteristics().find((row) => row.id === id)?.linkedIds ?? [id];
   const hasDraft = () => !!(description().trim() || name().trim() || selected() || similar().length || photos().length);
@@ -887,7 +871,6 @@ export default function NewProduct() {
       if (rerun) requestAutofill();
     })().catch(reportCategoryError);
   };
-  const hasKtruPosition = () => !!(ktruVote()?.code || selected()?.kind === "ktru");
   const activePhoto = () => photos()[photoIndex()] ?? photos()[0] ?? null;
 
   const loadSpecialization = async (input?: {
@@ -1651,6 +1634,7 @@ export default function NewProduct() {
       }
       batch(() => {
         setSimilar([]);
+        setSimilarDurationMs(null);
         setSuggesting(false);
         setLastSuggestQuery("");
         setSuggestAcceptedQuery("");
@@ -1674,9 +1658,25 @@ export default function NewProduct() {
       return;
     }
     if (query === lastSuggestQuery()) {
+      const quality = queued?.result?.queryQuality ?? null;
+      const gated = forceSuggestQuery() !== query
+        && (quality?.verdict === "reject" || quality?.verdict === "suspicious");
+      setQueryQuality(quality);
+      setSuggestAcceptedQuery(gated ? "" : query);
+      if (queued?.result?.neighborsDurationMs !== undefined) {
+        setSimilarDurationMs(queued.result.neighborsDurationMs);
+      }
+      setSimilarReady(true);
       setSuggesting(false);
       return;
     }
+    const progress = queued?.status === "done" ? queued.result
+      : queued?.status === "processing" ? queued.progress : undefined;
+    setQueryQuality(progress?.queryQuality ?? null);
+    setSimilarReady(progress?.neighbors !== undefined);
+    setSimilar(progress?.neighbors ?? []);
+    setSimilarDurationMs(progress?.neighborsDurationMs ?? null);
+    setSuggesting(true);
     if (!ktruLocked()) setOkpdKtruDecision(null);
     if (!spgzLocked()) setKpgzSpgzDecision(null);
     const started = performance.now();
@@ -1696,6 +1696,12 @@ export default function NewProduct() {
         try {
           const forced = forceSuggestQuery() === query;
           const quality = draft.queryQuality;
+          batch(() => {
+            setQueryQuality(quality);
+            setSimilar(draft.neighbors);
+            setSimilarDurationMs(draft.neighborsDurationMs ?? null);
+            setSimilarReady(true);
+          });
           const gated = !forced && !!quality && (quality.verdict === "reject" || quality.verdict === "suspicious");
           if (gated) {
             batch(() => {
@@ -1725,7 +1731,6 @@ export default function NewProduct() {
             });
             return;
           }
-          setQueryQuality(quality);
           const wantSpec = (!ktruLocked() || !spgzLocked()) && !!(draft.ktru || draft.spgz || draft.kpgz);
           const spec = !wantSpec ? catalogSpecialization() : !ktruLocked() && !spgzLocked()
             ? draft.specialization
@@ -1782,7 +1787,6 @@ export default function NewProduct() {
           if (!alive) return;
 
           batch(() => {
-            setSimilar(draft.neighbors);
             setCatalogSpecialization(spec);
             if (!ktruLocked()) setOkpdKtruDecision(draft.okpdKtruDecision);
             if (!spgzLocked()) setKpgzSpgzDecision(draft.kpgzSpgzDecision);
@@ -1866,11 +1870,13 @@ export default function NewProduct() {
   createEffect(on([description, kpgz, suggesting, ktruVote, spgz], ([text, category, categoryLoading]) => {
     setCatalogCharacteristicsError("");
     setCatalogCharacteristicsLoading(false);
+    setCatalogCharacteristicSuggestions([]);
     if (categoryLoading || !category?.code || text.trim().length < 3) return;
     let alive = true;
     setCatalogCharacteristicsLoading(true);
     void getCatalogCharacteristics(category.code).then((stats) => {
       if (!alive) return;
+      setCatalogCharacteristicSuggestions(stats);
       // Official КПГЗ schema gaps only while СПГЗ is unset — эталонные already come from СПГЗ.
       const catalogStats = spgz()?.code
         ? stats.filter((item) => item.scope !== "schema")
@@ -1941,7 +1947,7 @@ export default function NewProduct() {
       return;
     }
     const snapshot = new Map(characteristics().map((item) => [item.id, item]));
-    const productSnapshot = { brand: brand(), sku: sku(), model: model() };
+    const productSnapshot = { name: name(), brand: brand(), sku: sku(), model: model() };
     const rows = displayCharacteristics();
     const ctrl = new AbortController();
     autofillController = ctrl;
@@ -2002,7 +2008,7 @@ export default function NewProduct() {
         }
         autofilledProductEvidence.clear();
         const applyProduct = (
-          keyName: "model" | "manufacturer" | "article",
+          keyName: "name" | "model" | "manufacturer" | "article",
           current: string,
           setter: (value: string) => void,
         ) => {
@@ -2015,6 +2021,7 @@ export default function NewProduct() {
           autofilledProductValues.set(keyName, extracted.value.trim());
           if (extracted.evidence) autofilledProductEvidence.set(keyName, extracted.evidence);
         };
+        if (name() === productSnapshot.name) applyProduct("name", name(), setName);
         applyProduct("manufacturer", productSnapshot.brand, setBrand);
         applyProduct("article", productSnapshot.sku, setSku);
         applyProduct("model", productSnapshot.model, setModel);
@@ -2070,7 +2077,6 @@ export default function NewProduct() {
           setRefinedCategories(changed);
           requestAnimationFrame(() => {
             if (!autofillCompleted() || autofillBusy() || !categorySection?.isConnected) return;
-            moveCategories(true);
             scrollToResult(categorySection);
           });
         }
@@ -2143,9 +2149,27 @@ export default function NewProduct() {
     });
   };
 
-  const updateCharacteristicName = (id: string, name: string) => {
-    const ids = new Set(linkedIdsFor(id));
-    setCharacteristics((items) => items.map((item) => ids.has(item.id) ? { ...item, name } : item));
+  const editCharacteristicSchema = (item: DraftCharacteristic) => {
+    setEditingCharacteristic(item);
+    setCharacteristicEditorOpen(true);
+  };
+
+  const saveCharacteristicSchema = (field: DraftCharacteristic) => {
+    if (noNewFeatures()) return;
+    const prior = characteristics().find((item) => item.id === field.id);
+    if (prior) {
+      manuallyEditedCharacteristics.delete(characteristicEditKey(prior));
+      manuallyEditedCharacteristicValues.delete(characteristicEditKey(prior));
+      autofilledCharacteristicValues.delete(characteristicEditKey(prior));
+    }
+    setCharacteristics((items) => [
+      ...items.filter((item) => item.id !== field.id
+        && !(item.source === "catalog" && characteristicNameKey(item.name) === characteristicNameKey(field.name))),
+      field,
+    ]);
+    markCharacteristicEdited(new Set([field.id]));
+    setCharacteristicEditorOpen(false);
+    saveActiveQueryDraft();
   };
 
   const updateCharacteristicRange = (id: string, rangeOption: string) => {
@@ -2168,23 +2192,8 @@ export default function NewProduct() {
 
   const addCustomCharacteristic = () => {
     if (noNewFeatures()) return;
-    const id = `custom-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-    setCharacteristics((items) => [...items, {
-      id,
-      name: "",
-      value: "",
-      rangeOption: "",
-      required: false,
-      badges: [],
-      hint: "",
-      options: [],
-      optionLabels: {},
-      ranges: [],
-      unit: "",
-      multiple: false,
-      source: "custom",
-      custom: true,
-    }]);
+    setEditingCharacteristic(undefined);
+    setCharacteristicEditorOpen(true);
   };
 
   const selectedOptions = (value: string) => splitCharacteristicValues(value);
@@ -2234,9 +2243,28 @@ export default function NewProduct() {
     <section ref={descriptionSection} class="create-describe" aria-labelledby="describe-heading">
       <div class="section-heading create-describe-heading">
         <FileText size={20} strokeWidth={1.6} /><h2 id="describe-heading">Описание</h2>
-        <Show when={!suggesting() && (queryQuality()?.durationMs ?? 0) > 0}>
-          <span>{formatSuggestTiming(queryQuality()!.durationMs!)}</span>
-        </Show>
+        <Show when={queryQuality()}>{quality =>
+          <span
+            class="create-query-quality-status"
+            classList={{
+              "is-ok": quality().verdict === "ok",
+              "is-failed": quality().verdict === "reject" || quality().verdict === "suspicious",
+            }}
+            role="status"
+            title={quality().verdict === "ok" ? "Проверка описания пройдена"
+              : quality().verdict === "unchecked" ? "Описание не проверено"
+              : "Проверка описания не пройдена"}
+          >
+            <Show when={(quality().durationMs ?? 0) > 0}>
+              {formatSuggestTiming(quality().durationMs!)}
+            </Show>
+            <Show when={quality().verdict !== "unchecked"} fallback={<CircleAlert size={14} aria-label="Описание не проверено" />}>
+              <Show when={quality().verdict === "ok"} fallback={<X size={14} aria-label="Проверка описания не пройдена" />}>
+                <Check size={14} aria-label="Проверка описания пройдена" />
+              </Show>
+            </Show>
+          </span>
+        }</Show>
         <div class="create-top-actions">
           <Button variant="ghost" size="sm" type="button" onClick={reset} disabled={!hasDraft()}><RotateCcw size={14} />Очистить</Button>
           <Button variant="secondary" size="sm" class="create-example-button" type="button" onClick={fillExample}><Lightbulb size={15} />Пример</Button>
@@ -2413,10 +2441,17 @@ export default function NewProduct() {
     </section>
 
     <Show when={description().trim().length >= 3}>
-      <section class="create-live" classList={{ "create-live-near-characteristics": categoriesNearCharacteristics() }} aria-live="polite">
+      <section class="create-live" aria-live="polite">
         <div class="create-live-similar">
-          <div class="section-heading"><Sparkles size={18} strokeWidth={1.6} /><h2>Похожие товары</h2></div>
-          <Show when={!suggesting()} fallback={<SimilarSuggestSkeleton />}>
+          <div class="section-heading">
+            <Sparkles size={18} strokeWidth={1.6} /><h2>Похожие товары</h2>
+            <Show when={similarDurationMs() != null}>
+              <span title="Время до появления первых похожих товаров, включая проверку описания">
+                {formatSuggestTiming(similarDurationMs()!)}
+              </span>
+            </Show>
+          </div>
+          <Show when={similarReady() || !suggesting()} fallback={<SimilarSuggestSkeleton />}>
             <Show when={similar().length} fallback={<p class="create-live-hint">Похожих товаров пока нет — уточните описание.</p>}>
               <div class="create-similar-row"><For each={similar()}>{product => <ProductCard product={product} returnTo="/" />}</For></div>
             </Show>
@@ -2431,34 +2466,31 @@ export default function NewProduct() {
             </Show>
           </div>
           <Show when={!suggesting()} fallback={<CategorySuggestSkeleton />}>
-            <Show when={hasCategory() || okpdKtruDecision()?.needsChoice || kpgzSpgzDecision()?.needsChoice} fallback={<p class="create-live-hint">Пока не удалось вывести категории — уточните описание или выберите коды вручную.</p>}>
-              <CategoryPairs
-                okpd2={okpd2()}
-                ktru={ktruVote()}
-                kpgz={kpgz()}
-                spgz={spgz()}
-                highlightedKtru={refinedCategories().ktru}
-                highlightedSpgz={refinedCategories().spgz}
-                previousKtru={categoriesBeforeAutofill().ktru}
-                previousSpgz={categoriesBeforeAutofill().spgz}
-                onEditKtru={openKtruPicker}
-                onEditSpgz={openSpgzPicker}
-                okpdKtruDecision={okpdKtruDecision()}
-                kpgzSpgzDecision={kpgzSpgzDecision()}
-                onPickOkpdKtru={pickOkpdKtruAlternative}
-                onPickKpgzSpgz={pickKpgzSpgzAlternative}
-              />
-            </Show>
+            <CategoryPairs
+              okpd2={okpd2()}
+              ktru={ktruVote()}
+              kpgz={kpgz()}
+              spgz={spgz()}
+              highlightedKtru={refinedCategories().ktru}
+              highlightedSpgz={refinedCategories().spgz}
+              previousKtru={categoriesBeforeAutofill().ktru}
+              previousSpgz={categoriesBeforeAutofill().spgz}
+              onEditKtru={openKtruPicker}
+              onEditSpgz={openSpgzPicker}
+              okpdKtruDecision={okpdKtruDecision()}
+              kpgzSpgzDecision={kpgzSpgzDecision()}
+              onPickOkpdKtru={pickOkpdKtruAlternative}
+              onPickKpgzSpgz={pickKpgzSpgzAlternative}
+            />
           </Show>
         </div>
       </section>
     </Show>
 
     <Show when={hasDraft()}>
-      <section ref={characteristicsSection} class="characteristics-section create-characteristics" aria-labelledby="create-chars-heading">
+      <section class="characteristics-section create-characteristics" aria-labelledby="create-chars-heading">
         <div class="section-heading create-char-heading">
           <Tags size={21} strokeWidth={1.6} /><h2 id="create-chars-heading">Характеристики</h2>
-          <Show when={displayCharacteristics().length}><span>{filledCount()} / {displayCharacteristics().length}</span></Show>
           <Show when={!autofillBusy() && autofillDurationMs() != null}>
             <span>{formatSuggestTiming(autofillDurationMs()!)}</span>
           </Show>
@@ -2511,7 +2543,7 @@ export default function NewProduct() {
             </>}</For>
           </p>
         </Show>
-        <Show when={displayCharacteristics().length} fallback={
+        <Show when={visibleCharacteristics().length} fallback={
           <div class="create-char-empty">
             <p class="no-characteristics">Выберите КТРУ или СПГЗ — появятся поля из справочников.</p>
             <Show when={leafChoices(okpdKtruDecision(), "ktru")?.alternatives.length} fallback={
@@ -2532,7 +2564,7 @@ export default function NewProduct() {
             </Show>
           </div>
         }>
-          <dl class="characteristics-table create-char-fields dir-characteristics-table"><Index each={displayCharacteristics()}>{item =>
+          <dl class="characteristics-table create-char-fields dir-characteristics-table"><Index each={visibleCharacteristics()}>{item =>
             <CreateCharRow
               item={item}
               choiceOptions={choiceOptions}
@@ -2540,7 +2572,7 @@ export default function NewProduct() {
               selectedOptions={selectedOptions}
               refinedRefs={refinedPositionRefs(item())}
               onUpdate={updateCharacteristic}
-              onUpdateName={updateCharacteristicName}
+              onEditSchema={editCharacteristicSchema}
               onUpdateRange={updateCharacteristicRange}
               onTogglePositionRefine={togglePositionRefine}
               onRemove={removeCharacteristic}
@@ -2549,8 +2581,7 @@ export default function NewProduct() {
             />
           }</Index></dl>
         </Show>
-        <Show when={hasKtruPosition()}>
-          <Show when={noNewFeatures()} fallback={
+        <Show when={noNewFeatures()} fallback={
             <div class="create-char-footer">
               <button type="button" class="create-char-add" onClick={addCustomCharacteristic}>
                 <Plus size={13} strokeWidth={1.8} />Добавить характеристику
@@ -2564,7 +2595,6 @@ export default function NewProduct() {
                 <Show when={noNewFeaturesReason()}><p class="create-char-alert-reason">{noNewFeaturesReason()}</p></Show>
               </div>
             </div>
-          </Show>
         </Show>
       </section>
 
@@ -2634,9 +2664,9 @@ export default function NewProduct() {
         <div class="detail-summary create-summary">
           <div class="detail-category">{selected()?.name || ktruVote()?.name || spgz()?.name || "Категория не выбрана"}</div>
           <div class="create-name-wrap">
-            <TextField class="create-name-field" name="product-name" value={name()} onChange={setName} required>
+            <TextField class="create-name-field" name="product-name" value={name()} onChange={(value) => { manuallyEditedProductFields.add("name"); autofilledProductEvidence.delete("name"); setProductEvidenceVersion((v) => v + 1); setName(value); }} required>
               <TextFieldLabel class="sr-only">Наименование</TextFieldLabel>
-              <TextFieldTextarea id="product-name" required placeholder="Наименование товара" maxlength={200} rows={2} />
+              <TextFieldTextarea id="product-name" required placeholder="Наименование товара" rows={2} />
             </TextField>
             <span class="create-name-edit" aria-hidden="true" title="Можно изменить">
               <Pencil size={15} strokeWidth={1.6} />
@@ -2682,6 +2712,18 @@ export default function NewProduct() {
       </section>
 
     </Show>
+
+    <Dialog open={characteristicEditorOpen()} onOpenChange={setCharacteristicEditorOpen}>
+      <Show when={characteristicEditorOpen()}>
+        <CharacteristicEditor
+          item={editingCharacteristic()}
+          statistics={catalogCharacteristicSuggestions()}
+          existing={visibleCharacteristics()}
+          onSave={saveCharacteristicSchema}
+          onCancel={() => setCharacteristicEditorOpen(false)}
+        />
+      </Show>
+    </Dialog>
 
     <Dialog open={ktruPickerOpen()} onOpenChange={setKtruPickerOpen}>
       <Show when={ktruPickerOpen()}>

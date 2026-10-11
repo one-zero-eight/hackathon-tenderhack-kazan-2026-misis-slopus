@@ -41,7 +41,7 @@ export function appendCatalogCharacteristics(
 export function catalogOptionPopularity(field: DraftCharacteristic, option: string): { count: number; total: number; percent: number } | undefined {
   const stats = field.catalogFrequency;
   if (!stats) return undefined;
-  if (option === "-") {
+  if (option === "—") {
     if (!stats.total) return undefined;
     const count = stats.total - stats.count;
     return { count, total: stats.total, percent: Math.round(count / stats.total * 100) };

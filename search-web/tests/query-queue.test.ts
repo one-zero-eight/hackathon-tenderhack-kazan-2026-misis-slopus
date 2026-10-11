@@ -109,6 +109,28 @@ test("abortInFlight cancels the active request without resuming the queue", asyn
   void second;
 });
 
+test("progress arrives before completion, merges stages and ignores aborted requests", async () => {
+  type Result = { quality: string; neighbors: number[] };
+  const job = deferred<Result>();
+  let report!: (progress: Partial<Result>) => void;
+  const queue = new QueryQueue<Result>((_text, _signal, reportProgress) => {
+    report = reportProgress;
+    return job.promise;
+  }, () => {});
+  const [item] = queue.add(["молоток"]);
+  const request = queue.run(item.id);
+  await flush();
+  report({ quality: "ok" });
+  report({ neighbors: [1, 2] });
+  assert.equal(queue.items[0].status, "processing");
+  assert.equal(queue.items[0].result, undefined);
+  assert.deepEqual(queue.items[0].progress, { quality: "ok", neighbors: [1, 2] });
+  queue.abortInFlight();
+  await assert.rejects(request, { name: "AbortError" });
+  report({ neighbors: [3] });
+  assert.deepEqual(queue.items[0].progress?.neighbors, [1, 2]);
+});
+
 test("history is normalized, deduplicated, newest first, limited and round-trips through storage", () => {
   const history = rememberQuery(rememberQuery([], "  Молоток   500 г ", 1), "Шкаф", 2);
   const updated = rememberQuery(history, "Молоток 500 г", 3);
