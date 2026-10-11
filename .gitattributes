@@ -1,6 +1,11 @@
 data/**/*.gz filter=lfs diff=lfs merge=lfs -text
 data/**/*.parquet filter=lfs diff=lfs merge=lfs -text
 slides/*.html filter=lfs diff=lfs merge=lfs -text
-slides/*.png filter=lfs diff=lfs merge=lfs -text
+slides/**/*.png filter=lfs diff=lfs merge=lfs -text
+slides/**/*.jpg filter=lfs diff=lfs merge=lfs -text
+slides/**/*.jpeg filter=lfs diff=lfs merge=lfs -text
+slides/**/*.webp filter=lfs diff=lfs merge=lfs -text
+slides/**/*.gif filter=lfs diff=lfs merge=lfs -text
+slides/**/*.svg filter=lfs diff=lfs merge=lfs -text
 slides/*.cjs filter=lfs diff=lfs merge=lfs -text
 slides/*.json filter=lfs diff=lfs merge=lfs -text
