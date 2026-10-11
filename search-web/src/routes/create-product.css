@@ -926,6 +926,43 @@
   color: #765119;
   line-height: 1.5;
 }
+.create-confidence-toggle { display: inline-flex; align-items: center; gap: 4px; margin-right: 6px; }
+.create-confidence-switch { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; }
+.create-confidence-switch-label { color: #55627a; font-size: 12px; cursor: pointer; user-select: none; }
+.create-confidence-switch-control {
+  display: inline-flex;
+  align-items: center;
+  width: 32px;
+  height: 18px;
+  padding: 2px;
+  border-radius: 999px;
+  background: #c5cedc;
+  transition: background 0.15s;
+}
+.create-confidence-switch-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 2px #0003;
+  transition: transform 0.15s;
+}
+.create-confidence-switch[data-checked] .create-confidence-switch-control { background: #264b82; }
+.create-confidence-switch[data-checked] .create-confidence-switch-thumb { transform: translateX(14px); }
+.create-confidence-switch:has(input:focus-visible) .create-confidence-switch-control { outline: 2px solid #264b82; outline-offset: 2px; }
+.create-confidence-help {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: #7c8aa3;
+  cursor: help;
+}
+.create-confidence-help:hover { color: #264b82; }
+.create-confidence-help:focus-visible { outline: 2px solid #264b82; outline-offset: 1px; color: #264b82; }
 .create-char-text-input { display: flex; align-items: center; min-width: 0; gap: 6px; }
 .create-char-text-input.has-confidence {
   height: 32px;

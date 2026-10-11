@@ -1,7 +1,9 @@
 import { Meta, Title } from "@solidjs/meta";
 import { A } from "@solidjs/router";
 import * as Tooltip from "@kobalte/core/tooltip";
+import * as Switch from "@kobalte/core/switch";
 import CircleAlert from "lucide-solid/icons/circle-alert";
+import CircleHelp from "lucide-solid/icons/circle-help";
 import ClipboardList from "lucide-solid/icons/clipboard-list";
 import Check from "lucide-solid/icons/check";
 import LoaderCircle from "lucide-solid/icons/loader-circle";
@@ -34,7 +36,6 @@ import {
   isYesNoOptions,
   matchCharacteristicOption,
   matchNumberToRange,
-  parseCharacteristicNumber,
   splitCharacteristicValues,
   yesNoOptionPair,
 } from "~/lib/characteristic-options";
@@ -44,6 +45,8 @@ import {
   appendWebCharacteristics,
   autofillCharacteristicFields,
   characteristicUnitsEquivalent,
+  characteristicValueForSchema,
+  characteristicValueUpdates,
   autofillConfidencePresentation,
   buildDisplayCharacteristics,
   catalogFrequencyLabel,
@@ -137,6 +140,8 @@ import {
   setSuggestDurationMs,
   setSuggesting,
   similar,
+  setShowConfidence,
+  showConfidence,
   similarDurationMs,
   sku,
   spgz,
@@ -308,11 +313,13 @@ type RefinedPositionRef = {
   kindLabel: string;
 };
 
+const CONFIDENCE_VISIBLE_KEY = "zakupki.create.show-confidence.v1";
+
 function AutofillConfidence(props: { item: DraftCharacteristic; inSelect?: boolean }) {
   const score = () => props.item.autofill;
   const diagnostics = () => props.item.autofillDiagnostics;
   const presentation = () => autofillConfidencePresentation(score()!.confidence);
-  return <Show when={score() && props.item.value.trim()}>
+  return <Show when={showConfidence() && score() && props.item.value.trim()}>
     <Tooltip.Root placement="top" openDelay={200} closeDelay={100} gutter={8}>
       <Tooltip.Trigger
         as="span"
@@ -444,13 +451,13 @@ function CreateCharRow(props: {
                 </Show>
               </dt>
               <dd>
-                <div class="create-char-value" classList={{ "has-confidence": !!item().autofill && !!item().value.trim() }}>
+                <div class="create-char-value" classList={{ "has-confidence": showConfidence() && !!item().autofill && !!item().value.trim() }}>
                 <Show when={item().source === "catalog" || (item().custom && !!item().catalogFrequency && !item().options.length && !item().ranges.length)} fallback={
                 <Show when={isRangeCharacteristic(item())} fallback={
                   <Show when={(item().options ?? []).length} fallback={
                     <TextField class="create-inline-field" value={item().value} onChange={(value) => props.onUpdate(item().id, value)}>
                       <TextFieldLabel class="sr-only">{item().name || "Значение характеристики"}</TextFieldLabel>
-                      <div class="create-char-text-input" classList={{ "has-confidence": !!item().autofill && !!item().value.trim() }}>
+                      <div class="create-char-text-input" classList={{ "has-confidence": showConfidence() && !!item().autofill && !!item().value.trim() }}>
                         <TextFieldInput
                           inputmode={item().numeric ? "decimal" : "text"}
                           placeholder={item().numeric ? "Число" : item().custom ? "Значение" : item().hint ? `Напр.: ${item().hint.split(" · ")[0]}` : "Укажите значение"}
@@ -539,7 +546,7 @@ function CreateCharRow(props: {
                   </Show>
                 }>
                   <div class="create-char-quantity">
-                    <div class="create-char-number" classList={{ "has-confidence": !!item().autofill && !!item().value.trim() }}>
+                    <div class="create-char-number" classList={{ "has-confidence": showConfidence() && !!item().autofill && !!item().value.trim() }}>
                     <div
                       class="create-char-quantity-input"
                       onClick={(event) => event.currentTarget.querySelector("input")?.focus()}
@@ -844,7 +851,12 @@ export default function NewProduct() {
       if (progress.neighborError) setSuggestError(progress.neighborError);
     });
   });
+  const toggleConfidence = (visible: boolean) => {
+    setShowConfidence(visible);
+    try { localStorage.setItem(CONFIDENCE_VISIBLE_KEY, visible ? "1" : "0"); } catch { /* настройка не сохранится, но работает */ }
+  };
   onMount(() => {
+    try { if (localStorage.getItem(CONFIDENCE_VISIBLE_KEY) === "1") setShowConfidence(true); } catch { /* по умолчанию скрыты */ }
     try {
       const raw = localStorage.getItem(QUERY_HISTORY_KEY) ?? localStorage.getItem(QUERY_HISTORY_KEY_LEGACY);
       setQueryHistory(parseQueryHistory(raw));
@@ -2082,6 +2094,7 @@ export default function NewProduct() {
     }
     const refinementPass = autofillRefinementPass;
     const snapshot = new Map(characteristics().map((item) => [item.id, item]));
+    const previousAutofill = new Map(autofilledCharacteristicValues);
     const productSnapshot = { name: name(), brand: brand(), sku: sku(), model: model() };
     const rows = displayCharacteristics();
     const ctrl = new AbortController();
@@ -2109,17 +2122,14 @@ export default function NewProduct() {
             const current = characteristics().find((item) => item.id === id);
             if (!prior || !current || manuallyEditedCharacteristics.has(characteristicEditKey(current))) continue;
             if (current.value !== prior.value || current.rangeOption !== prior.rangeOption) continue;
-            const previousAuto = autofilledCharacteristicValues.get(characteristicEditKey(current));
+            const previousAuto = previousAutofill.get(characteristicEditKey(current));
             const isEmpty = !current.value.trim() && !current.rangeOption.trim();
             const isPreviousAuto = previousAuto?.value === current.value && previousAuto?.rangeOption === current.rangeOption;
             if (!isEmpty && (refinementPass || input.webFacts?.length || !isPreviousAuto)) continue;
             const accepted = answer?.status === "accepted" && answer.value != null && String(answer.value).trim();
-            const value = accepted ? String(answer.value) : "";
-            const rangeOption = accepted
-              ? (answer.rangeOption || (isRangeCharacteristic(current)
-                ? (value ? matchNumberToRange(Number(value), current.ranges) ?? "" : "")
-                : ""))
-              : "";
+            const { value, rangeOption } = characteristicValueForSchema(
+              current, accepted ? String(answer.value) : "", accepted ? answer.rangeOption || "" : "",
+            );
             const diagnostics = answer ? {
               status: answer.status,
               confidence: answer.confidence,
@@ -2143,6 +2153,25 @@ export default function NewProduct() {
               autofillDiagnostics: diagnostics,
             });
             autofilledCharacteristicValues.set(characteristicEditKey(current), { value, rangeOption });
+          }
+        }
+        // Reuse an accepted value only where the other directory allows it.
+        // Never replace manual values or another independently accepted answer.
+        for (const [sourceId, update] of new Map(updates)) {
+          if (!update.autofill || !update.value.trim()) continue;
+          const shared = characteristicValueUpdates(characteristics(), new Set([sourceId]), update.value);
+          for (const [id, mapped] of shared) {
+            if (id === sourceId || updates.get(id)?.value.trim()) continue;
+            const current = characteristics().find((item) => item.id === id);
+            const prior = snapshot.get(id);
+            if (!current || !prior || manuallyEditedCharacteristics.has(characteristicEditKey(current))) continue;
+            if (current.value !== prior.value || current.rangeOption !== prior.rangeOption) continue;
+            const previousAuto = previousAutofill.get(characteristicEditKey(current));
+            const isEmpty = !current.value.trim() && !current.rangeOption.trim();
+            const isPreviousAuto = previousAuto?.value === current.value && previousAuto?.rangeOption === current.rangeOption;
+            if (!isEmpty && (refinementPass || input.webFacts?.length || !isPreviousAuto)) continue;
+            updates.set(id, { ...update, ...mapped });
+            autofilledCharacteristicValues.set(characteristicEditKey(current), mapped);
           }
         }
         if (!refinementPass && !input.webFacts?.length) autofilledProductEvidence.clear();
@@ -2254,21 +2283,18 @@ export default function NewProduct() {
   };
 
   const updateCharacteristic = (id: string, value: string) => {
-    const ids = new Set(linkedIdsFor(id));
-    const target = characteristics().find((item) => ids.has(item.id));
-    const next = target?.options.length ? mapValueToOptions(value, target.options) : value;
-    if (!target || target.value === next) return;
+    const linked = new Set(linkedIdsFor(id));
+    const target = characteristics().find((item) => linked.has(item.id));
+    if (!target) return;
+    const next = characteristicValueForSchema(target, value).value;
+    const updates = characteristicValueUpdates(characteristics(), linked, next);
+    const ids = new Set(updates.keys());
+    if (characteristics().filter((item) => ids.has(item.id)).every((item) =>
+      item.value === updates.get(item.id)!.value && item.rangeOption === updates.get(item.id)!.rangeOption)) return;
     markCharacteristicEdited(ids);
     setCharacteristics((items) => items.map((item) => {
-      if (!ids.has(item.id)) return item;
-      if (!isRangeCharacteristic(item)) return { ...item, value: next, autofill: undefined };
-      const number = parseCharacteristicNumber(next);
-      return {
-        ...item,
-        value: next,
-        autofill: undefined,
-        rangeOption: number == null ? "" : (matchNumberToRange(number, item.ranges) ?? ""),
-      };
+      const update = updates.get(item.id);
+      return update ? { ...item, ...update, autofill: undefined } : item;
     }));
     markCharacteristicEdited(ids);
     setCharacteristics((items) => items.filter((item) => !item.templateKtruCode || item.value.trim() || item.rangeOption.trim()));
@@ -2644,6 +2670,30 @@ export default function NewProduct() {
             <span>{formatSuggestTiming(autofillDurationMs()!)}</span>
           </Show>
           <div class="create-char-actions">
+            <Show when={displayCharacteristics().length}>
+              <div class="create-confidence-toggle">
+                <Switch.Root class="create-confidence-switch" checked={showConfidence()} onChange={toggleConfidence}>
+                  <Switch.Input />
+                  <Switch.Control class="create-confidence-switch-control">
+                    <Switch.Thumb class="create-confidence-switch-thumb" />
+                  </Switch.Control>
+                  <Switch.Label class="create-confidence-switch-label">Проценты</Switch.Label>
+                </Switch.Root>
+                <Tooltip.Root placement="top" openDelay={150} closeDelay={100} gutter={8}>
+                  <Tooltip.Trigger as="button" type="button" class="create-confidence-help" aria-label="Что означают проценты">
+                    <CircleHelp size={15} />
+                  </Tooltip.Trigger>
+                  <Tooltip.Portal>
+                    <Tooltip.Content class="create-char-confidence-tooltip">
+                      <strong>Проценты рядом с характеристиками</strong>
+                      <p>Так Jev оценивает, насколько значение подтверждено описанием товара. Это не гарантия правильности.</p>
+                      <p>Переключатель скрывает проценты или показывает их снова.</p>
+                      <Tooltip.Arrow />
+                    </Tooltip.Content>
+                  </Tooltip.Portal>
+                </Tooltip.Root>
+              </div>
+            </Show>
             <Button
               type="button"
               variant="ghost"

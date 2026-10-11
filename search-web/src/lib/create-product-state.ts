@@ -19,6 +19,8 @@ export const [name, setName] = createSignal("");
 export const [sku, setSku] = createSignal("");
 export const [model, setModel] = createSignal("");
 export const [brand, setBrand] = createSignal("");
+/** Показывать ли проценты проверки Jev рядом со значениями характеристик (переключатель в заголовке блока); по умолчанию скрыты. */
+export const [showConfidence, setShowConfidence] = createSignal(false);
 const [descriptionValue, updateDescription] = createSignal("");
 export const description = descriptionValue;
 export const [selected, setSelected] = createSignal<KtruTreeNode | null>(null);

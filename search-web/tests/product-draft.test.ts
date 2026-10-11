@@ -25,7 +25,7 @@ import {
 import type { CatalogCharacteristic, CategoryPairDecision, DraftCharacteristic, WebEnrichmentSuggestion } from "../src/lib/types";
 import { characteristicRangeProblem } from "../src/lib/characteristic-options";
 import { draftFromSpgzCharacteristic } from "../src/lib/spgz-characteristics";
-import { appendCatalogCharacteristics, appendWebCharacteristics, autofillConfidencePresentation, buildDisplayCharacteristics, catalogFrequencyLabel, catalogOptionPopularity, characteristicSourceLabel, retainTemplateCharacteristics, schemaEquivalent } from "../src/lib/merge-characteristics";
+import { appendCatalogCharacteristics, appendWebCharacteristics, autofillConfidencePresentation, buildDisplayCharacteristics, catalogFrequencyLabel, catalogOptionPopularity, characteristicSourceLabel, characteristicValueUpdates, retainTemplateCharacteristics, schemaEquivalent } from "../src/lib/merge-characteristics";
 
 
 const webSuggestion: WebEnrichmentSuggestion = {
@@ -498,6 +498,69 @@ test("schema merge requires compatible units, numeric flags and multiplicity", (
   assert.equal(schemaEquivalent(ktru, spgzDifferentUnit), false);
   assert.equal(buildDisplayCharacteristics([ktru, spgzDifferentUnit]).length, 2);
   assert.equal(buildDisplayCharacteristics([ktru, spgzSame]).length, 1);
+});
+
+test("overlapping directory choices stay complete and only shared selections fill both fields", () => {
+  const ktru: DraftCharacteristic = {
+    ...draftFromSpgzCharacteristic({ name: "Размер", options: ["56", "58", "60"] }),
+    id: "ktru:size", source: "ktru", value: "",
+  };
+  const spgz = { ...ktru, id: "spgz:size", source: "spgz" as const, name: " РАЗМЕР ", options: ["58", "60", "62"] };
+  const items = [ktru, spgz];
+  const before = structuredClone(items);
+  const rows = buildDisplayCharacteristics(items);
+  assert.equal(rows.length, 2);
+  assert.deepEqual(rows.map((row) => row.options), [["56", "58", "60"], ["58", "60", "62"]]);
+  assert.deepEqual([...characteristicValueUpdates(items, new Set([ktru.id]), "58").keys()], [ktru.id, spgz.id]);
+  assert.deepEqual([...characteristicValueUpdates(items, new Set([spgz.id]), "60").keys()], [spgz.id, ktru.id]);
+  assert.deepEqual([...characteristicValueUpdates(items, new Set([ktru.id]), "56").keys()], [ktru.id]);
+  assert.deepEqual([...characteristicValueUpdates(items, new Set([spgz.id]), "62").keys()], [spgz.id]);
+  const selected = items.map((item) => ({ ...item, value: "58" }));
+  const exclusive = characteristicValueUpdates(selected, new Set([ktru.id]), "56");
+  assert.equal(exclusive.has(spgz.id), false, "an exclusive selection preserves the other field");
+  assert.deepEqual([...characteristicValueUpdates(selected, new Set([ktru.id]), "").keys()], [ktru.id]);
+  assert.deepEqual(items, before);
+});
+
+test("shared characteristic values preserve directory spelling and require compatible identities", () => {
+  const ktru: DraftCharacteristic = {
+    ...draftFromSpgzCharacteristic({ name: "Материал", options: ["Сталь", "Дерево"] }),
+    id: "ktru:material", source: "ktru",
+  };
+  const spgz = { ...ktru, id: "spgz:material", source: "spgz" as const, options: ["СТАЛЬ", "Пластик"] };
+  assert.equal(characteristicValueUpdates([ktru, spgz], new Set([ktru.id]), "Сталь").get(spgz.id)?.value, "СТАЛЬ");
+  for (const other of [
+    { ...spgz, unit: "кг" }, { ...spgz, okeiCode: "166" }, { ...spgz, numeric: true },
+    { ...spgz, multiple: true }, { ...spgz, source: "custom" as const }, { ...spgz, name: "Материал ручки" },
+    { ...spgz, options: ["Пластик"] },
+  ]) assert.equal(characteristicValueUpdates([ktru, other], new Set([ktru.id]), "Сталь").has(other.id), false);
+});
+
+test("numeric values synchronize across overlapping ranges using each directory bucket", () => {
+  const ktru: DraftCharacteristic = {
+    ...draftFromSpgzCharacteristic({ name: "Масса", unit: "кг" }),
+    id: "ktru:mass", source: "ktru", numeric: true, options: ["ktru-range"],
+    ranges: [{ option: "ktru-range", min: 1, max: 5, minInclusive: true, maxInclusive: true }],
+  };
+  const spgz = { ...ktru, id: "spgz:mass", source: "spgz" as const, options: ["spgz-range"],
+    ranges: [{ option: "spgz-range", min: 3, max: 7, minInclusive: false, maxInclusive: true }] };
+  const items = [ktru, spgz];
+  assert.equal(buildDisplayCharacteristics(items).length, 2);
+  assert.deepEqual(characteristicValueUpdates(items, new Set([ktru.id]), "4").get(spgz.id), { value: "4", rangeOption: "spgz-range" });
+  for (const value of ["2", "3", "8", "abc", ""]) {
+    assert.equal(characteristicValueUpdates(items, new Set([ktru.id]), value).has(spgz.id), false);
+  }
+  assert.equal(characteristicValueUpdates(items, new Set([ktru.id]), "", "ktru-range").has(spgz.id), false);
+});
+
+test("multiple values synchronize only when the complete selection is shared", () => {
+  const ktru: DraftCharacteristic = {
+    ...draftFromSpgzCharacteristic({ name: "Материал", options: ["Сталь", "Медь", "Дерево"] }),
+    id: "ktru:material", source: "ktru", multiple: true,
+  };
+  const spgz = { ...ktru, id: "spgz:material", source: "spgz" as const, options: ["СТАЛЬ", "МЕДЬ", "Пластик"] };
+  assert.equal(characteristicValueUpdates([ktru, spgz], new Set([ktru.id]), "Сталь · Медь").get(spgz.id)?.value, "СТАЛЬ · МЕДЬ");
+  assert.equal(characteristicValueUpdates([ktru, spgz], new Set([ktru.id]), "Сталь · Дерево").has(spgz.id), false);
 });
 
 test("autofill confidence uses readable levels without presenting it as guaranteed accuracy", () => {

@@ -145,7 +145,11 @@ export function schemaEquivalent(a: DraftCharacteristic, b: DraftCharacteristic)
   if (!!a.numeric !== !!b.numeric) return false;
   if (!!a.multiple !== !!b.multiple) return false;
   if (!optionsEquivalent(a.options ?? [], b.options ?? [])) return false;
-  if ((a.ranges?.length ?? 0) !== (b.ranges?.length ?? 0)) return false;
+  if (a.ranges.length !== b.ranges.length) return false;
+  if (!a.ranges.every((left) => b.ranges.some((right) =>
+    normalizeOptionKey(left.option) === normalizeOptionKey(right.option)
+    && left.min === right.min && left.max === right.max
+    && left.minInclusive === right.minInclusive && left.maxInclusive === right.maxInclusive))) return false;
   return true;
 }
 
@@ -154,6 +158,62 @@ export function mapValueToOptions(value: string, options: string[]): string {
   if (!raw || !options.length) return raw;
   const key = normalizeOptionKey(raw);
   return options.find((option) => normalizeOptionKey(option) === key) ?? raw;
+}
+
+/** Keep each directory's own option and range identifiers when sharing a value. */
+export function characteristicValueForSchema(
+  field: DraftCharacteristic, value: string, rangeOption = "",
+): Pick<DraftCharacteristic, "value" | "rangeOption"> {
+  if (isRangeCharacteristic(field)) {
+    const number = Number(value.trim().replace(",", "."));
+    return {
+      value,
+      rangeOption: value.trim() && Number.isFinite(number)
+        ? matchNumberToRange(number, field.ranges) ?? ""
+        : rangeOption ? mapValueToOptions(rangeOption, field.options) : "",
+    };
+  }
+  return {
+    value: field.multiple
+      ? value.split(/\s*·\s*/).map((part) => mapValueToOptions(part, field.options)).join(" · ")
+      : mapValueToOptions(value, field.options),
+    rangeOption: "",
+  };
+}
+
+function acceptsSharedValue(field: DraftCharacteristic, value: string, rangeOption: string): boolean {
+  if (isRangeCharacteristic(field)) {
+    if (!value.trim()) return false; // A bucket alone is not a concrete measurement.
+    const number = Number(value.trim().replace(",", "."));
+    return Number.isFinite(number) && matchNumberToRange(number, field.ranges) !== undefined;
+  }
+  if (!value.trim() || rangeOption) return false;
+  if (field.numeric && !Number.isFinite(Number(value.replace(",", ".")))) return false;
+  if (!field.options.length) return !field.hint; // Do not ignore unstructured directory restrictions.
+  const values = field.multiple ? value.split(/\s*·\s*/) : [value];
+  return values.every((part) => field.options.some((option) => normalizeOptionKey(part) === normalizeOptionKey(option)));
+}
+
+/** Separate selectors retain full choices; only a value allowed by both is copied. */
+export function characteristicValueUpdates(
+  items: DraftCharacteristic[], ids: Set<string>, value: string, rangeOption = "",
+): Map<string, Pick<DraftCharacteristic, "value" | "rangeOption">> {
+  const updates = new Map<string, Pick<DraftCharacteristic, "value" | "rangeOption">>();
+  const sources = items.filter((item) => ids.has(item.id));
+  for (const source of sources) updates.set(source.id, characteristicValueForSchema(source, value, rangeOption));
+  for (const source of sources) {
+    if (source.custom || !["ktru", "spgz"].includes(source.source)
+      || !acceptsSharedValue(source, value, rangeOption)) continue;
+    for (const target of items) {
+      if (ids.has(target.id) || target.custom || !["ktru", "spgz"].includes(target.source)
+        || target.source === source.source || normName(target.name) !== normName(source.name)
+        || !characteristicUnitsEquivalent(source, target)
+        || !!source.numeric !== !!target.numeric || !!source.multiple !== !!target.multiple
+        || !acceptsSharedValue(target, value, rangeOption)) continue;
+      updates.set(target.id, characteristicValueForSchema(target, value, rangeOption));
+    }
+  }
+  return updates;
 }
 
 export type DisplayCharacteristic = DraftCharacteristic & {
