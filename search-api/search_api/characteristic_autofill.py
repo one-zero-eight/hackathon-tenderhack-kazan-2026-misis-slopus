@@ -907,10 +907,7 @@ def resolve_additional_allowed(body: AutofillRequest) -> bool | None:
         record = get_ktru_record(body.ktruCode)
         if record is None:
             return None
-        flag = record.get("noNewFeatures")
-        if flag is None:
-            return None
-        return not bool(flag)
+        return record.get("noNewFeatures") is not True
     return body.additionalAllowed
 
 

@@ -370,6 +370,38 @@ def test_autofill_extracts_product_once_and_reviews_allowed_additional_fields(mo
     )
 
 
+@pytest.mark.parametrize("no_new_features,allowed", [(None, True), (False, True), (True, False)])
+def test_ktru_additional_fields_are_allowed_unless_explicitly_forbidden(monkeypatch, no_new_features, allowed):
+    from search_api import classifier_catalog
+
+    monkeypatch.setattr(classifier_catalog, "get_ktru_record", lambda code: {"noNewFeatures": no_new_features})
+    calls = []
+
+    def llm_handler(req):
+        payload = json.loads(json.loads(req.content)["messages"][1]["content"])
+        calls.append(payload)
+        assert payload.get("extra") == (1 if allowed else None)
+        content = {} if "missing" in payload else {
+            "Подсветка рабочей зоны": {"value": "Да", "quote": "подсветка рабочей зоны"},
+        }
+        return httpx.Response(200, json={
+            "choices": [{"message": {"content": json.dumps(content, ensure_ascii=False)}}],
+        })
+
+    mock_providers(monkeypatch, llm_handler=llm_handler)
+    result = asyncio.run(autofill.autofill_characteristics(request(
+        text="Дрель, подсветка рабочей зоны", characteristics=[],
+        ktruCode="25.73.30.141-00000011", additionalAllowed=not allowed,
+    )))
+    assert result["additional_allowed"] is allowed
+    assert len(calls) == (2 if allowed else 1)
+    assert [row["name"] for row in result["additional_fields"]] == (
+        ["Подсветка рабочей зоны"] if allowed else []
+    )
+    if allowed:
+        assert result["additional_fields"][0]["status"] == "accepted"
+
+
 def test_combined_extraction_is_cancelled_on_disconnect(monkeypatch):
     mock_providers(monkeypatch)
     started = asyncio.Event()

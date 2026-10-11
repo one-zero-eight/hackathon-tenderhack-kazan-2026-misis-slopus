@@ -2041,7 +2041,7 @@ export default function NewProduct() {
           examples: catalogFrequency?.examples ?? [] })),
     standards: charStandards(),
     ktruCode: ktruVote()?.code ?? null,
-    additionalAllowed: noNewFeatures() == null ? null : !noNewFeatures()!,
+    additionalAllowed: noNewFeatures() !== true,
     excludedNames: characteristics().filter((item) => !item.webSource && (item.custom || item.source === "custom")).map((item) => item.name),
   }));
 
