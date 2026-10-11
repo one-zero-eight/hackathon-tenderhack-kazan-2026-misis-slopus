@@ -57,7 +57,15 @@ export function setDescription(text: string): string {
     manuallyEditedProductFields.delete("name");
     autofilledProductValues.delete("name");
     autofilledProductEvidence.delete("name");
-    setCharacteristics((items) => items.filter((item) => !item.webSource));
+    const isQueryField = (item: DraftCharacteristic) => !!item.webSource || item.id.startsWith("additional:");
+    for (const item of [...characteristics(), ...manuallyEditedCharacteristicValues.values()]) {
+      if (!isQueryField(item)) continue;
+      const key = characteristicEditKey(item);
+      manuallyEditedCharacteristics.delete(key);
+      manuallyEditedCharacteristicValues.delete(key);
+      autofilledCharacteristicValues.delete(key);
+    }
+    setCharacteristics((items) => items.filter((item) => !isQueryField(item)));
     updateDescription(text);
   });
   return text;

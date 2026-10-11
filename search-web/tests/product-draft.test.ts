@@ -12,6 +12,7 @@ import {
   kpgzSpgzDecision, setKpgzSpgzDecision,
   characteristics, setCharacteristics,
   characteristicEditKey,
+  autofilledCharacteristicValues,
   manuallyEditedCharacteristics,
   manuallyEditedCharacteristicValues,
   preserveManualCharacteristics,
@@ -112,6 +113,48 @@ test("editing description removes internet facts from the previous product", () 
     setDescription("Молоток 500 г с деревянной рукояткой");
     assert.deepEqual(characteristics(), [custom]);
   } finally { setDescription(originalDescription); restoreQueryDraft(original); }
+});
+
+test("description changes remove LLM additions and their edit state without affecting manual fields or history", () => {
+  const original = captureQueryDraft();
+  const originalDescription = description();
+  try {
+    setDescription("Молоток. Цвет: Красный. Роль: стальной.");
+    const color: DraftCharacteristic = {
+      ...draftFromSpgzCharacteristic({ name: "Цвет", options: [] }),
+      id: "additional:Цвет::0", source: "custom", custom: true, value: "Красный",
+    };
+    const role = { ...color, id: "additional:Роль::1", name: "Роль", value: "стальной" };
+    const manual = { ...color, id: "custom:note", name: "Примечание", value: "Добавлено вручную" };
+    const official = draftFromSpgzCharacteristic({ name: "Материал бойка", options: ["Сталь"] });
+    setCharacteristics([official, color, role, manual]);
+    const colorKey = characteristicEditKey(color);
+    manuallyEditedCharacteristics.add(colorKey);
+    manuallyEditedCharacteristicValues.set(colorKey, color);
+    autofilledCharacteristicValues.set(colorKey, { value: color.value, rangeOption: "" });
+    const saved = captureQueryDraft();
+
+    setDescription(description());
+    assert.equal(characteristics().length, 4, "unchanged description retains additions");
+    setDescription("Дрель аккумуляторная 18 В");
+    assert.deepEqual(characteristics(), [official, manual]);
+    assert.equal(manuallyEditedCharacteristics.has(colorKey), false);
+    assert.equal(manuallyEditedCharacteristicValues.has(colorKey), false);
+    assert.equal(autofilledCharacteristicValues.has(colorKey), false);
+    assert.deepEqual(preserveManualCharacteristics([{ ...color, id: "custom:new", value: "Синий" }], []),
+      [{ ...color, id: "custom:new", value: "Синий" }], "old manual edit must not reappear");
+
+    const second = captureQueryDraft();
+    restoreQueryDraft(saved);
+    assert.deepEqual(characteristics(), [official, color, role, manual]);
+    assert.equal(manuallyEditedCharacteristics.has(colorKey), true);
+    restoreQueryDraft(second);
+    assert.deepEqual(characteristics(), [official, manual]);
+    assert.deepEqual(saved.characteristics, [official, color, role, manual], "saved query remains independent");
+  } finally {
+    setDescription(originalDescription);
+    restoreQueryDraft(original);
+  }
 });
 
 test("query drafts preserve independent pair decisions, manual locks and edited values", () => {
