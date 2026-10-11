@@ -19,12 +19,14 @@ test("import preserves commas, quoted CSV rows, arbitrary lengths and ignores em
   assert.deepEqual(parseQueryFile(" \n\r\n"), []);
 });
 
-test("queue is serial, selected pending query starts immediately and is never sent twice", async () => {
+test("queue is serial, selected query cancels the previous in-flight request", async () => {
   const jobs = [deferred<string>(), deferred<string>(), deferred<string>()];
   const started: string[] = [];
+  const signals: AbortSignal[] = [];
   const history: string[] = [];
-  const queue = new QueryQueue((text) => {
+  const queue = new QueryQueue((text, signal) => {
     started.push(text);
+    signals.push(signal);
     return jobs[Number(text) - 1].promise;
   }, () => {}, (text) => history.push(text));
   const items = queue.add(["1", "2", "3"]);
@@ -36,18 +38,18 @@ test("queue is serial, selected pending query starts immediately and is never se
   const selected = queue.run(items[2].id);
   assert.equal(queue.run(items[2].id), selected);
   await flush();
+  assert.ok(signals[0].aborted);
   assert.deepEqual(started, ["1", "3"]);
+  assert.equal(queue.items[0].status, "cancelled");
   jobs[2].resolve("third result");
   assert.equal(await selected, "third result");
-  assert.deepEqual(started, ["1", "3"]);
-  jobs[0].resolve("first result");
   await flush();
+  // Cancelled item is not auto-resumed; next pending ("2") runs.
   assert.deepEqual(started, ["1", "3", "2"]);
   jobs[1].resolve("second result");
   await flush();
-  assert.deepEqual(queue.items.map((item) => item.status), ["done", "done", "done"]);
+  assert.deepEqual(queue.items.map((item) => item.status), ["cancelled", "done", "done"]);
   assert.equal(await queue.run(items[2].id), "third result");
-  assert.deepEqual(started, ["1", "3", "2"]);
   assert.deepEqual(history, ["1", "3", "2"]);
 });
 
@@ -68,18 +70,43 @@ test("failed request does not block the queue and can be explicitly retried", as
   assert.equal(queue.items[0].error, undefined);
 });
 
-test("stopping queue prevents unsent work after the current request finishes", async () => {
+test("stopping queue aborts in-flight work and prevents unsent work", async () => {
   const job = deferred<string>();
   const started: string[] = [];
-  const queue = new QueryQueue((text) => { started.push(text); return job.promise; }, () => {});
+  let seenSignal: AbortSignal | undefined;
+  const queue = new QueryQueue((text, signal) => {
+    started.push(text);
+    seenSignal = signal;
+    return job.promise;
+  }, () => {});
   const [first] = queue.add(["first", "second"]);
   const request = queue.run(first.id);
   await flush();
   queue.stop();
-  job.resolve("done");
-  await request;
+  assert.ok(seenSignal?.aborted);
+  await assert.rejects(request, (error: unknown) => error instanceof Error && error.name === "AbortError");
   assert.deepEqual(started, ["first"]);
+  assert.equal(queue.items[0].status, "cancelled");
   assert.equal(queue.items[1].status, "pending");
+});
+
+test("abortInFlight cancels the active request without resuming the queue", async () => {
+  const job = deferred<string>();
+  const queue = new QueryQueue((_text, signal) => {
+    signal.throwIfAborted();
+    return job.promise;
+  }, () => {});
+  const [first, second] = queue.add(["first", "second"]);
+  const request = queue.run(first.id);
+  await flush();
+  queue.abortInFlight();
+  await assert.rejects(request, (error: unknown) => error instanceof Error && error.name === "AbortError");
+  assert.equal(queue.items[0].status, "cancelled");
+  assert.equal(queue.items[1].status, "pending");
+  // No auto-resume after abort-only cleanup.
+  await flush();
+  assert.equal(queue.items[1].status, "pending");
+  void second;
 });
 
 test("history is normalized, deduplicated, newest first, limited and round-trips through storage", () => {

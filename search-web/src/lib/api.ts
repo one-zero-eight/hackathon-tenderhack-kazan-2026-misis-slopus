@@ -1,4 +1,7 @@
+import type { NeighborSuggestion } from "./server/neighbor-suggest";
 import type { CatalogStats, CharacteristicAutofillInput, CharacteristicAutofillResult, Product, ProductHit, SearchInput, SearchResult } from "./types";
+
+export type { NeighborSuggestion };
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`/api/search${path}`, {
@@ -15,6 +18,11 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
     throw new Error(detail.slice(0, 400) || `API HTTP ${response.status}`);
   }
   return response.json() as Promise<T>;
+}
+
+export function isAbortError(error: unknown): boolean {
+  return (error instanceof DOMException && error.name === "AbortError")
+    || (error instanceof Error && error.name === "AbortError");
 }
 
 export const apiCatalogStats = () => api<CatalogStats>("/catalog/stats");
@@ -40,6 +48,18 @@ export const apiAutofillCharacteristics = (input: CharacteristicAutofillInput, s
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(input),
+    signal,
+  });
+
+export const apiSuggestCategories = (
+  description: string,
+  options: { force?: boolean } = {},
+  signal?: AbortSignal,
+) =>
+  api<NeighborSuggestion>("/categories/suggest", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ description, force: options.force === true }),
     signal,
   });
 

@@ -5,6 +5,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ROOT = Path(__file__).resolve().parents[2]
 DATA = ROOT / "data"
+MAX_DESCRIPTION_LENGTH = 20_000
 
 _DEFAULT_CATEGORY_PARQUETS = (
     DATA / "Инструменты_from_api.parquet",

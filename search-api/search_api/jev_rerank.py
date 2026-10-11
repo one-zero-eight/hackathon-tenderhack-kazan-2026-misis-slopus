@@ -1,4 +1,8 @@
-"""Jev/System One choice rerank for similar products and classifier categories."""
+"""Listwise Jev Choice rerank for similar products and classifier categories.
+
+Reorder only: no «ни один» option and no probability cutoffs. Position/top-k cuts
+belong in the caller (display limit, vote shortlist), not in the Choice itself.
+"""
 from __future__ import annotations
 
 import logging
@@ -13,22 +17,17 @@ from search_api.config import settings
 
 logger = logging.getLogger("uvicorn.error")
 
-NONE = "Ни один из вариантов не подходит"
-PICK_FLOOR = 0.05
-PICK_VS_NONE = 0.5
-PICK_RELATIVE = 0.35
-DEFAULT_PICK_PROB = 0.12
-PRODUCT_QUESTION = "Какой из товаров каталога соответствует описанию в `товар`?"
-CATEGORY_QUESTION = "Какая категория классификатора соответствует товару в `товар`?"
+PRODUCT_QUESTION = "Какой из товаров каталога лучше всего соответствует описанию в `товар`?"
+CATEGORY_QUESTION = "Какая категория классификатора лучше всего соответствует товару в `товар`?"
 PRODUCT_RULES = (
     "Опирайся на название и назначение товара, а не на частичное совпадение бренда или модели.",
     "Не выбирай вариант другого типа товара, даже если совпадают отдельные слова.",
-    "При сомнении или отсутствии подходящего варианта выбирай «Ни один из вариантов не подходит».",
+    "Всегда выбирай наиболее близкий из перечисленных вариантов; не отказывайся от выбора.",
 )
 CATEGORY_RULES = (
     "Решай по виду и назначению товара, а не по цифрам, брендам и артикулам.",
     "Выбирай наиболее точную подходящую категорию; широкий раздел хуже точной позиции.",
-    "При сомнении или отсутствии подходящего варианта выбирай «Ни один из вариантов не подходит».",
+    "Всегда выбирай наиболее близкий из перечисленных вариантов; не отказывайся от выбора.",
 )
 KIND_TITLES = {"okpd": "ОКПД2", "ktru": "КТРУ", "kpgz": "КПГЗ", "spgz": "СПГЗ"}
 
@@ -100,35 +99,16 @@ def candidates_from_category_hits(hits: list[dict], *, limit: int | None = None)
     return out
 
 
-def apply_pick_thresholds(
-    ranked: list[tuple[str, float]],
-    *,
-    none_prob: float,
-    pick_prob: float = DEFAULT_PICK_PROB,
-) -> list[tuple[str, float]]:
-    if not ranked:
-        return []
-    top = ranked[0][1]
-    return [
-        (key, prob) for index, (key, prob) in enumerate(ranked)
-        if (index == 0 and prob >= PICK_FLOOR and prob >= PICK_VS_NONE * none_prob)
-        or prob >= max(pick_prob, PICK_RELATIVE * top)
-    ]
-
-
 def _build_question(
     candidates: list[Candidate],
     question: str,
     *,
     rules: tuple[str, ...] = PRODUCT_RULES,
-    none_evidence: str = "Ни один из перечисленных вариантов не соответствует описанию",
 ) -> dict[str, Any]:
-    criteria = {item.label: item.evidence for item in candidates}
-    criteria[NONE] = none_evidence
     return {
         "type": "choice",
         "instructions": {"question": question, "правило": list(rules)},
-        "criteria": criteria,
+        "criteria": {item.label: item.evidence for item in candidates},
     }
 
 
@@ -176,17 +156,11 @@ async def _ask_questions(text: str, questions: dict[str, dict[str, Any]]) -> dic
 def _rank_side(
     candidates: list[Candidate],
     probabilities: dict[str, Any],
-    *,
-    truncate: bool,
 ) -> list[tuple[str, float]]:
-    ranked = sorted(
+    return sorted(
         ((item.key, float(probabilities.get(item.label, 0.0))) for item in candidates),
         key=lambda pair: (-pair[1], pair[0]),
     )
-    if not truncate:
-        return ranked
-    # Empty when «ни один» доминирует — не подставляем исходный shortlist обратно.
-    return apply_pick_thresholds(ranked, none_prob=float(probabilities.get(NONE, 0.0)))
 
 
 async def rerank_candidates(
@@ -195,7 +169,6 @@ async def rerank_candidates(
     *,
     question: str = PRODUCT_QUESTION,
     rules: tuple[str, ...] = PRODUCT_RULES,
-    truncate: bool = False,
 ) -> list[tuple[str, float]] | None:
     """Rank candidates by one System One choice. None means keep the input order."""
     if not settings.jev_rerank_enabled or not candidates or not text.strip():
@@ -212,7 +185,7 @@ async def rerank_candidates(
     except (AutofillConfigError, RuntimeError, ValueError) as exc:
         logger.warning("Jev rerank skipped: %s", exc)
         return None
-    return _rank_side(candidates, probabilities["q"], truncate=truncate)
+    return _rank_side(candidates, probabilities["q"])
 
 
 def _apply_product_ranks(
@@ -235,7 +208,7 @@ def _apply_hit_ranks(
     hits: list[dict],
     ranked: list[tuple[str, float]],
 ) -> list[dict]:
-    by_id = {str(item["id"]): item for item in hits}
+    by_id = {str(hit["id"]): hit for hit in hits}
     out: list[dict] = []
     for key, score in ranked:
         hit = by_id.get(key)
@@ -252,12 +225,10 @@ async def rerank_suggest_shortlists(
     *,
     products: list[dict],
     category_hits: list[dict],
-    truncate: bool = True,
 ) -> tuple[list[dict] | None, list[dict] | None]:
-    """One System One request: choice over STE neighbors and/or category names.
+    """One System One request: listwise choice over STE neighbors and/or category names.
 
     Each side is None when that side was skipped (keep retrieval order / pairs).
-    An empty list means Jev rejected the whole shortlist for that side.
     """
     if not settings.jev_rerank_enabled or not text.strip():
         return None, None
@@ -270,7 +241,6 @@ async def rerank_suggest_shortlists(
             raise ValueError("Метки товаров для реранка должны быть уникальны")
         questions["neighbors"] = _build_question(
             product_candidates, PRODUCT_QUESTION, rules=PRODUCT_RULES,
-            none_evidence="Ни один из перечисленных товаров не соответствует описанию",
         )
     if hit_candidates:
         labels = [item.label for item in hit_candidates]
@@ -278,7 +248,6 @@ async def rerank_suggest_shortlists(
             raise ValueError("Метки категорий для проверки должны быть уникальны")
         questions["categories"] = _build_question(
             hit_candidates, CATEGORY_QUESTION, rules=CATEGORY_RULES,
-            none_evidence="Ни одна из перечисленных категорий не соответствует описанию",
         )
     if not questions:
         return None, None
@@ -289,11 +258,11 @@ async def rerank_suggest_shortlists(
         return None, None
     products_out = None
     if "neighbors" in probabilities:
-        ranked = _rank_side(product_candidates, probabilities["neighbors"], truncate=truncate)
+        ranked = _rank_side(product_candidates, probabilities["neighbors"])
         products_out = _apply_product_ranks(products, ranked)
     hits_out = None
     if "categories" in probabilities:
-        ranked = _rank_side(hit_candidates, probabilities["categories"], truncate=truncate)
+        ranked = _rank_side(hit_candidates, probabilities["categories"])
         hits_out = _apply_hit_ranks(category_hits, ranked)
     return products_out, hits_out
 
@@ -302,14 +271,13 @@ async def rerank_products(
     text: str,
     products: list[dict],
     *,
-    truncate: bool = False,
     limit: int | None = None,
 ) -> list[dict]:
     """Reorder product dicts; scores become Jev probabilities when rerank succeeds."""
     if not products:
         return products
     candidates = candidates_from_products(products, limit=limit)
-    ranked = await rerank_candidates(text, candidates, truncate=truncate)
+    ranked = await rerank_candidates(text, candidates)
     if ranked is None:
         return products[: len(candidates)] if limit is not None else products
     return _apply_product_ranks(products, ranked)
@@ -319,12 +287,11 @@ async def verify_category_hits(
     text: str,
     hits: list[dict],
     *,
-    truncate: bool = True,
     limit: int | None = None,
 ) -> list[dict] | None:
-    """Filter/rank classifier name hits alone (e.g. tests). Prefer rerank_suggest_shortlists in suggest."""
+    """Reorder classifier name hits (tests / standalone). Prefer rerank_suggest_shortlists in suggest."""
     products_out, hits_out = await rerank_suggest_shortlists(
-        text, products=[], category_hits=hits[: limit or settings.jev_rerank_limit], truncate=truncate,
+        text, products=[], category_hits=hits[: limit or settings.jev_rerank_limit],
     )
     del products_out
     return hits_out

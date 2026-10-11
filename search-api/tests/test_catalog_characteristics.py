@@ -51,6 +51,8 @@ def catalog(tmp_path, monkeypatch):
     monkeypatch.setattr(module, "iterate_products", lambda: iter([products[:7], products[7:]]))
     monkeypatch.setattr(module, "_kpgz_path", lambda: path)
     monkeypatch.setattr(module, "category_tree", lambda: [{"id": 16, "parentId": None}, {"id": 19, "parentId": None}])
+    monkeypatch.setattr(module, "characteristics_for", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(module, "schema_fingerprint", lambda: "test")
     monkeypatch.setattr(module.settings, "catalog_database", tmp_path / "catalog.sqlite")
     yield conn, products
     conn.close()
@@ -325,3 +327,45 @@ def test_schema_change_forces_normalized_snapshot_rebuild(catalog, monkeypatch):
         assert conn.execute("PRAGMA cache_size").fetchone()[0] == -2048
     finally:
         conn.close()
+
+
+def test_official_kpgz_schema_enriches_examples_and_fills_gaps(catalog, monkeypatch):
+    material_key = normalize_key("Материал")
+    long_kit = "A" * 120
+    monkeypatch.setattr(module, "characteristics_for", lambda code: [
+        {
+            "name": "Материал", "name_key": material_key, "kind": "Эталонная",
+            "value_type": "Справочник", "values": ["Сталь", "Дерево", "Пластик", long_kit],
+            "unit": "", "numeric": False, "discrete": True, "spgz_characteristic_id": 1,
+        },
+        {
+            "name": "Тип разъема", "name_key": normalize_key("Тип разъема"), "kind": "Эталонная",
+            "value_type": "Справочник", "values": ["RJ-45", "BNC", "RJ-11"],
+            "unit": "", "numeric": False, "discrete": True, "spgz_characteristic_id": 2,
+        },
+        {
+            "name": "Тип столешницы", "name_key": normalize_key("Тип столешницы"), "kind": "Базовая",
+            "value_type": "Справочник", "values": ["Прямая", "Угловая"],
+            "unit": "", "numeric": False, "discrete": True, "spgz_characteristic_id": None,
+        },
+        {
+            "name": "Комплектация", "name_key": normalize_key("Комплектация"), "kind": "Эталонная",
+            "value_type": "Справочник", "values": [long_kit, "B" * 100],
+            "unit": "", "numeric": False, "discrete": True, "spgz_characteristic_id": 3,
+        },
+        {
+            "name": "Вид продукции", "name_key": normalize_key("Вид продукции"), "kind": "Категореобразующая",
+            "value_type": "Справочник", "values": ["Товары"],
+            "unit": "", "numeric": False, "discrete": True, "spgz_characteristic_id": None,
+        },
+    ] if code == "01.16.01" else [])
+    fields = {field["name"]: field for field in module.frequent_catalog_characteristics("01.16.01")}
+    assert "Сталь" in fields["Материал"]["examples"]
+    assert "Дерево" in fields["Материал"]["examples"]
+    assert long_kit not in fields["Материал"]["examples"]
+    assert fields["Материал"]["exampleCounts"]["Дерево"] == 0
+    assert fields["Тип разъема"]["scope"] == "schema"
+    assert fields["Тип разъема"]["examples"] == ["RJ-45", "BNC", "RJ-11"]
+    assert "Тип столешницы" not in fields  # базовые не тащим в форму
+    assert "Комплектация" not in fields  # длинные enum’ы отбрасываем
+    assert "Вид продукции" not in fields

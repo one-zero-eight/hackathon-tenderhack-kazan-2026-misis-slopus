@@ -216,7 +216,7 @@ export type CatalogCharacteristic = {
   count: number;
   total: number;
   frequency: number;
-  scope: "category" | "adjacent";
+  scope: "category" | "adjacent" | "schema";
   examples: string[];
   /** Products with each normalized example, counted once per product. */
   exampleCounts: Record<string, number>;

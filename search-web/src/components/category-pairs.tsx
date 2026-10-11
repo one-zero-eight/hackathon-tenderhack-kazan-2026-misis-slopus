@@ -6,28 +6,6 @@ import type { CategoryPairCandidate, CategoryPairDecision, VotedCode } from "~/l
 import { Button } from "~/ui-kit";
 import "~/routes/create-product.css";
 
-function sourceLabel(source: VotedCode["source"] | undefined): string | null {
-  if (source === "neighbors") return "по товарам";
-  if (source === "classifier") return "по названию/синонимам";
-  if (source === "both") return "обе ветки";
-  return null;
-}
-
-function choiceMessage(reason: string | null | undefined): string {
-  switch (reason) {
-    case "branch_conflict":
-      return "Ветки поиска предложили разные коды — выберите подходящий вариант.";
-    case "ambiguous_classifier":
-      return "По справочникам несколько близких вариантов — выберите один.";
-    case "weak_neighbors":
-      return "Похожие товары слабо релевантны — подтвердите категорию.";
-    case "multiple_candidates":
-      return "Несколько равноправных вариантов — выберите категорию.";
-    default:
-      return "Выберите категорию из предложенных вариантов.";
-  }
-}
-
 function VoteRow(props: {
   label: string;
   tab: "okpd" | "ktru" | "kpgz" | "spgz";
@@ -53,9 +31,6 @@ function VoteRow(props: {
             {vote().name}
             <Show when={props.tab === "ktru" && vote().isTemplate}>{" "}(Шаблон)</Show>
           </span>
-          <Show when={sourceLabel(vote().source)}>{label =>
-            <span class="create-vote-source">{label()}</span>
-          }</Show>
         </div>
         <Show when={props.tab === "ktru" && vote().variantLabel}>
           <div class="create-vote-value-meta">
@@ -87,7 +62,6 @@ function PairChoices(props: {
 }) {
   const labels = { okpd2: "ОКПД2", ktru: "КТРУ", kpgz: "КПГЗ", spgz: "СПГЗ" };
   return <Show when={props.decision?.needsChoice}>
-    <p class="create-live-hint create-choice-hint" role="status">{choiceMessage(props.decision?.reason)}</p>
     <div class="create-choice-list">
       <For each={props.decision?.alternatives ?? []}>{pair =>
         <button type="button" class="create-choice-option create-choice-pair" onClick={() => props.onPick?.(pair)}>
@@ -98,9 +72,6 @@ function PairChoices(props: {
               <span>{pair[key]?.name ?? "Без позиции"}</span>
             </span>
           }</For>
-          <Show when={pair.sources.length}>
-            <span class="create-vote-source">{pair.sources.map(source => sourceLabel(source)).join(" · ")}</span>
-          </Show>
         </button>
       }</For>
     </div>

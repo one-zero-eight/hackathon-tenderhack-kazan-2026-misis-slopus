@@ -7,7 +7,7 @@ from typing import Any, Literal
 
 import httpx
 
-from search_api.config import settings
+from search_api.config import MAX_DESCRIPTION_LENGTH, settings
 from search_api.database import get_db, has_vectors
 from search_api.embeddings import embed_query, embed_texts
 from search_api.ste_catalog import (
@@ -61,8 +61,8 @@ def _hydrate_hits(ranked: list[dict]) -> list[dict]:
 
 
 def validate_search(query: str, mode: str, page: int, category_id: int | None) -> tuple[str, SearchMode, int, int | None]:
-    if not isinstance(query, str) or len(query) > 500:
-        raise ValueError("Запрос должен содержать не более 500 символов")
+    if not isinstance(query, str) or len(query) > MAX_DESCRIPTION_LENGTH:
+        raise ValueError(f"Запрос должен содержать не более {MAX_DESCRIPTION_LENGTH} символов")
     if mode not in ("text", "semantic", "hybrid"):
         raise ValueError("Неизвестный режим поиска")
     if not isinstance(page, int) or page < 1 or page > 10000:
@@ -253,7 +253,7 @@ async def find_similar(product_id: int) -> list[dict]:
         for r in neighbors if int(r["id"]) != product_id
     ][: SIMILAR_RETRIEVAL_K - 1]
     hits = _hydrate_hits(ranked)
-    hits = await rerank_products(product_query_text(product), hits, truncate=False)
+    hits = await rerank_products(product_query_text(product), hits)
     return hits[:SIMILAR_RESULT_LIMIT]
 
 

@@ -220,6 +220,8 @@ async def embed_texts(
         for delay in (*_RETRY_DELAYS, None):
             try:
                 response = await http.post(_endpoint(), json=body)
+            except asyncio.CancelledError:
+                raise
             except (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError) as exc:
                 last_error = exc
                 if delay is None:

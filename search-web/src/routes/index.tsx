@@ -23,7 +23,7 @@ import { CatalogCharacteristicInput } from "~/components/catalog-characteristic-
 import { QueryDropdown } from "~/components/query-dropdown";
 import { KtruPickerActions, KtruPickerBody } from "~/components/ktru-picker";
 import { SpgzPickerActions, SpgzPickerBody } from "~/components/spgz-picker";
-import { apiAutofillCharacteristics } from "~/lib/api";
+import { apiAutofillCharacteristics, apiSuggestCategories, isAbortError, type NeighborSuggestion } from "~/lib/api";
 import {
   characteristicRangeProblem,
   isRangeCharacteristic,
@@ -34,7 +34,7 @@ import {
   splitCharacteristicValues,
   yesNoOptionPair,
 } from "~/lib/characteristic-options";
-import { getCatalogCharacteristics, getCatalogSpecialization, getDirectoryNode, getDirectoryRecord, getDirectoryRevealPath, getKtruNode, getKtruRecord, getKtruRevealPath, suggestFromNeighbors } from "~/lib/rpc";
+import { getCatalogCharacteristics, getCatalogSpecialization, getDirectoryNode, getDirectoryRecord, getDirectoryRevealPath, getKtruNode, getKtruRecord, getKtruRevealPath } from "~/lib/rpc";
 import {
   appendCatalogCharacteristics,
   autofillConfidencePresentation,
@@ -238,10 +238,13 @@ function withCatalogSpecialization(
       ...item,
       name: characteristic.name,
       options,
+      optionLabels: {},
       value,
       rangeOption: "",
       required: true,
       multiple: false,
+      numeric: false,
+      unit: "",
       ranges: [],
       badges: item.badges.filter((entry) => !/^уточняет /.test(entry)),
       hint: item.hint || hint,
@@ -673,7 +676,7 @@ function SimilarSuggestSkeleton() {
 }
 
 export default function NewProduct() {
-  type Suggestion = Awaited<ReturnType<typeof suggestFromNeighbors>>;
+  type Suggestion = NeighborSuggestion;
   const [queuedQueries, setQueuedQueries] = createSignal<QueuedQuery<Suggestion>[]>([]);
   const [batchIds, setBatchIds] = createSignal<string[]>([]);
   const [activeQueryId, setActiveQueryId] = createSignal<string | null>(null);
@@ -704,10 +707,10 @@ export default function NewProduct() {
       setHistoryError("Не удалось сохранить историю: localStorage недоступен или переполнен.");
     }
   };
-  const queryQueue = new QueryQueue<Suggestion>(async (text) => {
+  const queryQueue = new QueryQueue<Suggestion>(async (text, signal) => {
     const query = normalizeQuery(text);
     if (query.length < 3) throw new Error("Для поиска нужно не менее 3 символов.");
-    return suggestFromNeighbors(query, { force: forceSuggestQuery() === query });
+    return apiSuggestCategories(query, { force: forceSuggestQuery() === query }, signal);
   }, (items) => { if (mounted) setQueuedQueries(items); }, saveHistory);
   onMount(() => {
     try { setQueryHistory(parseQueryHistory(localStorage.getItem(QUERY_HISTORY_KEY))); }
@@ -1662,15 +1665,14 @@ export default function NewProduct() {
     if (!ktruLocked()) setOkpdKtruDecision(null);
     if (!spgzLocked()) setKpgzSpgzDecision(null);
     const started = performance.now();
-    batch(() => {
-      setSuggestDurationMs(null);
-      setSuggesting(true);
-    });
+    setSuggestDurationMs(null);
     let alive = true;
     const queuedRequest = queued ? queryQueue.run(queued.id) : undefined;
     // Observe rejection immediately, even if the user switches before the render timer fires.
     if (queuedRequest) void queuedRequest.catch(() => {});
     const timer = setTimeout(() => {
+      if (!alive) return;
+      setSuggesting(true);
       const requestEntry = queued ?? queryQueue.find(query) ?? queryQueue.add([text])[0]!;
       if (!queued) setActiveQueryId(requestEntry.id);
       const request = queuedRequest ?? queryQueue.run(requestEntry.id);
@@ -1822,21 +1824,27 @@ export default function NewProduct() {
           });
           saveActiveQueryDraft();
         } catch (error) {
-          if (alive) {
+          if (alive && !isAbortError(error)) {
             setSuggestError(error instanceof Error ? error.message : "Не удалось показать результаты запроса.");
             setSuggestAcceptedQuery("");
             setSuggesting(false);
           }
         }
       }, (error: unknown) => {
-        if (alive) {
+        if (alive && !isAbortError(error)) {
           setSuggestError(error instanceof Error ? error.message : "Не удалось обработать запрос.");
           setSuggestAcceptedQuery("");
           setSuggesting(false);
         }
       });
     }, queued ? 0 : 200);
-    onCleanup(() => { alive = false; clearTimeout(timer); });
+    onCleanup(() => {
+      alive = false;
+      clearTimeout(timer);
+      queryQueue.abortInFlight();
+      // Cancelled debounce/in-flight run must not leave the skeleton stuck on.
+      setSuggesting(false);
+    });
   }));
 
   // Catalog statistics can require a cold snapshot build; never block category votes on it.
@@ -1848,8 +1856,12 @@ export default function NewProduct() {
     setCatalogCharacteristicsLoading(true);
     void getCatalogCharacteristics(category.code).then((stats) => {
       if (!alive) return;
+      // Official КПГЗ schema gaps only while СПГЗ is unset — эталонные already come from СПГЗ.
+      const catalogStats = spgz()?.code
+        ? stats.filter((item) => item.scope !== "schema")
+        : stats;
       setCharacteristics((current) => preserveManualCharacteristics(
-        appendCatalogCharacteristics(current, stats, current), current,
+        appendCatalogCharacteristics(current, catalogStats, current), current,
       ));
       saveActiveQueryDraft();
     }).catch((error: unknown) => {
@@ -1890,10 +1902,20 @@ export default function NewProduct() {
     });
   };
 
-  createEffect(on([autofillInput, suggesting, autofillRequestedText, catalogCharacteristicsLoading], ([key, categoryLoading, requestedText, catalogLoading]) => {
-    setAutofilling(false);
+  createEffect(on(description, () => {
+    if (autofillRequestedText() === null && !autofilling()) return;
+    autofillController?.abort();
+    batch(() => {
+      setAutofillRequestedText(null);
+      setAutofilling(false);
+    });
+  }, { defer: true }));
+  onCleanup(() => autofillController?.abort());
+
+  createEffect(on([suggesting, autofillRequestedText, catalogCharacteristicsLoading], ([categoryLoading, requestedText, catalogLoading]) => {
+    if (requestedText === null || autofilling()) return;
+    const key = autofillInput();
     const input = JSON.parse(key) as Parameters<typeof apiAutofillCharacteristics>[0];
-    if (requestedText === null) return;
     if (requestedText !== input.text || input.text.length < 12) {
       setAutofillRequestedText(null);
       return;
@@ -1908,12 +1930,12 @@ export default function NewProduct() {
     const rows = displayCharacteristics();
     const ctrl = new AbortController();
     autofillController = ctrl;
-    let alive = true;
+    const isCurrent = () => mounted && !ctrl.signal.aborted && description().trim() === input.text;
     setAutofilling(true);
     setAutofillDurationMs(null);
-    const timer = setTimeout(() => {
-      void apiAutofillCharacteristics(input, ctrl.signal).then(async (result) => {
-        if (!alive || autofillInput() !== key) return;
+    void apiAutofillCharacteristics(input, ctrl.signal).then(async (result) => {
+        if (!isCurrent()) return;
+        if (autofillInput() !== key) throw new Error("Схема характеристик изменилась во время разбора. Запустите разбор заново.");
         const byId = new Map(result.characteristics.map((item) => [item.id, item]));
         type FieldUpdate = {
           value: string; rangeOption: string;
@@ -2016,14 +2038,14 @@ export default function NewProduct() {
         setAutofillDurationMs(result.durationMs);
         setAutofillStatus(result.status);
         setWebEnrichment(result.webEnrichment ?? null);
-        setAutofilling(false);
         const filledRefine = characteristics().some((item) =>
           updates.has(item.id) && item.refinesKtru && item.applyPositionRefine !== false && item.value.trim());
         if (filledRefine) await refineFromDiscriminators();
-        if (alive && autofillInput() === key) {
+        if (isCurrent()) {
           batch(() => {
             setAutofillCompletedText(input.text);
             setAutofillRequestedText(null);
+            setAutofilling(false);
           });
           saveActiveQueryDraft();
           const changed = {
@@ -2038,13 +2060,13 @@ export default function NewProduct() {
           });
         }
       }).catch((error: unknown) => {
-        if (!alive || ctrl.signal.aborted) return;
-        setAutofilling(false);
-        setAutofillRequestedText(null);
-        setAutofillError(error instanceof Error ? error.message : "Не удалось заполнить характеристики");
+        if (!isCurrent()) return;
+        batch(() => {
+          setAutofilling(false);
+          setAutofillRequestedText(null);
+          setAutofillError(error instanceof Error ? error.message : "Не удалось заполнить характеристики");
+        });
       });
-    }, 350);
-    onCleanup(() => { alive = false; clearTimeout(timer); ctrl.abort(); });
   }));
 
   const markCharacteristicEdited = (ids: Set<string>) => {
@@ -2197,6 +2219,9 @@ export default function NewProduct() {
     <section ref={descriptionSection} class="create-describe" aria-labelledby="describe-heading">
       <div class="section-heading create-describe-heading">
         <FileText size={20} strokeWidth={1.6} /><h2 id="describe-heading">Описание</h2>
+        <Show when={!suggesting() && (queryQuality()?.durationMs ?? 0) > 0}>
+          <span>{formatSuggestTiming(queryQuality()!.durationMs!)}</span>
+        </Show>
         <div class="create-top-actions">
           <Button variant="ghost" size="sm" type="button" onClick={reset} disabled={!hasDraft()}><RotateCcw size={14} />Очистить</Button>
           <Button variant="secondary" size="sm" class="create-example-button" type="button" onClick={fillExample}><Lightbulb size={15} />Пример</Button>
@@ -2309,11 +2334,10 @@ export default function NewProduct() {
           classList={{ "create-query-quality-warning": queryQuality()?.verdict === "suspicious" }}
           role="alert"
         >
-          <span>{(queryQuality()?.reasons.length ? queryQuality()!.reasons : [
-            queryQuality()?.verdict === "reject"
-              ? "это не похоже на описание закупаемого товара"
-              : "запрос слишком общий для подбора позиции",
-          ]).join("; ")}</span>
+          <span>{(queryQuality()?.reasons.length
+            ? queryQuality()!.reasons
+            : ["описание товара выглядит противоречивым, абсурдным или не похоже на товар"]
+          ).join("; ")}</span>
           <Show
             when={queryQuality()?.verdict === "suspicious"}
             fallback={
@@ -2328,27 +2352,6 @@ export default function NewProduct() {
               Искать всё равно
             </Button>
           </Show>
-        </div>
-      </Show>
-      <div class="create-describe-actions">
-        <Button
-          type="button"
-          variant="default"
-          class="create-char-autofill-button"
-          disabled={description().trim().length < 12 || autofillBusy() || suggestAcceptedQuery() !== normalizeQuery(description())}
-          aria-busy={autofillBusy()}
-          onClick={requestAutofill}
-        >
-          <Show when={autofillBusy()} fallback={
-            <Show when={autofillCompleted()} fallback={<Sparkles size={16} />}><Check size={16} /></Show>
-          }><LoaderCircle size={16} class="create-autofill-spinner" /></Show>
-          {autofillBusy() ? "Подбираем характеристики…" : autofillCompleted() ? (autofillNeedsReview() ? "Требует проверки" : "Характеристики подобраны") : "Подобрать характеристики"}
-        </Button>
-      </div>
-      <Show when={autofillError()}>
-        <div class="create-autofill-error" role="alert">
-          <span>{autofillError()}</span>
-          <Button type="button" variant="outline" size="sm" onClick={requestAutofill}>Повторить</Button>
         </div>
       </Show>
       <Show when={webEnrichment() && autofillCompleted() ? webEnrichment() : null}>
@@ -2444,17 +2447,39 @@ export default function NewProduct() {
           <Show when={!autofillBusy() && autofillDurationMs() != null}>
             <span>{formatSuggestTiming(autofillDurationMs()!)}</span>
           </Show>
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            class="create-char-reset-button"
-            disabled={!characteristics().some((item) => item.value.trim() || item.rangeOption.trim() || item.autofill || item.autofillDiagnostics) && !autofilling() && autofillRequestedText() === null}
-            onClick={resetCharacteristics}
-          >
-            <RotateCcw size={14} />Сбросить
-          </Button>
+          <div class="create-char-actions">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              class="create-char-reset-button"
+              disabled={!characteristics().some((item) => item.value.trim() || item.rangeOption.trim() || item.autofill || item.autofillDiagnostics) && !autofilling() && autofillRequestedText() === null}
+              onClick={resetCharacteristics}
+            >
+              <RotateCcw size={14} />Сбросить
+            </Button>
+            <Button
+              type="button"
+              variant="default"
+              size="sm"
+              class="create-char-autofill-button"
+              disabled={description().trim().length < 12 || autofillBusy() || suggestAcceptedQuery() !== normalizeQuery(description())}
+              aria-busy={autofillBusy()}
+              onClick={requestAutofill}
+            >
+              <Show when={autofillBusy()} fallback={
+                <Show when={autofillCompleted()} fallback={<Sparkles size={16} />}><Check size={16} /></Show>
+              }><LoaderCircle size={16} class="create-autofill-spinner" /></Show>
+              {autofillBusy() ? "Разбираем характеристики…" : autofillCompleted() ? (autofillNeedsReview() ? "Требует проверки" : "Характеристики разобраны") : "Разобрать характеристики"}
+            </Button>
+          </div>
         </div>
+        <Show when={autofillError()}>
+          <div class="create-autofill-error" role="alert">
+            <span>{autofillError()}</span>
+            <Button type="button" variant="outline" size="sm" onClick={requestAutofill}>Повторить</Button>
+          </div>
+        </Show>
         <Show when={catalogCharacteristicsLoading()}>
           <p class="create-live-hint" role="status">Загружаем дополнительные характеристики каталога…</p>
         </Show>
@@ -2462,7 +2487,14 @@ export default function NewProduct() {
           <p class="create-autofill-error" role="alert">{catalogCharacteristicsError()}</p>
         </Show>
         <Show when={charStandards().length}>
-          <p class="create-char-standards">{charStandards().join(", ")}</p>
+          <p class="create-char-standards">
+            <For each={charStandards()}>{(standard, index) => <>
+              {index() > 0 && ", "}
+              <a href={`https://yandex.ru/search/?text=${encodeURIComponent(standard)}`} target="_blank" rel="noopener noreferrer" title="Найти ГОСТ в Яндексе">
+                {standard}
+              </a>
+            </>}</For>
+          </p>
         </Show>
         <Show when={displayCharacteristics().length} fallback={<p class="no-characteristics">Выберите КТРУ или СПГЗ — появятся поля из справочников.</p>}>
           <dl class="characteristics-table create-char-fields dir-characteristics-table"><Index each={displayCharacteristics()}>{item =>

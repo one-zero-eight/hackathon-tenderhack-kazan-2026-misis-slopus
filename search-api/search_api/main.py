@@ -11,6 +11,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel
 
 from search_api import search as search_mod
+from search_api.cancel_on_disconnect import CancelOnDisconnectMiddleware
 from search_api.catalog_characteristics import frequent_catalog_characteristics
 from search_api.characteristic_autofill import (
     AutofillConfigError, AutofillError, AutofillRequest, autofill_characteristics,
@@ -45,6 +46,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(CancelOnDisconnectMiddleware)
 
 
 class SearchBody(BaseModel):

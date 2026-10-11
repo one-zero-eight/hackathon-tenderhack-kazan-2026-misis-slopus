@@ -60,9 +60,9 @@ def test_rerank_orders_by_probabilities(monkeypatch):
         assert body["state"] == {"товар": "письменный стол"}
         assert set(body["questions"]) == {"q"}
         criteria = body["questions"]["q"]["criteria"]
-        assert rerank.NONE in criteria
+        assert set(criteria) == {"Стул", "Стол", "Шкаф"}
         answers = {
-            label: (0.7 if label == "Стол" else 0.1 if label == "Стул" else 0.05 if label == "Шкаф" else 0.15)
+            label: (0.7 if label == "Стол" else 0.2 if label == "Стул" else 0.1)
             for label in criteria
         }
         return httpx.Response(200, json={
@@ -72,46 +72,29 @@ def test_rerank_orders_by_probabilities(monkeypatch):
         })
 
     mock_jev(monkeypatch, handler)
-    ranked = asyncio.run(rerank.rerank_products("письменный стол", products, truncate=False))
+    ranked = asyncio.run(rerank.rerank_products("письменный стол", products))
     assert [item["id"] for item in ranked] == [2, 1, 3]
     assert ranked[0]["score"] == pytest.approx(0.7)
 
 
-def test_truncate_keeps_strong_top_and_drops_tail(monkeypatch):
+def test_rerank_keeps_full_shortlist_even_when_top_is_weak(monkeypatch):
     products = [product(1, "A"), product(2, "B"), product(3, "C")]
 
     def handler(req: httpx.Request):
         criteria = json.loads(req.content)["questions"]["q"]["criteria"]
-        probs = {label: 0.02 for label in criteria}
-        probs["A"] = 0.55
-        probs["B"] = 0.25
-        probs["C"] = 0.03
-        probs[rerank.NONE] = 0.15
+        probs = {label: 0.2 for label in criteria}
+        probs["A"] = 0.45
+        probs["B"] = 0.35
         return httpx.Response(200, json={
             "answers": {"q": {"type": "choice", "choice": "A", "probabilities": probs}},
         })
 
     mock_jev(monkeypatch, handler)
-    ranked = asyncio.run(rerank.rerank_products("товар", products, truncate=True))
-    assert [item["id"] for item in ranked] == [1, 2]
+    ranked = asyncio.run(rerank.rerank_products("товар", products))
+    assert [item["id"] for item in ranked] == [1, 2, 3]
 
 
-def test_truncate_drops_all_when_none_dominates(monkeypatch):
-    products = [product(1, "A"), product(2, "B")]
-
-    def handler(req: httpx.Request):
-        criteria = json.loads(req.content)["questions"]["q"]["criteria"]
-        probs = {label: 0.04 for label in criteria}
-        probs[rerank.NONE] = 0.9
-        return httpx.Response(200, json={
-            "answers": {"q": {"type": "choice", "choice": rerank.NONE, "probabilities": probs}},
-        })
-
-    mock_jev(monkeypatch, handler)
-    assert asyncio.run(rerank.rerank_products("товар", products, truncate=True)) == []
-
-
-def test_verify_category_hits_filters_and_scores(monkeypatch):
+def test_verify_category_hits_orders_and_scores(monkeypatch):
     hits = [
         category_hit(1, "ktru", "A-1", "Стул"),
         category_hit(2, "ktru", "B-1", "Стол"),
@@ -122,36 +105,19 @@ def test_verify_category_hits_filters_and_scores(monkeypatch):
         body = json.loads(req.content)
         assert set(body["questions"]) == {"categories"}
         criteria = body["questions"]["categories"]["criteria"]
-        probs = {label: 0.05 for label in criteria}
+        probs = {label: 0.1 for label in criteria}
         preferred = next(label for label in criteria if "B-1" in label)
         probs[preferred] = 0.7
-        probs[rerank.NONE] = 0.1
         return httpx.Response(200, json={
             "answers": {"categories": {"type": "choice", "choice": preferred, "probabilities": probs}},
         })
 
     mock_jev(monkeypatch, handler)
-    verified = asyncio.run(rerank.verify_category_hits("письменный стол", hits, truncate=True))
+    verified = asyncio.run(rerank.verify_category_hits("письменный стол", hits))
     assert verified is not None
     assert verified[0]["code"] == "B-1"
     assert verified[0]["jevScore"] == pytest.approx(0.7)
-
-
-def test_verify_category_none_returns_empty(monkeypatch):
-    hits = [category_hit(1, "ktru", "A-1", "Стул"), category_hit(2, "ktru", "B-1", "Стол")]
-
-    def handler(req: httpx.Request):
-        criteria = json.loads(req.content)["questions"]["categories"]["criteria"]
-        probs = {label: 0.03 for label in criteria}
-        probs[rerank.NONE] = 0.9
-        return httpx.Response(200, json={
-            "answers": {"categories": {
-                "type": "choice", "choice": rerank.NONE, "probabilities": probs,
-            }},
-        })
-
-    mock_jev(monkeypatch, handler)
-    assert asyncio.run(rerank.verify_category_hits("мусор", hits, truncate=True)) == []
+    assert len(verified) == 3
 
 
 def test_suggest_shortlists_one_request_both_sides(monkeypatch):
@@ -164,19 +130,20 @@ def test_suggest_shortlists_one_request_both_sides(monkeypatch):
         answers = {}
         for qid, question in body["questions"].items():
             criteria = question["criteria"]
-            probs = {label: 0.1 for label in criteria}
+            probs = {label: 0.15 for label in criteria}
             preferred = next(label for label in criteria if "Стол" in label or "B-1" in label)
             probs[preferred] = 0.7
-            probs[rerank.NONE] = 0.1
             answers[qid] = {"type": "choice", "choice": preferred, "probabilities": probs}
         return httpx.Response(200, json={"answers": answers})
 
     mock_jev(monkeypatch, handler)
     ranked_products, ranked_hits = asyncio.run(rerank.rerank_suggest_shortlists(
-        "письменный стол", products=products, category_hits=hits, truncate=False,
+        "письменный стол", products=products, category_hits=hits,
     ))
     assert ranked_products is not None and ranked_products[0]["id"] == 2
     assert ranked_hits is not None and ranked_hits[0]["code"] == "B-1"
+    assert len(ranked_products) == 2
+    assert len(ranked_hits) == 2
 
 
 def test_verify_skipped_returns_none(monkeypatch):
@@ -226,9 +193,8 @@ def test_neighbors_branch_reranks_products_before_votes(monkeypatch):
             product(2, "Стол", score=0.85, okpd2="B"),
         ]}
 
-    async def fake_rerank(text, products, *, truncate=False, limit=None):
+    async def fake_rerank(text, products, *, limit=None):
         assert text == "письменный стол"
-        assert truncate is True
         return [products[1], products[0]]
 
     seen: list[list[dict]] = []
@@ -261,14 +227,13 @@ def test_classifiers_branch_verifies_hits_then_builds_pairs(monkeypatch):
             "hits": hits,
         }
 
-    async def fake_verify(text, items, *, truncate=True, limit=None):
+    async def fake_verify(text, items, *, limit=None):
         assert text == "молоток"
-        assert truncate is True
         assert items == hits
-        return [{**hits[1], "jevScore": 0.8}]
+        return [{**hits[1], "jevScore": 0.8}, {**hits[0], "jevScore": 0.2}]
 
     def fake_pairs_from_hits(items, *, limit=8):
-        assert [item["code"] for item in items] == ["B-1"]
+        assert [item["code"] for item in items] == ["B-1", "A-1"]
         assert limit == suggest.CLASSIFIER_PAIR_LIMIT
         return {
             "okpdKtru": [{
@@ -340,9 +305,8 @@ def test_find_similar_reranks_and_limits(monkeypatch):
         product(row["id"], f"Товар {row['id']}", score=row["score"]) for row in ranked
     ])
 
-    async def fake_rerank(text, products, *, truncate=False, limit=None):
+    async def fake_rerank(text, products, *, limit=None):
         assert "Исходный стол" in text
-        assert truncate is False
         assert len(products) >= 6
         return list(reversed(products))
 

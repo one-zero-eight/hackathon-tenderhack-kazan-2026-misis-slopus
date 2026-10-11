@@ -21,9 +21,16 @@ from search_api.characteristic_normalization import (
     normalize_value,
 )
 from search_api.config import settings
+from search_api.kpgz_schema import (
+    MAX_SCHEMA_GAP_FIELDS,
+    characteristics_for,
+    schema_fingerprint,
+    suitable_for_product_form,
+    usable_enum_values,
+)
 from search_api.ste_catalog import _kpgz_path, category_tree, get_catalog, iterate_products
 
-_SCHEMA = "catalog-characteristics-v2"
+_SCHEMA = "catalog-characteristics-v4"
 _METADATA_NAMES = {
     "ктру", "окпд", "окпд2", "кпгз", "спгз", "артикул", "штрихкод",
     "производитель", "страна происхождения", "модель", "наименование", "описание",
@@ -130,7 +137,9 @@ def _build(destination: Path, fingerprint: str) -> None:
 
 def _database() -> sqlite3.Connection:
     catalog_metadata = dict(get_catalog().execute("SELECT key,value FROM metadata"))
-    fingerprint = json.dumps([catalog_metadata["schema"], catalog_metadata["fingerprint"]])
+    fingerprint = json.dumps([
+        catalog_metadata["schema"], catalog_metadata["fingerprint"], schema_fingerprint(),
+    ])
     destination = settings.catalog_database.with_suffix(".characteristics.sqlite")
     with _lock, destination.with_suffix(".lock").open("a") as build_lock:
         fcntl.flock(build_lock, fcntl.LOCK_EX)
@@ -161,21 +170,64 @@ def _descendants(conn: sqlite3.Connection, category_id: int) -> list[int]:
     """, (category_id,))]
 
 
+def _merge_schema_examples(examples: list[str], example_counts: dict[str, int], schema_values: list[str]) -> None:
+    """Prefer observed catalog values; append only short official enum options."""
+    seen = {normalize_value(value) for value in examples}
+    for value in usable_enum_values(schema_values):
+        key = normalize_value(value)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        examples.append(value)
+        example_counts.setdefault(value, 0)
+        if len(examples) >= 12:
+            break
+
+
+def _schema_fields(kpgz_code: str, used: set[tuple[str, str]], limit: int) -> list[dict]:
+    """Few эталонные short-enum gaps when STE frequency does not already cover them."""
+    result = []
+    budget = min(limit, MAX_SCHEMA_GAP_FIELDS)
+    for item in characteristics_for(kpgz_code):
+        if len(result) >= budget:
+            break
+        key = (item["name_key"], item["unit"])
+        if not item["name_key"] or key in used or not suitable_for_product_form(item):
+            continue
+        used.add(key)
+        examples = usable_enum_values(item["values"])
+        field_id = hashlib.sha256(f"{item['name_key']}\0{item['unit']}".encode()).hexdigest()[:24]
+        result.append({
+            "id": f"catalog:{field_id}", "name": item["name"], "nameKey": item["name_key"],
+            "unit": item["unit"], "numeric": item["numeric"], "count": 0, "total": 0,
+            "frequency": 0.0, "scope": "schema", "examples": examples,
+            "exampleCounts": {value: 0 for value in examples}, "numericValueCounts": None,
+        })
+    return result
+
+
 def frequent_catalog_characteristics(kpgz_code: str, limit: int = 20) -> list[dict]:
-    """Category/subtree first, then its immediate parent's other branches; no global mixing."""
+    """Category/subtree first, then parent branches, then a few official эталонные gaps."""
     if not kpgz_code.strip():
         return []
+    code = kpgz_code.strip()
     conn = _database()
     try:
-        category = conn.execute("SELECT id,parent_id FROM categories WHERE code=?", (kpgz_code.strip(),)).fetchone()
+        category = conn.execute("SELECT id,parent_id FROM categories WHERE code=?", (code,)).fetchone()
+        # Leave room for a small official-schema top-up when the leaf schema exists.
+        schema_budget = min(MAX_SCHEMA_GAP_FIELDS, limit)
+        frequency_limit = max(0, limit - schema_budget) if characteristics_for(code) else limit
         if category is None:
-            return []
+            return _schema_fields(code, set(), limit)
         own = _descendants(conn, category[0])
         adjacent = sorted(set(_descendants(conn, category[1])) - set(own)) if category[1] is not None else []
         result = []
         used: set[tuple[str, str]] = set()
+        schema_lookup = {
+            (item["name_key"], item["unit"]): item for item in characteristics_for(code)
+        }
         for scope, ids in (("category", own), ("adjacent", adjacent)):
-            if not ids or len(result) >= limit:
+            if not ids or len(result) >= frequency_limit:
                 continue
             placeholders = ",".join("?" for _ in ids)
             total = conn.execute(f"SELECT sum(count) FROM categories WHERE id IN ({placeholders})", ids).fetchone()[0]
@@ -209,6 +261,9 @@ def frequent_catalog_characteristics(kpgz_code: str, limit: int = 20) -> list[di
                     """, [*ids, key, unit, value_key]).fetchone()[0]
                     examples.append(display)
                     example_counts[display] = value_count
+                schema = schema_lookup.get((key, unit))
+                if schema and schema["values"]:
+                    _merge_schema_examples(examples, example_counts, schema["values"])
                 numeric_value_counts = None
                 if numeric_count == count:
                     distribution = dict(conn.execute(f"""
@@ -226,8 +281,10 @@ def frequent_catalog_characteristics(kpgz_code: str, limit: int = 20) -> list[di
                     "frequency": count / total, "scope": scope, "examples": examples,
                     "exampleCounts": example_counts, "numericValueCounts": numeric_value_counts,
                 })
-                if len(result) >= limit:
+                if len(result) >= frequency_limit:
                     break
+        if len(result) < limit:
+            result.extend(_schema_fields(code, used, limit - len(result)))
         return result
     finally:
         conn.close()

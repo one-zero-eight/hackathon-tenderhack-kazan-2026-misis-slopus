@@ -79,6 +79,15 @@ def classifier_fixture(tmp_path, monkeypatch):
     return output
 
 
+def test_classifier_search_accepts_long_description(classifier_fixture):
+    query = "Молоток слесарный со стальным бойком. " * 40
+    assert len(query) > 500
+    result = asyncio.run(search_classifiers(query=query, mode="text"))
+    assert result["query"] == query.strip()
+    with pytest.raises(ValueError, match="20000"):
+        asyncio.run(search_classifiers(query="а" * 20_001, mode="text"))
+
+
 def test_fold_text_normalizes_yo():
     assert fold_text("Ёлка") == fold_text("елка")
 
