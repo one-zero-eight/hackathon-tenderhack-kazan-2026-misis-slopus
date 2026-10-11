@@ -5,7 +5,9 @@ import re
 import time
 from typing import Any, Literal
 
-from search_api.config import settings
+import httpx
+
+from search_api.config import MAX_DESCRIPTION_LENGTH, settings
 from search_api.database import get_db, has_vectors
 from search_api.embeddings import embed_query, embed_texts
 from search_api.ste_catalog import (
@@ -59,8 +61,8 @@ def _hydrate_hits(ranked: list[dict]) -> list[dict]:
 
 
 def validate_search(query: str, mode: str, page: int, category_id: int | None) -> tuple[str, SearchMode, int, int | None]:
-    if not isinstance(query, str) or len(query) > 500:
-        raise ValueError("Запрос должен содержать не более 500 символов")
+    if not isinstance(query, str) or len(query) > MAX_DESCRIPTION_LENGTH:
+        raise ValueError(f"Запрос должен содержать не более {MAX_DESCRIPTION_LENGTH} символов")
     if mode not in ("text", "semantic", "hybrid"):
         raise ValueError("Неизвестный режим поиска")
     if not isinstance(page, int) or page < 1 or page > 10000:
@@ -157,13 +159,10 @@ async def run_search(
         timings["text"] = round((time.perf_counter() - stage) * 1000)
         return finish(hydrate_hits(ranked), total)
 
-    stage = time.perf_counter()
-    vectors_ready = has_vectors(db)
-    timings["vectorCheck"] = round((time.perf_counter() - stage) * 1000)
-    if not vectors_ready:
-        # Vectors not ready yet — fall back to FTS instead of failing the request.
+    def text_page() -> dict[str, Any]:
+        nonlocal mode
         mode = "text"
-        stage = time.perf_counter()
+        stage_local = time.perf_counter()
         total = 0
         if tokens:
             total = int(db.execute(
@@ -175,11 +174,24 @@ async def run_search(
                 [tokens, *category_params],
             ).fetchone()["n"])
         ranked = [{"id": row["id"], "score": None, "match": "text"} for row in text_rows(settings.page_size, offset)]
-        timings["text"] = round((time.perf_counter() - stage) * 1000)
+        timings["text"] = round((time.perf_counter() - stage_local) * 1000)
         return finish(hydrate_hits(ranked), total)
 
     stage = time.perf_counter()
-    vector = await embed_query(query)
+    vectors_ready = has_vectors(db)
+    timings["vectorCheck"] = round((time.perf_counter() - stage) * 1000)
+    if not vectors_ready:
+        # Vectors not ready yet — fall back to FTS instead of failing the request.
+        return text_page()
+
+    stage = time.perf_counter()
+    try:
+        vector = await embed_query(query)
+    except (httpx.HTTPError, RuntimeError, TimeoutError, OSError) as exc:
+        logger.warning("Embedding unavailable, falling back to text search: %s", exc)
+        timings["embedding"] = round((time.perf_counter() - stage) * 1000)
+        timings["embeddingFallback"] = 1
+        return text_page()
     timings["embedding"] = round((time.perf_counter() - stage) * 1000)
     if category_list is None:
         vec_sql = """
@@ -241,7 +253,7 @@ async def find_similar(product_id: int) -> list[dict]:
         for r in neighbors if int(r["id"]) != product_id
     ][: SIMILAR_RETRIEVAL_K - 1]
     hits = _hydrate_hits(ranked)
-    hits = await rerank_products(product_query_text(product), hits, truncate=False)
+    hits = await rerank_products(product_query_text(product), hits)
     return hits[:SIMILAR_RESULT_LIMIT]
 
 

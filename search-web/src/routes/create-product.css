@@ -467,8 +467,10 @@
 .create-similar-row .image-placeholder svg { width: 24px; height: 24px; }
 .create-similar-row .image-placeholder span { font-size: 8px; }
 .create-char-hint { margin: 6px 0 0; color: #8c8c8c; font-size: 10px; line-height: 1.5; overflow-wrap: anywhere; }
-.create-char-hint a { color: inherit; text-decoration: underline; text-underline-offset: 2px; }
-.create-char-hint a:hover { color: var(--pp-main-blue); }
+.create-char-hint a,
+.create-char-standards a { color: inherit; text-decoration: underline; text-underline-offset: 2px; }
+.create-char-hint a:hover,
+.create-char-standards a:hover { color: var(--pp-main-blue); }
 .create-char-hint-row {
   margin-top: 6px;
   display: flex;
@@ -559,10 +561,14 @@
   }
 }
 .create-char-heading { flex-wrap: wrap; }
-.create-char-heading .create-char-reset-button { margin-left: auto; }
-.create-describe-actions { display: flex; justify-content: flex-end; margin-top: 16px; }
-.create-describe-actions .create-char-autofill-button { min-width: 240px; }
-.create-describe > .create-autofill-error { margin-top: 12px; }
+.create-char-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+.create-char-actions .create-char-autofill-button { min-width: 0; }
 .create-autofill-spinner { animation: create-autofill-spin 1s linear infinite; }
 @keyframes create-autofill-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) {
@@ -584,6 +590,43 @@
 }
 .create-autofill-error.create-query-quality-warning { color: #8a6a1a; }
 .create-autofill-error span { flex: 1; overflow-wrap: anywhere; }
+.create-web-enrichment-card {
+  margin-top: 14px;
+  border-color: var(--border, #d8dde6);
+  background: var(--card, #fff);
+}
+.create-web-enrichment-card .text-lg { font-size: 15px; }
+.create-web-enrichment-label {
+  margin: 0 0 6px;
+  color: #6b7280;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+.create-web-enrichment-text {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: #f3f5f8;
+  color: #1f2937;
+  font-size: 13px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.create-web-enrichment-added {
+  color: #1a7a45;
+  background: color-mix(in srgb, var(--pp-green, #2d9f5f) 14%, transparent);
+  border-radius: 3px;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+.create-web-enrichment-footer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
 .create-char-standards {
   margin: -2px 0 10px;
   color: #8c8c8c;

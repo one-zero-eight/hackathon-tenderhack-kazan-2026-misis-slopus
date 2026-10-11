@@ -216,7 +216,7 @@ export type CatalogCharacteristic = {
   count: number;
   total: number;
   frequency: number;
-  scope: "category" | "adjacent";
+  scope: "category" | "adjacent" | "schema";
   examples: string[];
   /** Products with each normalized example, counted once per product. */
   exampleCounts: Record<string, number>;
@@ -231,6 +231,16 @@ export type CharacteristicAutofillInput = {
   ktruCode?: string | null;
   additionalAllowed?: boolean | null;
   excludedNames?: string[];
+};
+
+export type WebEnrichmentSuggestion = {
+  brand: string;
+  model: string;
+  query: string;
+  sources: { title: string; url: string; snippet: string }[];
+  facts: string[];
+  suggestedDescription: string;
+  message: string;
 };
 
 export type CharacteristicAutofillResult = {
@@ -270,6 +280,7 @@ export type CharacteristicAutofillResult = {
     errors: string[];
     evidence?: AutofillEvidence | null;
   }>;
+  webEnrichment?: WebEnrichmentSuggestion | null;
   issues: string[];
   threshold: number;
   filled: number;

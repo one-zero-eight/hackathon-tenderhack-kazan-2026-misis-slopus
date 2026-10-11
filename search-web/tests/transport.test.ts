@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { apiAutofillCharacteristics, apiCatalogStats, apiGetProduct, apiGetSimilarProducts, apiImageUrl, apiSearchProducts } from "../src/lib/api";
+import { apiAutofillCharacteristics, apiCatalogStats, apiGetProduct, apiGetSimilarProducts, apiImageUrl, apiSearchProducts, apiSuggestCategories } from "../src/lib/api";
 import { apiCatalogCharacteristics, apiSearchProducts as serverSearchProducts } from "../src/lib/server/search-api";
 import { GET, POST } from "../src/routes/api/search/[...path]";
 import type { APIEvent } from "@solidjs/start/server";
 import { suggestFromNeighbors } from "../src/lib/server/neighbor-suggest";
+
 test("category suggestions delegate voting and schema assembly to Python once", async () => {
   const originalFetch = globalThis.fetch;
   const description = "Шкаф металлический, 5 полок";
@@ -28,6 +29,33 @@ test("category suggestions delegate voting and schema assembly to Python once", 
     assert.equal(calls, 1);
     globalThis.fetch = async () => Response.json({ detail: "Нет справочников" }, { status: 503 });
     await assert.rejects(suggestFromNeighbors(description), { message: "Нет справочников" });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("browser suggest transport uses same-origin proxy, forwards abort signal and exposes API errors", async () => {
+  const originalFetch = globalThis.fetch;
+  const controller = new AbortController();
+  const description = "Шкаф металлический, 5 полок";
+  const expected = {
+    neighbors: [],
+    spgz: { code: "1241433623", name: "Шкаф", score: 1, source: "neighbors" },
+    characteristics: [{ id: "width", name: "Ширина", numeric: true, source: "spgz" }],
+    okpdKtruDecision: { needsChoice: false, reason: null, alternatives: [] },
+    kpgzSpgzDecision: { needsChoice: false, reason: null, alternatives: [] },
+  };
+  try {
+    globalThis.fetch = async (url, init) => {
+      assert.equal(url, "/api/search/categories/suggest");
+      assert.equal(init?.method, "POST");
+      assert.equal(init?.signal, controller.signal);
+      assert.deepEqual(JSON.parse(String(init?.body)), { description, force: true });
+      return Response.json(expected);
+    };
+    assert.deepEqual(await apiSuggestCategories(description, { force: true }, controller.signal), expected);
+    globalThis.fetch = async () => Response.json({ detail: "Нет справочников" }, { status: 503 });
+    await assert.rejects(apiSuggestCategories(description), { message: "Нет справочников" });
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -68,6 +96,7 @@ test("autofill transport sends the actual schema, supports abort and exposes API
           manufacturer: { name: "Производитель", value: null, quote: null, status: "missing", source: null, errors: [], evidence: null },
           article: { name: "Артикул", value: null, quote: null, status: "missing", source: null, errors: [], evidence: null },
         },
+        webEnrichment: null,
         issues: [], threshold: 0.85, filled: 1, total: 1,
         model: "ggml-org/gemma-4-E4B-it-GGUF:Q8_0", durationMs: 100,
         usage: { input_tokens: 1, output_tokens: 1 },
@@ -77,6 +106,7 @@ test("autofill transport sends the actual schema, supports abort and exposes API
     assert.equal(result.characteristics[0].value, "0.5");
     assert.equal(result.status, "accepted");
     assert.equal(result.product.article.status, "missing");
+    assert.equal(result.webEnrichment, null);
     globalThis.fetch = async () => Response.json({ detail: "TypeSafe API: HTTP 429" }, { status: 502 });
     await assert.rejects(apiAutofillCharacteristics(input), { message: "TypeSafe API: HTTP 429" });
   } finally {

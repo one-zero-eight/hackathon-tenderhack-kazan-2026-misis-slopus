@@ -207,7 +207,7 @@ async def embed_texts(
     if not texts:
         return []
     prompt = settings.query_prompt if task == "query" else settings.document_prompt
-    timeout = 60.0 if task == "query" else 600.0
+    timeout = 12.0 if task == "query" else 600.0
     body = {
         "dense_model_id": settings.model_id,
         "dense_task": task,
@@ -220,6 +220,8 @@ async def embed_texts(
         for delay in (*_RETRY_DELAYS, None):
             try:
                 response = await http.post(_endpoint(), json=body)
+            except asyncio.CancelledError:
+                raise
             except (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError) as exc:
                 last_error = exc
                 if delay is None:

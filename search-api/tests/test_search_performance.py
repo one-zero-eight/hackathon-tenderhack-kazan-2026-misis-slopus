@@ -28,6 +28,14 @@ def search_db(tmp_path, monkeypatch):
     db.close()
 
 
+def test_search_accepts_long_description_without_truncation():
+    query = "Шкаф металлический для медицинских карт. " * 40
+    assert len(query) > 500
+    assert search.validate_search(query, "semantic", 1, None)[0] == query.strip()
+    with pytest.raises(ValueError, match="20000"):
+        search.validate_search("а" * 20_001, "semantic", 1, None)
+
+
 def test_search_connection_memory_settings(search_db):
     db, _ = search_db
     assert db.execute("PRAGMA mmap_size").fetchone()[0] == settings.search_mmap_size

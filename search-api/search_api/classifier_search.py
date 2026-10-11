@@ -16,7 +16,7 @@ import pymorphy3
 import pysqlite3 as sqlite3
 import sqlite_vec
 
-from search_api.config import settings
+from search_api.config import MAX_DESCRIPTION_LENGTH, settings
 from search_api.embeddings import _float16_to_sqlite, embed_client, embed_query, embed_texts
 
 logger = logging.getLogger("uvicorn.error")
@@ -692,18 +692,28 @@ def pairs_from_hits(hits: list[dict[str, Any]], *, limit: int = 8) -> dict[str, 
 async def search_classifiers(*, query: str, mode: Literal["hybrid", "semantic", "text"] = "hybrid",
                              limit: int = 20) -> dict[str, Any]:
     query = (query or "").strip()
-    if not query or len(query) > 500:
-        raise ValueError("Запрос должен содержать от 1 до 500 символов")
+    if not query or len(query) > MAX_DESCRIPTION_LENGTH:
+        raise ValueError(f"Запрос должен содержать от 1 до {MAX_DESCRIPTION_LENGTH} символов")
     if mode not in {"hybrid", "semantic", "text"}:
         raise ValueError("Неизвестный режим поиска")
     limit = max(1, min(int(limit), 50))
     started = time.perf_counter()
+    timings: dict[str, int] = {}
+    status = "error"
     conn = open_classifier_db(readonly=True)
     try:
         validate_classifier_index(conn, require_embeddings=mode != "text")
+        timings["setup"] = round((time.perf_counter() - started) * 1000)
+        stage = time.perf_counter()
         exact = _exact_boosts(conn, query)
+        timings["exact"] = round((time.perf_counter() - stage) * 1000)
+        stage = time.perf_counter()
         textual = _text_hits(conn, query, settings.retrieval_limit) if mode in {"hybrid", "text"} else []
+        timings["text"] = round((time.perf_counter() - stage) * 1000)
+        stage = time.perf_counter()
         semantic = await _semantic_hits(conn, query, settings.retrieval_limit) if mode in {"hybrid", "semantic"} else []
+        timings["semantic"] = round((time.perf_counter() - stage) * 1000)
+        stage = time.perf_counter()
         fused = _fuse(exact, semantic, textual)
         okpd_ktru = _pair_okpd_ktru(fused, conn, limit)
         kpgz_spgz = _pair_kpgz_spgz(fused, conn, limit)
@@ -712,8 +722,12 @@ async def search_classifiers(*, query: str, mode: Literal["hybrid", "semantic", 
                                       or not any(pair["confident"] for pair in tops))
         for hit in fused:
             hit.pop("_typo", None)
+        timings["ranking_pairs"] = round((time.perf_counter() - stage) * 1000)
+        status = "ok"
         return {"query": query, "mode": mode, "okpdKtru": okpd_ktru, "kpgzSpgz": kpgz_spgz,
                 "hits": fused[:limit], "needsChoice": needs_choice,
                 "durationMs": round((time.perf_counter() - started) * 1000)}
     finally:
         conn.close()
+        logger.info("Classifier search mode=%s chars=%s duration_ms=%s status=%s stages_ms=%s",
+                    mode, len(query), round((time.perf_counter() - started) * 1000), status, timings)

@@ -67,6 +67,11 @@ export function catalogOptionPopularity(field: DraftCharacteristic, option: stri
 }
 
 export function catalogFrequencyLabel(item: CatalogCharacteristic): string {
+  if (item.scope === "schema") {
+    return item.examples.length
+      ? `Официальная характеристика КПГЗ (${item.examples.length} допустимых значений).`
+      : "Официальная характеристика КПГЗ из схемы категории.";
+  }
   const scope = item.scope === "category" ? "этой категории и её подкатегорий" : "смежных категорий";
   return `Встречается у ${item.count} из ${item.total} товаров ${scope} (${Math.round(item.frequency * 100)}%).`;
 }

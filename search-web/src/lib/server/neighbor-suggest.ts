@@ -18,6 +18,7 @@ export type QueryQuality = {
   verdict: QueryQualityVerdict;
   reasons: string[];
   probabilities?: Record<string, number>;
+  durationMs?: number;
 };
 
 export type NeighborSuggestion = {

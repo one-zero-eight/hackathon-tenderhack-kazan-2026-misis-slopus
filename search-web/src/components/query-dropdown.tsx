@@ -10,7 +10,11 @@ import { buttonVariants } from "~/ui-kit/button";
 
 export type QueryDropdownItem = { id: string; text: string; status: QueryStatus; detail?: string };
 const statusLabels: Record<QueryStatus, string> = {
-  pending: "В очереди", processing: "Обрабатывается", done: "Обработан", error: "Ошибка · повторить",
+  pending: "В очереди",
+  processing: "Обрабатывается",
+  done: "Обработан",
+  error: "Ошибка · повторить",
+  cancelled: "Отменён · повторить",
 };
 
 export function QueryDropdown(props: {
@@ -42,6 +46,7 @@ export function QueryDropdown(props: {
                 <Show when={item.status === "processing"}><LoaderCircle size={13} class="create-autofill-spinner" /></Show>
                 <Show when={item.status === "done"}><Check size={13} /></Show>
                 <Show when={item.status === "pending"}><Clock size={13} /></Show>
+                <Show when={item.status === "cancelled"}><Clock size={13} /></Show>
                 <Show when={item.status === "error"}><CircleAlert size={13} /></Show>
                 {statusLabels[item.status]}
               </span>

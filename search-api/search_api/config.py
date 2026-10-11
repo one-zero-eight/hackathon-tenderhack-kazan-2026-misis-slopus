@@ -7,6 +7,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ROOT = Path(__file__).resolve().parents[2]
 DATA = ROOT / "data"
+MAX_DESCRIPTION_LENGTH = 20_000
 
 _DEFAULT_CATEGORY_PARQUETS = (
     DATA / "Инструменты_from_api.parquet",
@@ -58,7 +59,7 @@ class Settings(BaseSettings):
     port: int = 8070
     cors_origins: str = "http://127.0.0.1:3000,http://localhost:3000"
     typesafe_api_key: SecretStr | None = None
-    typesafe_base_url: str = "https://api.typesafe.ai"
+    typesafe_base_url: str = "https://api.innohassle.ru/typesafe"
     typesafe_model: str = "jev-latest"
     typesafe_timeout: float = Field(default=120, gt=0)
     typesafe_confidence: float = Field(default=0.85, ge=0, le=1)

@@ -41,6 +41,129 @@ def test_pair_conflict_never_creates_cross_parent_leaf_pair():
     assert [(pair["okpd2"]["code"], pair["ktru"]["code"]) for pair in decision["alternatives"]] == [("A", "A-1"), ("B", "B-1")]
 
 
+def test_category_families_collapse_ktru_siblings_to_template(monkeypatch):
+    monkeypatch.setattr(suggest.catalog, "get_ktru_specialization", lambda code: {
+        "templateCode": "T", "templateName": "Шкаф для медицинских карт",
+    })
+    monkeypatch.setattr(suggest, "_enrich", lambda vote, tab: {**vote, "isTemplate": True})
+    families = suggest._category_families([
+        candidate("okpdKtru", "P", "L1"),
+        candidate("okpdKtru", "P", "L2", "classifier"),
+        candidate("okpdKtru", "P", None, "classifier"),
+    ], "okpdKtru")
+    assert len(families) == 1
+    assert families[0]["okpd2"]["code"] == "P"
+    assert families[0]["ktru"]["code"] == "T"
+    assert families[0]["ktru"]["isTemplate"]
+    assert families[0]["sources"] == ["neighbors", "classifier"]
+
+
+def test_category_families_collapse_spgz_to_parent(monkeypatch):
+    monkeypatch.setattr(suggest.catalog, "get_spgz_specialization", lambda input: {"characteristics": []})
+    families = suggest._category_families([
+        candidate("kpgzSpgz", "P", "L1"),
+        candidate("kpgzSpgz", "P", "L2", "classifier"),
+    ], "kpgzSpgz")
+    assert len(families) == 1
+    assert families[0]["kpgz"]["code"] == "P"
+    assert families[0]["spgz"] is None
+
+
+def test_category_families_do_not_merge_unrelated_ktru_families(monkeypatch):
+    monkeypatch.setattr(suggest.catalog, "get_ktru_specialization", lambda code: None)
+    families = suggest._category_families([
+        candidate("okpdKtru", "P", "L1"),
+        candidate("okpdKtru", "P", "L2"),
+    ], "okpdKtru")
+    assert len(families) == 2
+
+
+def test_category_families_do_not_apply_different_spgz_children(monkeypatch):
+    monkeypatch.setattr(suggest.catalog, "get_spgz_specialization", lambda input: None)
+    families = suggest._category_families([
+        candidate("kpgzSpgz", "P", "L1"),
+        candidate("kpgzSpgz", "P", "L2"),
+        candidate("kpgzSpgz", "P", "L2"),
+    ], "kpgzSpgz")
+    assert len(families) == 1
+    assert families[0]["spgz"] is None
+
+
+def test_resolver_auto_selects_verified_family_over_branch_conflict(monkeypatch):
+    import asyncio
+    from search_api import characteristic_autofill as autofill, jev_rerank
+
+    monkeypatch.setattr(suggest.settings, "jev_rerank_enabled", True)
+    monkeypatch.setattr(suggest, "_category_families", lambda pairs, side: pairs)
+    monkeypatch.setattr(autofill, "typesafe_key", lambda: "test")
+    winner = candidate("okpdKtru", "B", "B-1", "classifier")
+    neighbors = {"pairs": {"okpdKtru": ([candidate("okpdKtru", "A", "A-1")], True), "kpgzSpgz": ([], False)}}
+    classifiers = {"pairs": {"okpdKtru": ([winner], True), "kpgzSpgz": ([], False)}}
+
+    async def ranks(query, questions):
+        assert query == "Шкаф для медицинских карт"
+        assert set(questions) == {"okpdKtru"}
+        labels = list(questions["okpdKtru"]["criteria"])
+        return {"okpdKtru": {labels[0]: 0.25, labels[1]: 0.75}}
+
+    async def verify(client, key, state, questions, usage):
+        assert state == {"текст": "Шкаф для медицинских карт"}
+        assert "B-1" in questions["okpdKtru"]["instructions"]["question"]
+        return {"okpdKtru": {"type": "noul", "noul": 0.95}}, "test"
+
+    monkeypatch.setattr(jev_rerank, "_ask_questions", ranks)
+    monkeypatch.setattr(autofill, "ask_jev", verify)
+    result = asyncio.run(suggest._resolve_category_choices("Шкаф для медицинских карт", neighbors, classifiers))
+    selected, decision = result["okpdKtru"]
+    assert selected == winner
+    assert not decision["needsChoice"]
+    assert decision["alternatives"] == [winner]
+
+
+def test_resolver_limits_unverified_choices_to_two_ranked_families(monkeypatch):
+    import asyncio
+    from search_api import characteristic_autofill as autofill, jev_rerank
+
+    monkeypatch.setattr(suggest.settings, "jev_rerank_enabled", True)
+    monkeypatch.setattr(suggest, "_category_families", lambda pairs, side: pairs)
+    monkeypatch.setattr(autofill, "typesafe_key", lambda: "test")
+    alternatives = [candidate("okpdKtru", str(index), str(index)) for index in range(6)]
+    neighbors = {"pairs": {"okpdKtru": (alternatives, False), "kpgzSpgz": ([], False)}}
+    classifiers = {"pairs": {side: ([], False) for side in suggest.PAIR_FIELDS}}
+
+    async def ranks(query, questions):
+        labels = list(questions["okpdKtru"]["criteria"])
+        return {"okpdKtru": {label: index / 20 for index, label in enumerate(labels)}}
+
+    async def verify(*args):
+        return {"okpdKtru": {"type": "noul", "noul": 0.4}}, "test"
+
+    monkeypatch.setattr(jev_rerank, "_ask_questions", ranks)
+    monkeypatch.setattr(autofill, "ask_jev", verify)
+    selected, decision = asyncio.run(suggest._resolve_category_choices("шкаф", neighbors, classifiers))["okpdKtru"]
+    assert selected is None
+    assert decision["needsChoice"]
+    assert [pair["ktru"]["code"] for pair in decision["alternatives"]] == ["5", "4"]
+
+
+def test_resolver_applies_sole_family_without_model_call(monkeypatch):
+    import asyncio
+    from search_api import jev_rerank
+
+    family = candidate("okpdKtru", "P", "T")
+    monkeypatch.setattr(suggest, "_category_families", lambda pairs, side: [family])
+
+    async def unexpected(*args):
+        raise AssertionError("One family requires no choice")
+
+    monkeypatch.setattr(jev_rerank, "_ask_questions", unexpected)
+    neighbors = {"pairs": {"okpdKtru": ([candidate("okpdKtru", "P", "L1"), candidate("okpdKtru", "P", "L2")], False), "kpgzSpgz": ([], False)}}
+    classifiers = {"pairs": {side: ([], False) for side in suggest.PAIR_FIELDS}}
+    selected, decision = asyncio.run(suggest._resolve_category_choices("шкаф", neighbors, classifiers))["okpdKtru"]
+    assert selected == family
+    assert not decision["needsChoice"]
+
+
 def test_agreement_combines_provenance_and_keeps_real_vote_share():
     selected, decision = suggest.decide_pair(
         ([candidate("okpdKtru")], True),
@@ -63,6 +186,19 @@ def test_parent_agreement_does_not_apply_ambiguous_child():
     assert selected["ktru"] is None
     # Parent-only auto application must still leave the leaf choice visible.
     assert decision["needsChoice"]
+
+
+def test_sole_alternative_applies_without_choice():
+    selected, decision = suggest.decide_pair(
+        ([], False),
+        ([candidate("kpgzSpgz", "01.02", None, "classifier")], False),
+        "kpgzSpgz",
+    )
+    assert selected["kpgz"]["code"] == "01.02"
+    assert selected["spgz"] is None
+    assert not decision["needsChoice"]
+    assert decision["reason"] is None
+    assert len(decision["alternatives"]) == 1
 
 
 def test_sides_have_independent_decisions():
@@ -110,7 +246,7 @@ def test_invalid_link_never_wins_pair(monkeypatch):
 
 
 async def _quality_ok(text: str):
-    return {"verdict": "ok", "reasons": [], "probabilities": {"is_product": 0.9, "specific": 0.9}}
+    return {"verdict": "ok", "reasons": [], "probabilities": {"is_product": 0.9, "specific": 0.9, "plausible": 0.9}}
 
 
 @pytest.mark.parametrize("description", ["", "  ", "аб"])
@@ -125,6 +261,22 @@ def test_short_query_never_calls_embedding(monkeypatch, description):
     assert result["characteristics"] == []
     assert not result["needsChoice"]
     assert result["queryQuality"] is None
+
+
+def test_suggest_logs_quality_gate_and_total_without_description(monkeypatch, caplog):
+    import asyncio
+    import logging
+
+    async def reject(query):
+        return {"verdict": "reject", "reasons": [], "probabilities": {}}
+
+    monkeypatch.setattr("search_api.query_quality.check_query_quality", reject)
+    with caplog.at_level(logging.INFO, logger="uvicorn.error"):
+        asyncio.run(suggest.suggest_categories("секретное описание товара"))
+    assert "stage=quality duration_ms=" in caplog.text
+    assert "finished duration_ms=" in caplog.text
+    assert "status=reject" in caplog.text
+    assert "секретное описание товара" not in caplog.text
 
 
 def test_partial_branch_failure_is_visible(monkeypatch):
@@ -238,21 +390,60 @@ def test_both_branch_failures_are_api_error(monkeypatch):
         asyncio.run(suggest.suggest_categories("молоток"))
 
 
+def test_long_description_reaches_quality_search_and_rerank_untruncated(monkeypatch):
+    import asyncio
+
+    text = "Шкаф металлический для медицинских карт, 5 полок, замок. " * 30
+    assert len(text) > 500
+    calls = []
+
+    async def quality(query):
+        assert query == text.strip()
+        calls.append("quality")
+        return await _quality_ok(query)
+
+    async def neighbors(query):
+        assert query == text.strip()
+        assert calls == ["quality"]
+        calls.append("neighbors")
+        return {"neighbors": [], "error": None}
+
+    async def classifiers(query):
+        assert query == text.strip()
+        calls.append("classifiers")
+        return {"result": {"okpdKtru": [], "kpgzSpgz": [], "hits": []}, "error": None}
+
+    async def rerank(query, **kwargs):
+        assert query == text.strip()
+        calls.append("rerank")
+        return None, None
+
+    monkeypatch.setattr("search_api.query_quality.check_query_quality", quality)
+    monkeypatch.setattr(suggest, "_neighbors_retrieve", neighbors)
+    monkeypatch.setattr(suggest, "_classifiers_retrieve", classifiers)
+    monkeypatch.setattr("search_api.jev_rerank.rerank_suggest_shortlists", rerank)
+    result = asyncio.run(suggest.suggest_categories(text))
+    assert result["queryQuality"]["verdict"] == "ok"
+    assert calls == ["quality", "neighbors", "classifiers", "rerank"]
+    with pytest.raises(ValueError, match="20000"):
+        asyncio.run(suggest.suggest_categories("а" * 20_001))
+
+
 def test_quality_gate_skips_retrieve_until_forced(monkeypatch):
     import asyncio
 
     async def reject(text: str):
         return {
             "verdict": "reject",
-            "reasons": ["это не похоже на описание закупаемого товара"],
-            "probabilities": {"is_product": 0.1, "specific": 0.9},
+            "reasons": ["описание товара выглядит противоречивым, абсурдным или не похоже на товар"],
+            "probabilities": {"is_product": 0.1, "specific": 0.9, "plausible": 0.9},
         }
 
     async def suspicious(text: str):
         return {
             "verdict": "suspicious",
-            "reasons": ["запрос слишком общий для подбора позиции"],
-            "probabilities": {"is_product": 0.9, "specific": 0.1},
+            "reasons": ["описание товара выглядит противоречивым, абсурдным или не похоже на товар"],
+            "probabilities": {"is_product": 0.9, "specific": 0.1, "plausible": 0.9},
         }
 
     async def unexpected(*args, **kwargs):

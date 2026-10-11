@@ -1,4 +1,4 @@
-export type QueryStatus = "pending" | "processing" | "done" | "error";
+export type QueryStatus = "pending" | "processing" | "done" | "error" | "cancelled";
 
 export type QueuedQuery<T> = {
   id: string;
@@ -10,6 +10,11 @@ export type QueuedQuery<T> = {
 };
 
 export const normalizeQuery = (text: string) => text.trim().replace(/\s+/g, " ");
+
+function isAbortError(error: unknown): boolean {
+  return (error instanceof DOMException && error.name === "AbortError")
+    || (error instanceof Error && error.name === "AbortError");
+}
 
 /** One request per physical line. Commas/semicolons inside descriptions are not columns. */
 export function parseQueryFile(text: string): string[] {
@@ -24,12 +29,13 @@ export function parseQueryFile(text: string): string[] {
 export class QueryQueue<T> {
   private entries: QueuedQuery<T>[] = [];
   private requests = new Map<string, Promise<T>>();
+  private controllers = new Map<string, AbortController>();
   private nextId = 0;
   private active = 0;
   private stopped = false;
 
   constructor(
-    private process: (text: string) => Promise<T>,
+    private process: (text: string, signal: AbortSignal) => Promise<T>,
     private changed: (items: QueuedQuery<T>[]) => void,
     private started: (text: string) => void = () => {},
   ) {}
@@ -57,12 +63,18 @@ export class QueryQueue<T> {
     this.entries = this.entries.map((item) => {
       if (normalizeQuery(item.text) !== query || item.status === "pending") return item;
       changed = true;
+      this.controllers.get(item.id)?.abort();
       return { id: item.id, text: item.text, status: "pending" as const };
     });
     if (changed) this.changed(this.entries);
   }
 
-  /** The normal queue is serial; an explicitly selected query starts immediately. */
+  /** Abort every in-flight request (e.g. suggest effect cleanup). */
+  abortInFlight(): void {
+    for (const controller of this.controllers.values()) controller.abort();
+  }
+
+  /** The normal queue is serial; an explicitly selected query starts immediately and cancels others. */
   run(id: string): Promise<T> {
     const item = this.entries.find((entry) => entry.id === id);
     if (!item) return Promise.reject(new Error("Запрос не найден"));
@@ -70,22 +82,42 @@ export class QueryQueue<T> {
     const running = this.requests.get(id);
     if (running) return running;
     if (this.stopped) return Promise.reject(new Error("Очередь остановлена"));
+
+    for (const [otherId, controller] of this.controllers) {
+      if (otherId !== id) controller.abort();
+    }
+
+    const controller = new AbortController();
+    this.controllers.set(id, controller);
     this.active++;
     const startedAt = performance.now();
     // Register the promise before notifying observers (which can select the same request).
     const request = Promise.resolve().then(() => {
       this.started(item.text);
-      return this.process(item.text);
+      if (controller.signal.aborted) throw new DOMException("Aborted", "AbortError");
+      const work = this.process(item.text, controller.signal);
+      // Always settle on abort even if process ignores the signal.
+      const aborted = new Promise<never>((_, reject) => {
+        const onAbort = () => reject(new DOMException("Aborted", "AbortError"));
+        if (controller.signal.aborted) onAbort();
+        else controller.signal.addEventListener("abort", onAbort, { once: true });
+      });
+      return Promise.race([work, aborted]);
     }).then((result) => {
       this.update(id, { status: "done", result, durationMs: Math.round(performance.now() - startedAt) });
       return result;
     }, (error: unknown) => {
+      if (controller.signal.aborted || isAbortError(error)) {
+        this.update(id, { status: "cancelled", error: undefined, durationMs: undefined });
+        throw error instanceof Error ? error : new DOMException("Aborted", "AbortError");
+      }
       this.update(id, { status: "error", error: error instanceof Error ? error.message : "Не удалось обработать запрос" });
       throw error;
     }).finally(() => {
       this.requests.delete(id);
+      this.controllers.delete(id);
       this.active--;
-      this.resume();
+      if (!controller.signal.aborted) this.resume();
     });
     this.requests.set(id, request);
     this.update(id, { status: "processing", error: undefined });
@@ -98,7 +130,10 @@ export class QueryQueue<T> {
     if (next) void this.run(next.id).catch(() => {}); // Error is retained on the entry; continue the queue.
   }
 
-  stop(): void { this.stopped = true; }
+  stop(): void {
+    this.stopped = true;
+    this.abortInFlight();
+  }
 
   private update(id: string, patch: Partial<QueuedQuery<T>>): void {
     this.entries = this.entries.map((item) => item.id === id ? { ...item, ...patch } : item);
