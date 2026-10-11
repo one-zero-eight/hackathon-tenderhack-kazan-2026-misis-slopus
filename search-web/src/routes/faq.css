@@ -11,7 +11,7 @@
 .term-item summary svg, .faq-item summary svg { margin-left: auto; flex: none; color: #8c8c8c; transition: transform .15s; }
 .term-item[open] summary svg, .faq-item[open] summary svg { transform: rotate(180deg); }
 .term-item summary:hover, .faq-item summary:hover { color: var(--green); }
-.term-item summary:focus-visible, .faq-item summary:focus-visible { outline: 2px solid var(--green); outline-offset: 3px; border-radius: 3px; }
+.term-item summary:focus-visible, .faq-item summary:focus-visible { outline: 2px solid var(--green); outline-offset: 3px; border-radius: 0; }
 .term-code { font-weight: 700; color: #264b82; flex: none; white-space: nowrap; }
 .term-name { flex: 1; font-size: 12px; color: #8c8c8c; }
 .term-item p, .faq-item p { color: #8c8c8c; font-size: 12px; line-height: 1.7; margin: -4px 0 15px; }
@@ -20,7 +20,7 @@
 .term-sources { display: flex; flex-wrap: wrap; gap: 8px 16px; }
 .term-source { display: inline-flex; align-items: center; gap: 5px; color: #264b82; font-size: 12px; font-weight: 600; line-height: 1.5; text-decoration: underline; text-underline-offset: 3px; }
 .term-source:hover { color: #1c3a66; }
-.term-source:focus-visible { outline: 2px solid var(--green); outline-offset: 3px; border-radius: 2px; }
+.term-source:focus-visible { outline: 2px solid var(--green); outline-offset: 3px; border-radius: 0; }
 
 @media (max-width: 600px) {
   .faq-main { padding-top: 22px; padding-bottom: 48px; }

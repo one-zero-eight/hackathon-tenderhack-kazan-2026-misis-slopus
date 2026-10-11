@@ -5,5 +5,5 @@ export type SkeletonProps = ComponentProps<"div">;
 
 export const Skeleton: Component<SkeletonProps> = props => {
   const [local, others] = splitProps(props, ["class"]);
-  return <div aria-hidden="true" class={cn("ui-skeleton rounded-sm", local.class)} {...others} />;
+  return <div aria-hidden="true" class={cn("ui-skeleton rounded-none", local.class)} {...others} />;
 };

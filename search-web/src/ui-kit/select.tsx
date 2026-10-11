@@ -19,7 +19,7 @@ const SelectTrigger = <T extends ValidComponent = "button">(props: PolymorphicPr
   return (
     <SelectPrimitive.Trigger
       class={cn(
-        "flex h-10 w-full items-center justify-between gap-2 rounded-md border border-input bg-transparent px-3 py-2 text-sm outline-none transition-colors placeholder:text-muted-foreground focus-visible:border-ring disabled:cursor-not-allowed disabled:opacity-50 data-[expanded]:border-ring",
+        "flex h-10 w-full items-center justify-between gap-2 rounded-none border border-input bg-transparent px-3 py-2 text-sm outline-none transition-colors placeholder:text-muted-foreground focus-visible:border-ring disabled:cursor-not-allowed disabled:opacity-50 data-[expanded]:border-ring",
         local.class,
       )}
       {...others}
@@ -42,7 +42,7 @@ const SelectContent = <T extends ValidComponent = "div">(props: PolymorphicProps
     <SelectPrimitive.Portal>
       <SelectPrimitive.Content
         class={cn(
-          "ui-select-content z-50 min-w-32 overflow-hidden rounded-md border border-input bg-card text-card-foreground shadow-md outline-none",
+          "ui-select-content z-50 min-w-32 overflow-hidden rounded-none border border-input bg-card text-card-foreground shadow-md outline-none",
           local.class,
         )}
         {...others}
@@ -63,7 +63,7 @@ const SelectItem = <T extends ValidComponent = "li">(props: PolymorphicProps<T, 
   return (
     <SelectPrimitive.Item
       class={cn(
-        "relative mt-0 flex w-full cursor-default select-none items-center rounded-sm py-1.5 pl-2 pr-8 text-sm outline-none data-[disabled]:pointer-events-none data-[disabled]:opacity-50 data-[highlighted]:bg-accent data-[highlighted]:text-foreground",
+        "relative mt-0 flex w-full cursor-default select-none items-center rounded-none py-1.5 pl-2 pr-8 text-sm outline-none data-[disabled]:pointer-events-none data-[disabled]:opacity-50 data-[highlighted]:bg-accent data-[highlighted]:text-foreground",
         local.class,
       )}
       {...others}

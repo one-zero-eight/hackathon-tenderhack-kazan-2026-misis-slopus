@@ -2552,6 +2552,7 @@ export default function NewProduct() {
                 type="button"
                 variant="default"
                 size="sm"
+                class="create-cta-button"
                 disabled={autofillBusy()}
                 onClick={() => requestAutofill(enrichment().facts)}
               >
