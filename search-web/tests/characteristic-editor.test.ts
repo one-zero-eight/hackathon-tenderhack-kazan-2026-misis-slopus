@@ -7,6 +7,7 @@ import {
 import { appendCatalogCharacteristics, buildDisplayCharacteristics } from "../src/lib/merge-characteristics";
 import { captureQueryDraft, catalogCharacteristicSuggestions, restoreQueryDraft, setCatalogCharacteristicSuggestions } from "../src/lib/create-product-state";
 import type { CatalogCharacteristic } from "../src/lib/types";
+import { shortUnitName, matchNumberToRange, characteristicRangeProblem } from "../src/lib/characteristic-options";
 
 const mass: CatalogCharacteristic = {
   id: "catalog:mass:kg", name: "Масса", nameKey: "масса", unit: "кг", numeric: true,
@@ -80,6 +81,17 @@ test("editable numeric ranges match KTRU semantics and validate their boundaries
   assert.match(characteristicSchemaProblem({ ...schema, ranges: [{ ...schema.ranges[0], min: null, max: null }] })!, /границу/);
   assert.match(characteristicSchemaProblem({ ...schema, ranges: [{ ...schema.ranges[0], min: NaN }] })!, /числами/);
   assert.match(characteristicSchemaProblem({ ...schema, kind: "choice", options: [" "] })!, /значение/);
+});
+
+test("screen refresh frequency uses short hertz units and matches the numeric range", () => {
+  assert.equal(shortUnitName("Герц"), "Гц");
+  assert.equal(shortUnitName("Герц; Гц"), "Гц");
+  assert.equal(shortUnitName("Килогерц"), "кГц");
+  assert.equal(shortUnitName("Мегагерц"), "МГц");
+  assert.equal(shortUnitName("Гигагерц"), "ГГц");
+  const ranges = [{ option: "60–120", min: 60, max: 120, minInclusive: true, maxInclusive: false }];
+  assert.equal(matchNumberToRange(75, ranges), "60–120");
+  assert.equal(characteristicRangeProblem({ value: "75", unit: "Герц", ranges, optionLabels: {} }), null);
 });
 
 test("catalog suggestions survive independent query drafts", () => {

@@ -133,6 +133,36 @@ def test_paper_grammage_and_sheets_are_accepted_with_ktru_units(monkeypatch, cou
         assert text[row["evidence"]["start"]:row["evidence"]["end"]] == row["quote"]
 
 
+@pytest.mark.parametrize("raw,expected,bucket,status", [
+    ("75 Гц", "75", "60–120", "accepted"),
+    ("75 Hz", "75", "60–120", "accepted"),
+    ("0,075 кГц", "75", "60–120", "accepted"),
+    ("0,000075 МГц", "75", "60–120", "accepted"),
+    ("120 Гц", "120", "120–240", "accepted"),
+    ("300 Гц", None, "", "rejected"),
+    ("75 Вт", None, "", "rejected"),
+])
+def test_screen_refresh_frequency_converts_hertz_and_selects_range(monkeypatch, raw, expected, bucket, status):
+    quote = f"частота обновления {raw}"
+    mock_providers(monkeypatch, llm_handler=mapping_handler({"0": raw}, {"0": quote}))
+    row = asyncio.run(autofill.autofill_characteristics(request(
+        text=f"Монитор, {quote}", additionalAllowed=False, characteristics=[{
+            "id": "refresh", "name": "Частота обновления экрана", "numeric": True, "unit": "Герц",
+            "options": ["60–120", "120–240"],
+            "ranges": [{"option": "60–120", "min": 60, "max": 120, "maxInclusive": False},
+                       {"option": "120–240", "min": 120, "max": 240}],
+        }],
+    )))["characteristics"][0]
+    assert row["status"] == status
+    assert row["value"] == expected
+    assert row["rangeOption"] == bucket
+    if status == "accepted":
+        assert not row["errors"]
+        assert row["conversion"]["to"] == "Герц"
+        assert row["conversion"]["result"] == float(expected)
+        assert row["evidence"]["quote"] == quote
+
+
 @pytest.mark.parametrize("name, expected", [
     ("Масса бумаги площадью 1 м²", 80),
     ("Масса бумаги площадью 2м2", 160),
