@@ -54,6 +54,20 @@ export function matchNumberToRange(value: number, ranges: CharacteristicRange[])
   return undefined;
 }
 
+export function characteristicScaleWarning(item: { value: string; unit: string; ranges: CharacteristicRange[] }): string | null {
+  const raw = item.value.trim();
+  if (!raw) return null;
+  const value = Number(raw.replace(",", "."));
+  if (!Number.isFinite(value)) return null;
+  const boundaries = item.ranges.flatMap((range) => [range.min, range.max])
+    .filter((bound): bound is number => bound != null && Number.isFinite(bound));
+  const upper = Math.max(...boundaries);
+  if (upper <= 0 || value / upper < 50) return null;
+  const shown = [raw, shortUnitName(item.unit)].filter(Boolean).join(" ");
+  const limit = [upper, shortUnitName(item.unit)].filter((part) => part !== "").join(" ");
+  return `Подозрительное значение ${shown}: в ${Number((value / upper).toPrecision(6))} раз больше наибольшей границы схемы ${limit}. Проверьте число и единицу измерения.`;
+}
+
 /** Validate the number independently of the selected catalog bucket, including manual edits. */
 export function characteristicRangeProblem(item: {
   value: string;

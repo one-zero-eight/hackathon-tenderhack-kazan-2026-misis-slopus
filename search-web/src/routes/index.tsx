@@ -29,6 +29,7 @@ import { SpgzPickerActions, SpgzPickerBody } from "~/components/spgz-picker";
 import { apiAutofillCharacteristics, apiSuggestCategoriesStream, isAbortError, type NeighborSuggestion } from "~/lib/api";
 import {
   characteristicRangeProblem,
+  characteristicScaleWarning,
   isRangeCharacteristic,
   isYesNoOptions,
   matchCharacteristicOption,
@@ -395,6 +396,10 @@ function CreateCharRow(props: {
 }) {
   const item = () => props.item();
   const rangeProblem = createMemo(() => characteristicRangeProblem(item()));
+  // Для введённого значения считаем на клиенте; для пустого показываем предупреждение из последнего автозаполнения.
+  const scaleWarning = createMemo(() => item().value.trim()
+    ? characteristicScaleWarning(item())
+    : item().autofillDiagnostics?.warnings?.[0]);
   const refineEnabled = () => item().applyPositionRefine !== false;
   const locate = () => <Show when={item().value.trim() && evidenceFromField(item()) && props.onLocateEvidence}>
     <AutofillLocate evidence={evidenceFromField(item())} onLocate={() => props.onLocateEvidence!(item().id)} />
@@ -606,6 +611,9 @@ function CreateCharRow(props: {
                   </CatalogCharacteristicInput>
                 </Show>
                 </div>
+                <Show when={scaleWarning()}>
+                  <p class="create-char-scale-hint create-char-scale-warning" role="note">{scaleWarning()}</p>
+                </Show>
                 <AutofillRejected item={item()} />
                 <Show when={item().webSource}>{(web) =>
                   <div class="create-char-web-note" role="note">
@@ -917,6 +925,13 @@ export default function NewProduct() {
     displayCharacteristics().find((row) => row.id === id)?.linkedIds ?? [id];
   const hasDraft = () => !!(description().trim() || name().trim() || selected() || similar().length || photos().length);
   const hasCategory = () => !!(okpd2() || ktruVote() || kpgz() || spgz());
+  // Карточка завершена, когда есть категория, ничего не загружается и все обязательные характеристики заполнены
+  // допустимыми значениями; тогда можно начать следующую.
+  const canResetCompletedProduct = createMemo(() =>
+    hasCategory() && !suggesting() && !autofillBusy() && !catalogCharacteristicsLoading() &&
+    displayCharacteristics()
+      .filter((item) => item.required)
+      .every((item) => !!item.value.trim() && !characteristicRangeProblem(item)));
   // Схемы нет, пока не выбрана позиция КТРУ/СПГЗ: тогда «Характеристики разобраны» было бы неверным, а варианты
   // выбора показываем прямо в блоке характеристик.
   // Только варианты с самой позицией: пара «ОКПД2 / без КТРУ» схемы характеристик не даёт.
@@ -2138,6 +2153,7 @@ export default function NewProduct() {
               confidence: answer.confidence,
               quote: answer.quote,
               errors: answer.errors ?? [],
+              warnings: answer.warnings ?? [],
               conversion: answer.conversion ?? null,
               suggestion: answer.suggestion ?? null,
               evidence: descriptionEvidence(answer.evidence),
@@ -2858,6 +2874,24 @@ export default function NewProduct() {
               <dd><TextField class="create-inline-field" name="product-model" value={model()} onChange={(value) => { manuallyEditedProductFields.add("model"); autofilledProductEvidence.delete("model"); setProductEvidenceVersion((v) => v + 1); setModel(value); saveActiveQueryDraft(); }}><TextFieldLabel class="sr-only">Модель</TextFieldLabel><TextFieldInput id="product-model" placeholder="Необязательно" maxlength={120} /></TextField></dd>
             </div>
           </dl>
+          <div class="create-summary-actions">
+            <Button
+              variant="secondary"
+              type="button"
+              disabled={!canResetCompletedProduct()}
+              title={canResetCompletedProduct()
+                ? "Сбросить все поля карточки и поиск"
+                : "Заполните все обязательные характеристики выбранной категории"}
+              onClick={() => {
+                if (!canResetCompletedProduct()) return;
+                reset();
+                if (descriptionSection) scrollToResult(descriptionSection);
+                describeTextarea?.focus({ preventScroll: true });
+              }}
+            >
+              <RotateCcw size={15} />Добавить карточку
+            </Button>
+          </div>
           <input type="hidden" name="product-category" value={selected()?.code ?? ""} />
         </div>
       </section>

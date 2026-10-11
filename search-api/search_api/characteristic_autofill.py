@@ -337,6 +337,22 @@ def convert_units(
 
 
 OUT_OF_RANGE_ERROR = "значение вне допустимых диапазонов схемы"
+SUSPICIOUS_SCALE_FACTOR = 50
+
+
+def suspicious_scale_problem(field: AutofillCharacteristic, value: float) -> str | None:
+    """Compare converted values with the highest finite schema boundary, including open ranges."""
+    upper = max(
+        (bound for item in field.ranges for bound in (item.min, item.max) if bound is not None),
+        default=None,
+    )
+    if upper is None or upper <= 0 or not math.isfinite(value) or value / upper < SUSPICIOUS_SCALE_FACTOR:
+        return None
+    unit = f" {field.unit}" if field.unit else ""
+    return (
+        f"Подозрительное значение {value:g}{unit}: в {value / upper:g} раз больше "
+        f"наибольшей границы схемы {upper:g}{unit}. Проверьте число и единицу измерения."
+    )
 
 
 def scale_suggestion(
@@ -1636,6 +1652,17 @@ async def _autofill_characteristics(
             result_fields.append(rejected_rows[field.id][0])
         else:
             result_fields.append(empty_field(field))
+        # Scale is a review warning, not a hard constraint: open ranges remain valid.
+        warning_values = [
+            conversion["result"] if conversion else written_number(value)
+            for value, _, _, conversion in accepted
+        ]
+        if not accepted and (conversion := result_fields[-1].get("conversion")):
+            warning_values.append(conversion["result"])
+        result_fields[-1]["warnings"] = list(dict.fromkeys(
+            problem for value in warning_values if value is not None
+            if (problem := suspicious_scale_problem(field, value))
+        ))
         if field.required and result_fields[-1]["status"] != "accepted":
             issues.append(f"не заполнено обязательное поле: {field.name}")
 

@@ -189,8 +189,8 @@ function mergePair(ktru: DraftCharacteristic, spgz: DraftCharacteristic): Displa
 
 /**
  * One table row when KTRU and SPGZ schemas match fully; otherwise keep separate rows.
- * Order: KTRU source order (XML list), then leftover SPGZ, then custom.
- * Discriminating characteristic is pinned first.
+ * Required rows precede optional rows; discriminating rows lead each group.
+ * Otherwise preserve source order: KTRU, leftover SPGZ, catalog, then custom.
  */
 export function buildDisplayCharacteristics(items: DraftCharacteristic[]): DisplayCharacteristic[] {
   const custom = items.filter((item) => item.source === "custom" || item.custom);
@@ -229,7 +229,7 @@ export function buildDisplayCharacteristics(items: DraftCharacteristic[]): Displ
   return [
     ...ordered.filter((item) => item.refinesKtru),
     ...ordered.filter((item) => !item.refinesKtru),
-  ];
+  ].sort((left, right) => Number(right.required) - Number(left.required));
 }
 
 export function retainTemplateCharacteristics(

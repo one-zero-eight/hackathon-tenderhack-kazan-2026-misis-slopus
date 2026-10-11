@@ -169,6 +169,7 @@ export type AutofillDiagnostics = {
   confidence?: number | null;
   quote?: string | null;
   errors?: string[];
+  warnings?: string[];
   conversion?: { from: string; to: string; result: number; sourceValue: number; factor?: number | null } | null;
   suggestion?: { value: number; unit: string; converted: number; reason: string } | null;
   evidence?: AutofillEvidence | null;
@@ -257,6 +258,7 @@ export type CharacteristicAutofillResult = {
     confidence: number | null;
     quote: string | null;
     errors: string[];
+    warnings?: string[];
     source?: string | null;
     conversion?: AutofillDiagnostics["conversion"];
     suggestion?: AutofillDiagnostics["suggestion"];

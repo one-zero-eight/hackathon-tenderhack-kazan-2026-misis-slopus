@@ -918,6 +918,14 @@
   line-height: 1.35;
   color: #55627a;
 }
+.create-char-scale-warning {
+  margin-top: 6px;
+  padding: 8px 10px;
+  border-left: 3px solid #dfbd77;
+  background: #fff8e9;
+  color: #765119;
+  line-height: 1.5;
+}
 .create-char-text-input { display: flex; align-items: center; min-width: 0; gap: 6px; }
 .create-char-text-input.has-confidence {
   height: 32px;
