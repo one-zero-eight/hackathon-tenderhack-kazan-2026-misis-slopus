@@ -120,6 +120,44 @@ def test_resolver_auto_selects_verified_family_over_branch_conflict(monkeypatch)
     assert decision["alternatives"] == [winner]
 
 
+def test_resolver_bounds_option_labels_and_preserves_full_category_names(monkeypatch):
+    import asyncio
+    from search_api import characteristic_autofill as autofill, jev_rerank
+
+    monkeypatch.setattr(suggest.settings, "jev_rerank_enabled", True)
+    monkeypatch.setattr(suggest, "_category_families", lambda pairs, side: pairs)
+    monkeypatch.setattr(autofill, "typesafe_key", lambda: "test")
+    alternatives = [candidate("kpgzSpgz", "P", str(index)) for index in range(2)]
+    names = ["Дрель аккумуляторная в комплекте: " + "насадка; " * 40 + str(index)
+             for index in range(2)]
+    for pair, name in zip(alternatives, names):
+        pair["spgz"]["name"] = name
+    neighbors = {"pairs": {"okpdKtru": ([], False), "kpgzSpgz": (alternatives, False)}}
+    classifiers = {"pairs": {side: ([], False) for side in suggest.PAIR_FIELDS}}
+
+    async def ranks(query, questions):
+        criteria = questions["kpgzSpgz"]["criteria"]
+        labels = list(criteria)
+        assert len(labels) == 2
+        assert all(0 < len(label) <= 200 for label in labels)
+        assert labels[0] != labels[1]
+        assert all(name in evidence for name, evidence in zip(names, criteria.values()))
+        return {"kpgzSpgz": {labels[0]: 0.9, labels[1]: 0.1}}
+
+    async def verify(client, key, state, questions, usage):
+        assert names[0] in questions["kpgzSpgz"]["instructions"]["question"]
+        return {"kpgzSpgz": {"type": "noul", "noul": 0.99}}, "test"
+
+    monkeypatch.setattr(jev_rerank, "_ask_questions", ranks)
+    monkeypatch.setattr(autofill, "ask_jev", verify)
+    selected, decision = asyncio.run(suggest._resolve_category_choices(
+        'Дрель-шуруповерт аккумуляторная Ставр "ДА-10,8/2 (2,6 Л)"',
+        neighbors, classifiers,
+    ))["kpgzSpgz"]
+    assert selected == alternatives[0]
+    assert not decision["needsChoice"]
+
+
 def test_resolver_limits_unverified_choices_to_two_ranked_families(monkeypatch):
     import asyncio
     from search_api import characteristic_autofill as autofill, jev_rerank

@@ -393,7 +393,7 @@ async def _resolve_category_choices(query: str, neighbors: dict, classifiers: di
         parent_field, leaf_field = PAIR_FIELDS[side]
         candidates = [Candidate(
             key=str(index),
-            label=f"{(pair.get(leaf_field) or pair[parent_field])['name']} [{index}]",
+            label=f"{(pair.get(leaf_field) or pair[parent_field])['name'][:140]} [{index}]",
             evidence="; ".join(f"{field}: {pair[field]['code']} {pair[field]['name']}"
                                for field in PAIR_FIELDS[side] if pair.get(field)),
         ) for index, pair in enumerate(families)]
