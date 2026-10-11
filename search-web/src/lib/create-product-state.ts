@@ -3,6 +3,7 @@ import { schemaEquivalent } from "./merge-characteristics";
 import type {
   AutofillEvidence,
   CatalogSpecialization,
+  CatalogCharacteristic,
   CategoryPairDecision,
   DirTreeNode,
   DraftCharacteristic,
@@ -37,14 +38,16 @@ export const [suggesting, setSuggesting] = createSignal(false);
 /** Visible loading time of last successful category suggest, including debounce and category updates, ms. */
 export const [suggestDurationMs, setSuggestDurationMs] = createSignal<number | null>(null);
 export const [similar, setSimilar] = createSignal<ProductHit[]>([]);
+export const [similarDurationMs, setSimilarDurationMs] = createSignal<number | null>(null);
 export const [characteristics, setCharacteristics] = createSignal<DraftCharacteristic[]>([]);
+export const [catalogCharacteristicSuggestions, setCatalogCharacteristicSuggestions] = createSignal<CatalogCharacteristic[]>([]);
 export const [lastAutofillKey, setLastAutofillKey] = createSignal("");
 export const manuallyEditedCharacteristics = new Set<string>();
 export const manuallyEditedCharacteristicValues = new Map<string, DraftCharacteristic>();
 export const autofilledCharacteristicValues = new Map<string, { value: string; rangeOption: string }>();
-export const manuallyEditedProductFields = new Set<"model" | "manufacturer" | "article">();
-export const autofilledProductValues = new Map<"model" | "manufacturer" | "article", string>();
-export const autofilledProductEvidence = new Map<"model" | "manufacturer" | "article", AutofillEvidence>();
+export const manuallyEditedProductFields = new Set<"name" | "model" | "manufacturer" | "article">();
+export const autofilledProductValues = new Map<"name" | "model" | "manufacturer" | "article", string>();
+export const autofilledProductEvidence = new Map<"name" | "model" | "manufacturer" | "article", AutofillEvidence>();
 
 export function characteristicEditKey(item: DraftCharacteristic): string {
   if (item.source === "catalog") return `catalog:${item.id}:${item.unit}`;
@@ -95,6 +98,7 @@ export function clearPhotos() {
 }
 
 export function clearCharMeta() {
+  setCatalogCharacteristicSuggestions([]);
   setCharStandards([]);
   setNoNewFeatures(null);
   setNoNewFeaturesReason("");
@@ -107,9 +111,10 @@ export function captureQueryDraft() {
   return structuredClone({
     name: name(), sku: sku(), model: model(), brand: brand(), selected: selected(),
     okpd2: okpd2(), kpgz: kpgz(), spgz: spgz(), ktruVote: ktruVote(),
-    ktruLocked: ktruLocked(), spgzLocked: spgzLocked(), similar: similar(),
+    ktruLocked: ktruLocked(), spgzLocked: spgzLocked(), similar: similar(), similarDurationMs: similarDurationMs(),
     okpdKtruDecision: okpdKtruDecision(), kpgzSpgzDecision: kpgzSpgzDecision(),
-    characteristics: characteristics(), charStandards: charStandards(),
+    characteristics: characteristics(), catalogCharacteristicSuggestions: catalogCharacteristicSuggestions(),
+    charStandards: charStandards(),
     noNewFeatures: noNewFeatures(), noNewFeaturesReason: noNewFeaturesReason(),
     generatedFor: generatedFor(), catalogSpecialization: catalogSpecialization(),
     initialTemplateKtruCode: initialTemplateKtruCode(), lastSuggestQuery: lastSuggestQuery(),
@@ -131,7 +136,8 @@ export function restoreQueryDraft(draft: ReturnType<typeof captureQueryDraft>) {
     setKtruLocked(draft.ktruLocked); setSpgzLocked(draft.spgzLocked);
     setOkpdKtruDecision(draft.okpdKtruDecision); setKpgzSpgzDecision(draft.kpgzSpgzDecision);
     nextRefineSeq();
-    setSimilar(draft.similar); setCharacteristics(draft.characteristics);
+    setSimilar(draft.similar); setSimilarDurationMs(draft.similarDurationMs); setCharacteristics(draft.characteristics);
+    setCatalogCharacteristicSuggestions(draft.catalogCharacteristicSuggestions);
     setCharStandards(draft.charStandards); setNoNewFeatures(draft.noNewFeatures);
     setNoNewFeaturesReason(draft.noNewFeaturesReason); setGeneratedFor(draft.generatedFor);
     setCatalogSpecialization(draft.catalogSpecialization);

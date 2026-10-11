@@ -184,30 +184,22 @@ function CharacteristicTable(props: {
   return <div class="dir-characteristics">
     <h3>Характеристики <span>{formatNumber(props.items.length)}</span></h3>
     <Show when={props.items.length} fallback={<p class="ktru-empty">Характеристики не указаны.</p>}>
-      <dl class="characteristics-table dir-characteristics-table">
-        <For each={props.items}>{item => {
-          const badges = [
-            ...(item.required ? ["обязательная"] : []),
-            ...(item.badges ?? []),
-          ].filter((value, index, all) => all.indexOf(value) === index);
-          const parts = item.parts?.length ? item.parts : [{ text: item.values || "—" }];
-          return <div>
-            <dt>
-              <span class="dir-char-name">{item.name}</span>
-              <Show when={badges.length}>
-                <span class="dir-char-badges">
-                  <For each={badges}>{badge => <span class="dir-char-required">{badge}</span>}</For>
-                </span>
-              </Show>
-            </dt>
-            <dd>
-              <ul class="dir-char-parts">
-                <For each={parts}>{part => <li><span>{part.text}</span></li>}</For>
-              </ul>
-            </dd>
-          </div>;
-        }}</For>
-      </dl>
+      <table class="dir-characteristics-table" aria-label="Характеристики и допустимые значения">
+        <thead><tr><th scope="col">Характеристика</th><th scope="col">Варианты значений</th></tr></thead>
+        <tbody>
+          <For each={props.items}>{item => {
+            const parts = item.parts?.length ? item.parts : [{ text: item.values || "—" }];
+            return <tr>
+              <th scope="row">{item.name}</th>
+              <td>
+                <ul class="dir-char-options">
+                  <For each={parts}>{part => <li>{part.text}</li>}</For>
+                </ul>
+              </td>
+            </tr>;
+          }}</For>
+        </tbody>
+      </table>
     </Show>
   </div>;
 }

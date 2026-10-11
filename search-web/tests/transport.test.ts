@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { apiAutofillCharacteristics, apiCatalogStats, apiGetProduct, apiGetSimilarProducts, apiImageUrl, apiSearchProducts, apiSuggestCategories } from "../src/lib/api";
+import { apiAutofillCharacteristics, apiCatalogStats, apiGetProduct, apiGetSimilarProducts, apiImageUrl, apiSearchProducts, apiSuggestCategories, apiSuggestCategoriesStream } from "../src/lib/api";
 import { apiCatalogCharacteristics, apiSearchProducts as serverSearchProducts } from "../src/lib/server/search-api";
 import { GET, POST } from "../src/routes/api/search/[...path]";
 import type { APIEvent } from "@solidjs/start/server";
@@ -56,6 +56,58 @@ test("browser suggest transport uses same-origin proxy, forwards abort signal an
     assert.deepEqual(await apiSuggestCategories(description, { force: true }, controller.signal), expected);
     globalThis.fetch = async () => Response.json({ detail: "Нет справочников" }, { status: 503 });
     await assert.rejects(apiSuggestCategories(description), { message: "Нет справочников" });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("suggest stream exposes quality and neighbors before categories across split UTF-8 chunks", async () => {
+  const originalFetch = globalThis.fetch;
+  const controller = new AbortController();
+  let stream!: ReadableStreamDefaultController<Uint8Array>;
+  const encoder = new TextEncoder();
+  const progress: unknown[] = [];
+  let completed = false;
+  try {
+    globalThis.fetch = async (url, init) => {
+      assert.equal(url, "/api/search/categories/suggest/stream");
+      assert.equal(init?.signal, controller.signal);
+      assert.equal(new Headers(init?.headers).get("Accept"), "application/x-ndjson");
+      return new Response(new ReadableStream<Uint8Array>({ start(value) { stream = value; } }));
+    };
+    const result = apiSuggestCategoriesStream("молоток", {}, controller.signal, (value) => progress.push(value));
+    void result.then(() => { completed = true; });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const quality = { queryQuality: { verdict: "ok", reasons: ["товар"], durationMs: 100 } };
+    const bytes = encoder.encode(JSON.stringify({ type: "progress", data: quality }) + "\n");
+    for (const byte of bytes) stream.enqueue(Uint8Array.of(byte));
+    stream.enqueue(encoder.encode(JSON.stringify({ type: "progress", data: { neighbors: [{ id: 1 }] } }) + "\n"));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.deepEqual(progress[0], quality);
+    const firstNeighbors = progress[1] as { neighbors: { id: number }[]; neighborsDurationMs: number };
+    assert.deepEqual(firstNeighbors.neighbors, [{ id: 1 }]);
+    assert.ok(firstNeighbors.neighborsDurationMs >= 0);
+    assert.equal(completed, false);
+    stream.enqueue(encoder.encode(JSON.stringify({ type: "progress", data: { neighbors: [{ id: 2 }] } }) + "\n"));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal((progress[2] as { neighborsDurationMs: number }).neighborsDurationMs, firstNeighbors.neighborsDurationMs);
+    const expected = { neighbors: [{ id: 2 }], characteristics: [] };
+    stream.enqueue(encoder.encode(JSON.stringify({ type: "result", data: expected })));
+    stream.close();
+    assert.deepEqual(await result, { ...expected, neighborsDurationMs: firstNeighbors.neighborsDurationMs });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("suggest stream surfaces stage errors and rejects incomplete results", async () => {
+  const originalFetch = globalThis.fetch;
+  const signal = new AbortController().signal;
+  try {
+    globalThis.fetch = async () => new Response('{"type":"error","detail":"Нет индекса"}\n');
+    await assert.rejects(apiSuggestCategoriesStream("молоток", {}, signal, () => {}), { message: "Нет индекса" });
+    globalThis.fetch = async () => new Response('{"type":"progress","data":{"neighbors":[]}}\n');
+    await assert.rejects(apiSuggestCategoriesStream("молоток", {}, signal, () => {}), /до получения категорий/);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -219,6 +271,34 @@ test("Solid proxy forwards requests, errors and binary images to the server-only
     globalThis.fetch = originalFetch;
     if (previousUrl === undefined) delete process.env.SEARCH_API_URL;
     else process.env.SEARCH_API_URL = previousUrl;
+  }
+});
+
+test("Solid proxy forwards suggest streams without buffering partial results", async () => {
+  const originalFetch = globalThis.fetch;
+  let source!: ReadableStreamDefaultController<Uint8Array>;
+  try {
+    globalThis.fetch = async (url, init) => {
+      assert.ok(String(url).endsWith("/categories/suggest/stream"));
+      assert.equal(new Headers(init?.headers).get("Accept"), "application/x-ndjson");
+      return new Response(new ReadableStream<Uint8Array>({ start(controller) { source = controller; } }), {
+        headers: { "Content-Type": "application/x-ndjson", "Cache-Control": "no-store" },
+      });
+    };
+    const response = await POST(proxyEvent("categories/suggest/stream", {
+      method: "POST", body: JSON.stringify({ description: "молоток" }),
+      headers: { Accept: "application/x-ndjson", "Content-Type": "application/json" },
+    }));
+    assert.equal(response.headers.get("Content-Type"), "application/x-ndjson");
+    assert.equal(response.headers.get("Cache-Control"), "no-store");
+    const reader = response.body!.getReader();
+    source.enqueue(new TextEncoder().encode('{"type":"progress","data":{"neighbors":[]}}\n'));
+    assert.equal(new TextDecoder().decode((await reader.read()).value), '{"type":"progress","data":{"neighbors":[]}}\n');
+    source.close();
+    assert.equal((await reader.read()).done, true);
+    reader.releaseLock();
+  } finally {
+    globalThis.fetch = originalFetch;
   }
 });
 

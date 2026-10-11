@@ -10,6 +10,7 @@ import logging
 import math
 import re
 import time
+from collections.abc import Callable
 from typing import Any
 from uuid import uuid4
 
@@ -485,7 +486,10 @@ def _empty_branches() -> dict:
     return {"neighbors": [], "pairs": {side: ([], False) for side in PAIR_FIELDS}, "error": None}
 
 
-async def suggest_categories(description: str, *, force: bool = False) -> dict:
+async def suggest_categories(
+    description: str, *, force: bool = False,
+    on_progress: Callable[[dict], None] | None = None,
+) -> dict:
     from search_api.jev_rerank import rerank_suggest_shortlists
     from search_api.query_quality import check_query_quality
 
@@ -516,11 +520,22 @@ async def suggest_categories(description: str, *, force: bool = False) -> dict:
             status = "short_query"
             return {**_assemble("", _empty_branches(), _empty_branches()), "queryQuality": None}
         quality = await timed("quality", check_query_quality(query))
+        if on_progress:
+            on_progress({"queryQuality": quality})
         if not force and quality["verdict"] in ("reject", "suspicious"):
             status = quality["verdict"]
             return {**_assemble(query, _empty_branches(), _empty_branches()), "queryQuality": quality}
+        async def retrieve_neighbors():
+            retrieved = await timed("neighbors_search", _neighbors_retrieve(query))
+            if on_progress:
+                on_progress({
+                    "neighbors": retrieved["neighbors"][:SHOW_NEIGHBORS],
+                    "neighborError": retrieved["error"],
+                })
+            return retrieved
+
         retrieved_neighbors, retrieved_classifiers = await timed("retrieval_parallel", asyncio.gather(
-            timed("neighbors_search", _neighbors_retrieve(query)),
+            retrieve_neighbors(),
             timed("classifiers_search", _classifiers_retrieve(query)),
         ))
         if retrieved_neighbors["error"] and retrieved_classifiers["error"]:
@@ -539,6 +554,8 @@ async def suggest_categories(description: str, *, force: bool = False) -> dict:
         ))
         if ranked_products is not None:
             products = ranked_products
+            if on_progress:
+                on_progress({"neighbors": products[:SHOW_NEIGHBORS]})
         if ranked_hits is not None:
             built = await timed("classifier_pairs", asyncio.to_thread(pairs_from_hits, ranked_hits, limit=CLASSIFIER_PAIR_LIMIT))
             classifier_result = {**classifier_result, "hits": ranked_hits, **built}

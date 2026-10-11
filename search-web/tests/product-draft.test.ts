@@ -15,6 +15,9 @@ import {
   manuallyEditedCharacteristics,
   manuallyEditedCharacteristicValues,
   preserveManualCharacteristics,
+  name, setName,
+  manuallyEditedProductFields,
+  autofilledProductValues,
 } from "../src/lib/create-product-state";
 import type { CatalogCharacteristic, CategoryPairDecision, DraftCharacteristic } from "../src/lib/types";
 import { characteristicRangeProblem } from "../src/lib/characteristic-options";
@@ -57,6 +60,29 @@ test("query drafts preserve independent pair decisions, manual locks and edited 
     assert.ok(currentRefineSeq() > priorSeq, "restoring a query invalidates pending refinement");
     decision.alternatives[0].ktru!.name = "Changed";
     assert.equal(saved.okpdKtruDecision?.alternatives[0].ktru?.name, "Молоток", "saved drafts must not share pair objects");
+  } finally { restoreQueryDraft(original); }
+});
+
+test("query drafts preserve generated product names and manual name edits", () => {
+  const original = captureQueryDraft();
+  try {
+    setName("Дрель Ставр ДА-10");
+    autofilledProductValues.set("name", name());
+    manuallyEditedProductFields.delete("name");
+    const generated = captureQueryDraft();
+    setName("Моё наименование");
+    manuallyEditedProductFields.add("name");
+    const manual = captureQueryDraft();
+
+    restoreQueryDraft(generated);
+    assert.equal(name(), "Дрель Ставр ДА-10");
+    assert.equal(autofilledProductValues.get("name"), name());
+    assert.equal(manuallyEditedProductFields.has("name"), false);
+
+    restoreQueryDraft(manual);
+    assert.equal(name(), "Моё наименование");
+    assert.equal(manuallyEditedProductFields.has("name"), true);
+    assert.equal(autofilledProductValues.get("name"), "Дрель Ставр ДА-10");
   } finally { restoreQueryDraft(original); }
 });
 
@@ -138,12 +164,12 @@ test("schema selectors get catalog popularity without changing options or source
   assert.equal(appendCatalogCharacteristics([schema], [differentUnit])[0].catalogFrequency, undefined);
   const ambiguous = { ...field, catalogFrequency: { ...stats, numericValueCounts: null, exampleCounts: { "квадратная": 70, "квадратный": 20 } } };
   assert.equal(catalogOptionPopularity(ambiguous, "Квадратный"), undefined);
-  assert.deepEqual(catalogOptionPopularity(field, "-"), { count: 20, total: 120, percent: 17 });
-  assert.deepEqual(catalogOptionPopularity(merged, "-"), { count: 20, total: 120, percent: 17 });
-  assert.deepEqual(catalogOptionPopularity({ ...field, catalogFrequency: { ...stats, count: 0 } }, "-"), { count: 120, total: 120, percent: 100 });
-  assert.deepEqual(catalogOptionPopularity({ ...field, catalogFrequency: { ...stats, count: 120 } }, "-"), { count: 0, total: 120, percent: 0 });
-  assert.equal(catalogOptionPopularity({ ...field, catalogFrequency: { ...stats, count: 0, total: 0 } }, "-"), undefined);
-  assert.equal(catalogOptionPopularity(schema, "-"), undefined);
+  assert.deepEqual(catalogOptionPopularity(field, "—"), { count: 20, total: 120, percent: 17 });
+  assert.deepEqual(catalogOptionPopularity(merged, "—"), { count: 20, total: 120, percent: 17 });
+  assert.deepEqual(catalogOptionPopularity({ ...field, catalogFrequency: { ...stats, count: 0 } }, "—"), { count: 120, total: 120, percent: 100 });
+  assert.deepEqual(catalogOptionPopularity({ ...field, catalogFrequency: { ...stats, count: 120 } }, "—"), { count: 0, total: 120, percent: 0 });
+  assert.equal(catalogOptionPopularity({ ...field, catalogFrequency: { ...stats, count: 0, total: 0 } }, "—"), undefined);
+  assert.equal(catalogOptionPopularity(schema, "—"), undefined);
 });
 
 test("range selectors aggregate the full numeric distribution with exact boundaries", () => {
@@ -168,7 +194,7 @@ test("range selectors aggregate the full numeric distribution with exact boundar
   for (const [option, count] of [["<0.1", 1], [">=0.1<0.2", 4], [">=0.2<0.3", 2], [">=0.3", 3], [">=2", 0]] as const) {
     assert.deepEqual(catalogOptionPopularity(field, option), { count, total: 10, percent: count * 10 });
   }
-  assert.deepEqual(catalogOptionPopularity(field, "-"), { count: 2, total: 12, percent: 17 });
+  assert.deepEqual(catalogOptionPopularity(field, "—"), { count: 2, total: 12, percent: 17 });
   assert.equal(catalogOptionPopularity(field, "unknown"), undefined);
   assert.equal(catalogOptionPopularity({ ...field, catalogFrequency: { ...field.catalogFrequency!, numericValueCounts: null } }, ">=0.3"), undefined);
 });

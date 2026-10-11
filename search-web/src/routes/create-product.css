@@ -2,6 +2,9 @@
 .create-hero { position: relative; margin-bottom: 28px; padding-bottom: 8px; }
 .create-hero-row { display: flex; justify-content: space-between; align-items: flex-start; gap: 24px; }
 .create-describe-heading { flex-wrap: wrap; }
+.create-describe-heading .create-query-quality-status { display: inline-flex; align-items: center; gap: 5px; }
+.create-describe-heading .create-query-quality-status.is-ok { color: #247347; }
+.create-describe-heading .create-query-quality-status.is-failed { color: #b42318; }
 .create-top-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-left: auto; flex-shrink: 0; }
 .create-query-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 8px; }
 .create-top-actions .create-example-button {
@@ -258,8 +261,6 @@
 .create-describe-meta span:last-child { flex-shrink: 0; font-variant-numeric: tabular-nums; }
 
 .create-live { display: flex; flex-direction: column; gap: 28px; margin: 28px 0 0; padding: 24px 0 0; overflow-anchor: none; }
-.create-live-category { order: -1; }
-.create-live-near-characteristics .create-live-category { order: 1; }
 .create-live + .create-characteristics { margin-top: 28px; }
 .create-live-hint { margin: 0; font-size: 12px; color: #8c8c8c; line-height: 1.6; }
 .create-suggest-status { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
@@ -666,6 +667,53 @@
   cursor: pointer;
 }
 .create-char-remove:hover { background: #d4dbe6; color: #264b82; }
+.create-characteristic-dialog.ui-dialog-content {
+  width: min(680px, calc(100vw - 32px));
+  height: auto;
+  max-height: calc(100dvh - 48px);
+  overflow: hidden;
+}
+.create-characteristic-form { display: flex; flex-direction: column; min-height: 0; max-height: inherit; }
+.create-characteristic-body { display: grid; align-content: start; gap: 20px; padding: 20px; overflow: auto; min-height: 0; }
+.create-characteristic-caption { margin: 0; color: #7f8792; font-size: 12px; line-height: 1.5; }
+.create-characteristic-label { display: flex; flex-direction: column; gap: 6px; margin: 0; font-size: 14px; font-weight: 500; line-height: 20px; }
+.create-characteristic-grid { display: grid; align-items: start; grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr); gap: 14px; }
+.create-characteristic-field { min-width: 0; gap: 6px; }
+.create-characteristic-field > label { font-size: 14px; }
+.create-characteristic-field > input,
+.create-characteristic-field > textarea { font-size: 14px; }
+.create-characteristic-body label { line-height: 20px; }
+.create-characteristic-label select,
+.create-characteristic-range > label:not(.create-characteristic-check) input {
+  width: 100%; min-width: 0; height: 40px; padding: 0 12px;
+  border: 1px solid #d4dbe6; border-radius: 6px; background: #fff; font-size: 14px;
+}
+.create-characteristic-value .create-char-combobox-control { min-height: 40px; border-radius: 6px; }
+.create-characteristic-value .create-char-combobox-control input { height: 38px; padding: 8px 12px; font-size: 14px; }
+.create-characteristic-value .create-char-combobox-trigger { width: 36px; height: 38px; }
+.create-characteristic-suggestions { display: grid; gap: 8px; }
+.create-characteristic-suggestion-list { display: grid; gap: 4px; max-height: 210px; overflow: auto; }
+.create-characteristic-suggestion-list button {
+  display: flex; align-items: center; gap: 10px; padding: 8px 10px;
+  border: 1px solid #edf0f5; border-radius: 6px; background: #fff; text-align: left;
+}
+.create-characteristic-suggestion-list button:hover { border-color: #b4c5de; background: #f3f6fb; }
+.create-characteristic-suggestion-list button > span:first-child { min-width: 0; display: grid; gap: 3px; }
+.create-characteristic-suggestion-list strong { font-size: 12px; font-weight: 500; overflow-wrap: anywhere; }
+.create-characteristic-suggestion-list small { font-size: 11px; color: #7f8792; }
+.create-characteristic-checks { display: flex; flex-wrap: wrap; gap: 12px 20px; }
+.create-characteristic-check { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.create-characteristic-check input { width: 16px; height: 16px; margin: 0; accent-color: #264b82; flex-shrink: 0; }
+.create-characteristic-ranges { display: grid; gap: 10px; }
+.create-characteristic-range { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 28px; gap: 8px; }
+.create-characteristic-range > label:not(.create-characteristic-check) { display: grid; gap: 4px; font-size: 12px; }
+.create-characteristic-value { display: grid; gap: 6px; }
+.create-characteristic-form > .ui-dialog-footer { flex-shrink: 0; }
+@media (max-width: 600px) {
+  .create-characteristic-grid { grid-template-columns: 1fr; }
+  .create-characteristic-dialog.ui-dialog-content { width: calc(100vw - 24px); max-height: calc(100dvh - 24px); }
+  .create-characteristic-form > .ui-dialog-footer { flex-wrap: wrap; }
+}
 .create-char-footer { margin-top: 14px; }
 .create-char-add {
   display: inline-flex;
@@ -1012,7 +1060,8 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.create-char-select-trigger [data-placeholder-shown] {
+.create-char-select-trigger [data-placeholder-shown],
+.create-char-placeholder {
   color: #8c8c8c;
 }
 .create-char-select[data-disabled],
@@ -1085,7 +1134,10 @@
 }
 .create-char-range-select { min-width: 0; }
 .create-char-toggle {
-  display: inline-flex;
+  display: flex;
+  width: max-content;
+  max-width: 100%;
+  height: 32px;
   gap: 0;
   border: 1px solid #d4dbe6;
   border-radius: 5px;
@@ -1094,7 +1146,7 @@
 }
 .create-char-toggle-btn {
   min-width: 56px;
-  height: 32px;
+  height: 30px;
   padding: 0 14px;
   border: 0;
   border-right: 1px solid #d4dbe6;
@@ -1144,6 +1196,8 @@
 .create-char-fields > div:nth-child(odd),
 .create-char-row:nth-child(odd) { background: #e7eef7; }
 .create-char-fields dt { color: #1a1a1a; margin: 0; }
+.create-char-badges { display: flex; flex-wrap: wrap; gap: 4px 6px; margin-top: 6px; }
+.create-char-badge { padding: 2px 6px; border: 1px solid #d4dbe6; border-radius: 4px; color: #7f8792; background: #fff; font-size: 11px; font-weight: 400; line-height: 1.4; }
 .create-char-fields dd { margin: 0; min-width: 0; }
 .create-char-fields .create-inline-field input { text-align: left; }
 .create-char-source {

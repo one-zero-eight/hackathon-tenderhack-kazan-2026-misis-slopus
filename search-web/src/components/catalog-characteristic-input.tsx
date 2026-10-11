@@ -47,7 +47,7 @@ export function CatalogCharacteristicInput(props: {
               <span class="create-char-combobox-custom">Своё значение: </span>{itemProps.item.rawValue}
             </Show>
           </Combobox.ItemLabel>
-          <Show when={!custom(itemProps.item.rawValue)}>
+          <Show when={!custom(itemProps.item.rawValue) && props.count > 0 && props.exampleCounts[itemProps.item.rawValue] != null}>
             <span
               class="create-char-combobox-popularity"
               title={`${props.exampleCounts[itemProps.item.rawValue]} из ${props.count} товаров с этой характеристикой`}

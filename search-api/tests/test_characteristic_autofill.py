@@ -41,7 +41,10 @@ def mock_providers(monkeypatch, *, llm_handler=None, jev_handler=None):
         assert body["response_format"]["type"] == "json_object"
         content = {
             "0": "Дерево", "1": "500 г",
-            "product": {"article": "AB-12"},
+            "product": {
+                "name": "Молоток 500 г, рукоятка деревянная, арт. AB-12",
+                "article": "AB-12",
+            },
         }
         return httpx.Response(200, json={
             "choices": [{"message": {"content": json.dumps(content, ensure_ascii=False)}}],
@@ -470,18 +473,6 @@ def test_product_json_mapping_is_grounded_without_generated_quotes(monkeypatch):
         assert body.text[evidence["start"]:evidence["end"]] == evidence["quote"]
 
 
-def test_product_rules_skip_llm_when_there_are_no_characteristics(monkeypatch):
-    def llm_handler(req):
-        raise AssertionError("LLM should be skipped when rules fill all requested fields")
-
-    mock_providers(monkeypatch, llm_handler=llm_handler)
-    text = "Модель ДА-10, производитель Ставр, артикул AB-12"
-    result = asyncio.run(autofill.autofill_characteristics(request(text=text, characteristics=[])))
-    assert result["product"]["model"]["source"] == "rules"
-    assert result["product"]["manufacturer"]["source"] == "rules"
-    assert result["product"]["article"]["source"] == "rules"
-
-
 def test_product_rules_win_over_combined_llm_values(monkeypatch):
     mock_providers(monkeypatch, llm_handler=mapping_handler({
         "0": "Дерево", "1": "500 г",
@@ -502,6 +493,113 @@ def test_invalid_product_envelope_is_rejected(monkeypatch, product):
     with pytest.raises(autofill.AutofillError, match="некорректные реквизиты"):
         asyncio.run(autofill.autofill_characteristics(request()))
 
+
+def test_product_rules_win_and_llm_still_generates_name(monkeypatch):
+    calls = []
+
+    def llm_handler(req):
+        body = json.loads(req.content)
+        calls.append(body)
+        content = {"product": {
+            "name": "Дрель Ставр ДА-10, арт. AB-12",
+            "model": "fabricated", "manufacturer": "fabricated", "article": "fabricated",
+        }}
+        return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(content)}}]})
+
+    mock_providers(monkeypatch, llm_handler=llm_handler)
+    text = "Дрель, модель ДА-10, производитель Ставр, артикул AB-12"
+    result = asyncio.run(autofill.autofill_characteristics(request(text=text, characteristics=[])))
+    assert len(calls) == 1
+    assert result["product"]["name"]["value"] == "Дрель Ставр ДА-10, арт. AB-12"
+    assert result["product"]["name"]["source"] == "llm_jev"
+    for key, value in (("model", "ДА-10"), ("manufacturer", "Ставр"), ("article", "AB-12")):
+        assert result["product"][key]["source"] == "rules"
+        assert result["product"][key]["value"] == value
+
+
+def test_generated_product_name_can_reorder_words_without_fabricating_evidence(monkeypatch):
+    generated = "Бумага офисная Снегурочка, А4, 80 г/м², 500 листов"
+    text = "Снегурочка: бумага офисная. Плотность 80 г/м², формат А4, в пачке 500 листов."
+
+    def llm_handler(req):
+        body = json.loads(req.content)
+        prompt = body["messages"][0]["content"]
+        assert "наименование СТЕ" in prompt
+        assert json.loads(body["messages"][1]["content"]) == {"text": text, "schema": {}}
+        return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps({"product": {"name": generated}})}}]})
+
+    def jev_handler(req):
+        body = json.loads(req.content)
+        assert body["state"]["source_text"] == text
+        assert set(body["questions"]) == {"product_name"}
+        assert body["questions"]["product_name"]["instructions"]["claim"] == generated
+        return httpx.Response(200, json={"answers": {"product_name": {"type": "noul", "noul": 0.95}}})
+
+    mock_providers(monkeypatch, llm_handler=llm_handler, jev_handler=jev_handler)
+    result = asyncio.run(autofill.autofill_characteristics(request(text=text, characteristics=[])))
+    name = result["product"]["name"]
+    assert generated not in text
+    assert name["value"] == generated
+    assert name["status"] == "accepted"
+    assert name["confidence"] == 0.95
+    assert name["quote"] is None
+    assert name["evidence"] is None
+
+
+@pytest.mark.parametrize("invalid_name", ["", "  ", "Товар\nМодель", "Товар\rМодель", 42, True, {}])
+def test_product_name_rejects_invalid_format_before_jev(monkeypatch, invalid_name):
+    def llm_handler(req):
+        return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps({"product": {"name": invalid_name}})}}]})
+
+    def jev_handler(req):
+        raise AssertionError("Invalid name must not be sent to Jev")
+
+    mock_providers(monkeypatch, llm_handler=llm_handler, jev_handler=jev_handler)
+    result = asyncio.run(autofill.autofill_characteristics(request(characteristics=[])))
+    assert result["product"]["name"]["status"] == "rejected"
+    assert result["product"]["name"]["value"] is None
+    assert result["status"] == "needs_review"
+
+
+@pytest.mark.parametrize("length", [201, 1000])
+def test_product_name_has_no_200_character_limit(monkeypatch, length):
+    generated = "А" * length
+
+    def llm_handler(req):
+        return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps({"product": {"name": generated}})}}]})
+
+    mock_providers(monkeypatch, llm_handler=llm_handler)
+    result = asyncio.run(autofill.autofill_characteristics(request(text=generated, characteristics=[])))
+    assert result["product"]["name"]["status"] == "accepted"
+    assert result["product"]["name"]["value"] == generated
+
+
+def test_product_name_rejected_by_jev_does_not_discard_characteristics(monkeypatch):
+    def jev_handler(req):
+        body = json.loads(req.content)
+        return httpx.Response(200, json={"answers": {
+            key: {"type": "noul", "noul": 0.1 if key == "product_name" else 0.95}
+            for key in body["questions"]
+        }})
+
+    mock_providers(monkeypatch, jev_handler=jev_handler)
+    result = asyncio.run(autofill.autofill_characteristics(request()))
+    assert result["product"]["name"]["status"] == "rejected"
+    assert result["product"]["name"]["value"] is None
+    assert result["product"]["name"]["errors"] == ["Jev не подтвердил наименование"]
+    assert all(item["status"] == "accepted" for item in result["characteristics"])
+    assert result["status"] == "needs_review"
+
+
+def test_product_name_is_missing_when_llm_cannot_identify_product(monkeypatch):
+    def llm_handler(req):
+        return httpx.Response(200, json={"choices": [{"message": {"content": "{}"}}]})
+
+    mock_providers(monkeypatch, llm_handler=llm_handler)
+    result = asyncio.run(autofill.autofill_characteristics(request(text="Модель ДА-10", characteristics=[])))
+    assert result["product"]["name"]["status"] == "missing"
+    assert result["product"]["name"]["value"] is None
+    assert result["product"]["model"]["value"] == "ДА-10"
 
 def test_missing_required_field_marks_needs_review(monkeypatch):
     def llm_handler(req):
