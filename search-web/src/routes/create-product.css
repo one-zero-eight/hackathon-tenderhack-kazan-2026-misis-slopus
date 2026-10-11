@@ -1189,8 +1189,6 @@
 .create-char-fields > div:nth-child(odd),
 .create-char-row:nth-child(odd) { background: #e7eef7; }
 .create-char-fields dt { color: #1a1a1a; margin: 0; }
-.create-char-badges { display: flex; flex-wrap: wrap; gap: 4px 6px; margin-top: 6px; }
-.create-char-badge { padding: 2px 6px; border: 1px solid #d4dbe6; border-radius: 0; color: #7f8792; background: #fff; font-size: 11px; font-weight: 400; line-height: 1.4; }
 .create-char-fields dd { margin: 0; min-width: 0; }
 .create-char-fields .create-inline-field input { text-align: left; }
 .create-char-source {

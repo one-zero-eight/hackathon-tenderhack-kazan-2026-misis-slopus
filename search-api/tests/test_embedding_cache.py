@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import hashlib
 
@@ -36,6 +37,116 @@ def test_dense_response_preserves_float32_vectors():
         "data": base64.b64encode(vectors.tobytes()).decode(),
     }}
     assert decode_dense(payload, 2) == [vector.tobytes() for vector in vectors]
+
+
+def test_concurrent_query_embedding_is_computed_once(monkeypatch):
+    from search_api import embeddings
+
+    monkeypatch.setattr(embeddings, "_query_cache", {})
+    calls = []
+
+    async def embed(texts, task):
+        calls.append((texts, task))
+        await asyncio.sleep(0.01)
+        return [b"vector"]
+
+    monkeypatch.setattr(embeddings, "embed_texts", embed)
+
+    async def exercise():
+        assert await asyncio.gather(*(embeddings.embed_query("молоток") for _ in range(4))) == [b"vector"] * 4
+        assert await embeddings.embed_query("молоток") == b"vector"
+        assert not embeddings._query_requests
+        assert not embeddings._query_waiters
+
+    asyncio.run(exercise())
+    assert calls == [(["молоток"], "query")]
+
+
+def test_cancelling_one_embedding_waiter_preserves_other(monkeypatch):
+    from search_api import embeddings
+
+    monkeypatch.setattr(embeddings, "_query_cache", {})
+    calls = []
+
+    async def exercise():
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        async def embed(texts, task):
+            calls.append(texts)
+            entered.set()
+            await release.wait()
+            return [b"vector"]
+
+        monkeypatch.setattr(embeddings, "embed_texts", embed)
+        first = asyncio.create_task(embeddings.embed_query("молоток"))
+        second = asyncio.create_task(embeddings.embed_query("молоток"))
+        await entered.wait()
+        first.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await first
+        release.set()
+        assert await second == b"vector"
+        assert not embeddings._query_requests
+        assert not embeddings._query_waiters
+
+    asyncio.run(exercise())
+    assert calls == [["молоток"]]
+
+
+def test_cancelling_all_embedding_waiters_cancels_remote_request(monkeypatch):
+    from search_api import embeddings
+
+    monkeypatch.setattr(embeddings, "_query_cache", {})
+
+    async def exercise():
+        entered = asyncio.Event()
+        cancelled = asyncio.Event()
+
+        async def embed(texts, task):
+            entered.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+
+        monkeypatch.setattr(embeddings, "embed_texts", embed)
+        waiter = asyncio.create_task(embeddings.embed_query("молоток"))
+        await entered.wait()
+        waiter.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await waiter
+        assert cancelled.is_set()
+        assert not embeddings._query_requests
+        assert not embeddings._query_cache
+
+    asyncio.run(exercise())
+
+
+def test_failed_query_embedding_is_not_cached(monkeypatch):
+    from search_api import embeddings
+
+    monkeypatch.setattr(embeddings, "_query_cache", {})
+    calls = []
+
+    async def embed(texts, task):
+        calls.append(texts)
+        await asyncio.sleep(0)
+        raise RuntimeError("embedding failed")
+
+    monkeypatch.setattr(embeddings, "embed_texts", embed)
+
+    async def exercise():
+        results = await asyncio.gather(embeddings.embed_query("молоток"), embeddings.embed_query("молоток"), return_exceptions=True)
+        assert all(isinstance(result, RuntimeError) for result in results)
+        assert not embeddings._query_requests
+        assert not embeddings._query_waiters
+        assert not embeddings._query_cache
+        with pytest.raises(RuntimeError, match="embedding failed"):
+            await embeddings.embed_query("молоток")
+
+    asyncio.run(exercise())
+    assert len(calls) == 2
 
 
 def cache_key(text):

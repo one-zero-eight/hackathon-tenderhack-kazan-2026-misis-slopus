@@ -1,6 +1,7 @@
 """Disk-backed, explicitly built hybrid classifier index (never rebuilt by requests)."""
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -91,18 +92,23 @@ def open_classifier_db(path: Path | None = None, *, readonly: bool = False) -> s
     else:
         db_path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(db_path, check_same_thread=False)
-        conn.execute("PRAGMA journal_mode=DELETE")
-        conn.execute("PRAGMA busy_timeout=10000")
-    conn.row_factory = sqlite3.Row
-    conn.execute(f"PRAGMA mmap_size={settings.search_mmap_size}")
-    conn.execute(f"PRAGMA cache_size=-{settings.search_cache_size_kib}")
-    conn.execute("PRAGMA temp_store=FILE")
-    conn.enable_load_extension(True)
-    sqlite_vec.load(conn)
-    conn.enable_load_extension(False)
-    if readonly:
-        conn.execute("PRAGMA query_only=ON")
-    return conn
+    try:
+        if not readonly:
+            conn.execute("PRAGMA journal_mode=DELETE")
+            conn.execute("PRAGMA busy_timeout=10000")
+        conn.row_factory = sqlite3.Row
+        conn.execute(f"PRAGMA mmap_size={settings.search_mmap_size}")
+        conn.execute(f"PRAGMA cache_size=-{settings.search_cache_size_kib}")
+        conn.execute("PRAGMA temp_store=FILE")
+        conn.enable_load_extension(True)
+        sqlite_vec.load(conn)
+        conn.enable_load_extension(False)
+        if readonly:
+            conn.execute("PRAGMA query_only=ON")
+        return conn
+    except BaseException:
+        conn.close()
+        raise
 
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:
@@ -561,8 +567,7 @@ def _text_hits(conn: sqlite3.Connection, query: str, limit: int) -> list[dict[st
     return hits
 
 
-async def _semantic_hits(conn: sqlite3.Connection, query: str, limit: int) -> list[dict[str, Any]]:
-    vector = await embed_query(query)
+def _semantic_hits(conn: sqlite3.Connection, vector: bytes, limit: int) -> list[dict[str, Any]]:
     rows = conn.execute("""SELECT e.*,v.distance FROM entry_vectors v JOIN entries e ON e.id=v.entry_id
                            WHERE v.embedding MATCH ? AND k=? ORDER BY v.distance""", (vector, limit)).fetchall()
     return [_row_hit(row, score=1 - float(row["distance"]), match="semantic", evidence="semantic") for row in rows]
@@ -689,6 +694,50 @@ def pairs_from_hits(hits: list[dict[str, Any]], *, limit: int = 8) -> dict[str, 
         conn.close()
 
 
+def _prepare_classifier_search(query: str, mode: str, timings: dict[str, int],
+                               started: float) -> tuple[list[dict], list[dict]]:
+    """Validate and retrieve lexical hits on a connection owned by this worker."""
+    conn = open_classifier_db(readonly=True)
+    try:
+        validate_classifier_index(conn, require_embeddings=mode != "text")
+        timings["setup"] = round((time.perf_counter() - started) * 1000)
+        stage = time.perf_counter()
+        exact = _exact_boosts(conn, query)
+        timings["exact"] = round((time.perf_counter() - stage) * 1000)
+        stage = time.perf_counter()
+        textual = _text_hits(conn, query, settings.retrieval_limit) if mode in {"hybrid", "text"} else []
+        timings["text"] = round((time.perf_counter() - stage) * 1000)
+        return exact, textual
+    finally:
+        conn.close()
+
+
+def _finish_classifier_search(query: str, mode: str, limit: int, exact: list[dict],
+                              textual: list[dict], vector: bytes | None,
+                              timings: dict[str, int], semantic_started: float) -> dict[str, Any]:
+    """Run KNN and pair lookups without sharing a connection across workers."""
+    conn = open_classifier_db(readonly=True)
+    try:
+        # The index may have been published again while awaiting the embedding.
+        validate_classifier_index(conn, require_embeddings=mode != "text")
+        semantic = _semantic_hits(conn, vector, settings.retrieval_limit) if vector is not None else []
+        timings["semantic"] = round((time.perf_counter() - semantic_started) * 1000) if vector is not None else 0
+        stage = time.perf_counter()
+        fused = _fuse(exact, semantic, textual)
+        okpd_ktru = _pair_okpd_ktru(fused, conn, limit)
+        kpgz_spgz = _pair_kpgz_spgz(fused, conn, limit)
+        tops = [pairs[0] for pairs in (okpd_ktru, kpgz_spgz) if pairs]
+        needs_choice = bool(tops) and (any(pair["ambiguous"] for pair in tops)
+                                      or not any(pair["confident"] for pair in tops))
+        for hit in fused:
+            hit.pop("_typo", None)
+        timings["ranking_pairs"] = round((time.perf_counter() - stage) * 1000)
+        return {"query": query, "mode": mode, "okpdKtru": okpd_ktru, "kpgzSpgz": kpgz_spgz,
+                "hits": fused[:limit], "needsChoice": needs_choice}
+    finally:
+        conn.close()
+
+
 async def search_classifiers(*, query: str, mode: Literal["hybrid", "semantic", "text"] = "hybrid",
                              limit: int = 20) -> dict[str, Any]:
     query = (query or "").strip()
@@ -700,34 +749,15 @@ async def search_classifiers(*, query: str, mode: Literal["hybrid", "semantic", 
     started = time.perf_counter()
     timings: dict[str, int] = {}
     status = "error"
-    conn = open_classifier_db(readonly=True)
     try:
-        validate_classifier_index(conn, require_embeddings=mode != "text")
-        timings["setup"] = round((time.perf_counter() - started) * 1000)
-        stage = time.perf_counter()
-        exact = _exact_boosts(conn, query)
-        timings["exact"] = round((time.perf_counter() - stage) * 1000)
-        stage = time.perf_counter()
-        textual = _text_hits(conn, query, settings.retrieval_limit) if mode in {"hybrid", "text"} else []
-        timings["text"] = round((time.perf_counter() - stage) * 1000)
-        stage = time.perf_counter()
-        semantic = await _semantic_hits(conn, query, settings.retrieval_limit) if mode in {"hybrid", "semantic"} else []
-        timings["semantic"] = round((time.perf_counter() - stage) * 1000)
-        stage = time.perf_counter()
-        fused = _fuse(exact, semantic, textual)
-        okpd_ktru = _pair_okpd_ktru(fused, conn, limit)
-        kpgz_spgz = _pair_kpgz_spgz(fused, conn, limit)
-        tops = [pairs[0] for pairs in (okpd_ktru, kpgz_spgz) if pairs]
-        needs_choice = bool(tops) and (any(pair["ambiguous"] for pair in tops)
-                                      or not any(pair["confident"] for pair in tops))
-        for hit in fused:
-            hit.pop("_typo", None)
-        timings["ranking_pairs"] = round((time.perf_counter() - stage) * 1000)
+        exact, textual = await asyncio.to_thread(_prepare_classifier_search, query, mode, timings, started)
+        semantic_started = time.perf_counter()
+        vector = await embed_query(query) if mode != "text" else None
+        result = await asyncio.to_thread(_finish_classifier_search, query, mode, limit, exact, textual,
+                                         vector, timings, semantic_started)
+        result["durationMs"] = round((time.perf_counter() - started) * 1000)
         status = "ok"
-        return {"query": query, "mode": mode, "okpdKtru": okpd_ktru, "kpgzSpgz": kpgz_spgz,
-                "hits": fused[:limit], "needsChoice": needs_choice,
-                "durationMs": round((time.perf_counter() - started) * 1000)}
+        return result
     finally:
-        conn.close()
         logger.info("Classifier search mode=%s chars=%s duration_ms=%s status=%s stages_ms=%s",
                     mode, len(query), round((time.perf_counter() - started) * 1000), status, timings)

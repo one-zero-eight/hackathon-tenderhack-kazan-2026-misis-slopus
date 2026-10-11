@@ -1,4 +1,5 @@
 import asyncio
+import threading
 
 import numpy as np
 import pytest
@@ -119,11 +120,12 @@ def test_lifespan_warms_before_accepting_requests(monkeypatch):
     assert events == ["warm", "close"]
 
 
-def test_semantic_search_reports_stage_timings(search_db, monkeypatch):
+def test_semantic_search_reports_stage_timings(search_db, tmp_path, monkeypatch):
     db, vector = search_db
+    monkeypatch.setattr(search, "get_db", lambda: db)
     async def embed(query):
         return vector
-    monkeypatch.setattr(search, "get_db", lambda: db)
+    monkeypatch.setattr(search.settings, "search_database", tmp_path / "index.sqlite")
     monkeypatch.setattr(search, "embed_query", embed)
     monkeypatch.setattr(search, "_hydrate_hits", lambda rows: rows)
     result = asyncio.run(search.run_search(query="Молоток слесарный", mode="semantic"))
@@ -132,3 +134,109 @@ def test_semantic_search_reports_stage_timings(search_db, monkeypatch):
         "setup", "vectorCheck", "embedding", "knn", "ranking", "hydrate",
     }
     assert all(value >= 0 for value in result["timingsMs"].values())
+
+
+def test_product_knn_does_not_block_event_loop(search_db, tmp_path, monkeypatch):
+    db, vector = search_db
+    monkeypatch.setattr(search, "get_db", lambda: db)
+    monkeypatch.setattr(search.settings, "search_database", tmp_path / "index.sqlite")
+    entered = threading.Event()
+    release = threading.Event()
+    event_loop_thread = threading.get_ident()
+    worker_threads = []
+    connections = []
+
+    class Connection:
+        def __init__(self):
+            self.db = database.open_database(tmp_path / "index.sqlite")
+            self.closed = False
+            connections.append(self)
+            worker_threads.append(threading.get_ident())
+
+        def execute(self, sql, *args):
+            if "embedding MATCH" in sql:
+                entered.set()
+                assert release.wait(5), "event loop did not release the KNN worker"
+            return self.db.execute(sql, *args)
+
+        def close(self):
+            self.closed = True
+            self.db.close()
+
+    async def embed(query):
+        assert threading.get_ident() == event_loop_thread
+        return vector
+
+    monkeypatch.setattr(search, "open_database", Connection)
+    monkeypatch.setattr(search, "embed_query", embed)
+    monkeypatch.setattr(search, "_hydrate_hits", lambda rows: rows)
+
+    async def exercise():
+        task = asyncio.create_task(search.run_search(query="Молоток", mode="semantic"))
+        try:
+            async with asyncio.timeout(2):
+                while not entered.is_set():
+                    await asyncio.sleep(0.001)
+            assert not task.done()
+            # Another coroutine can run while SQLite is still busy.
+            release.set()
+            result = await task
+            assert result["items"][0]["id"] == 1
+        finally:
+            release.set()
+            await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(exercise())
+    assert all(thread != event_loop_thread for thread in worker_threads)
+    assert len(connections) == 1
+    assert all(connection.closed for connection in connections)
+
+
+def test_text_search_runs_in_worker(search_db, tmp_path, monkeypatch):
+    monkeypatch.setattr(search.settings, "search_database", tmp_path / "index.sqlite")
+    loop_thread = threading.get_ident()
+    worker_threads = []
+    original = search.open_database
+
+    def open_database():
+        worker_threads.append(threading.get_ident())
+        return original()
+
+    monkeypatch.setattr(search, "open_database", open_database)
+    monkeypatch.setattr(search, "_hydrate_hits", lambda rows: rows)
+    result = asyncio.run(search.run_search(query="Молоток", mode="text"))
+    assert result["mode"] == "text"
+    assert result["items"] == []
+    assert worker_threads and all(thread != loop_thread for thread in worker_threads)
+
+
+def test_product_worker_closes_connection_on_search_error(search_db, tmp_path, monkeypatch):
+    db, vector = search_db
+    monkeypatch.setattr(search, "get_db", lambda: db)
+    monkeypatch.setattr(search.settings, "search_database", tmp_path / "index.sqlite")
+    connections = []
+
+    class Connection:
+        def __init__(self):
+            self.db = database.open_database(tmp_path / "index.sqlite")
+            self.closed = False
+            connections.append(self)
+
+        def execute(self, sql, *args):
+            if "embedding MATCH" in sql:
+                raise RuntimeError("KNN failed")
+            return self.db.execute(sql, *args)
+
+        def close(self):
+            self.closed = True
+            self.db.close()
+
+    async def embed(query):
+        return vector
+
+    monkeypatch.setattr(search, "open_database", Connection)
+    monkeypatch.setattr(search, "embed_query", embed)
+    with pytest.raises(RuntimeError, match="KNN failed"):
+        asyncio.run(search.run_search(query="Молоток", mode="semantic"))
+    assert len(connections) == 1
+    assert all(connection.closed for connection in connections)

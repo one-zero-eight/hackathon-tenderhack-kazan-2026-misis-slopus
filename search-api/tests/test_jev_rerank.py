@@ -290,7 +290,16 @@ def test_find_similar_reranks_and_limits(monkeypatch):
         name = "Исходный стол"
         description = "деревянный"
 
+    connections = []
+
     class FakeDb:
+        def __init__(self):
+            self.closed = False
+            connections.append(self)
+
+        def close(self):
+            self.closed = True
+
         def execute(self, sql, params=None):
             if "SELECT embedding" in sql:
                 return type("R", (), {"fetchone": staticmethod(lambda: {"embedding": b"x"})})()
@@ -299,7 +308,7 @@ def test_find_similar_reranks_and_limits(monkeypatch):
             ])})()
 
     monkeypatch.setattr(search_mod, "find_product", lambda product_id: FakeProduct())
-    monkeypatch.setattr(search_mod, "get_db", lambda: FakeDb())
+    monkeypatch.setattr(search_mod, "open_database", FakeDb)
     monkeypatch.setattr(search_mod, "has_vectors", lambda db: True)
     monkeypatch.setattr(search_mod, "_hydrate_hits", lambda ranked: [
         product(row["id"], f"Товар {row['id']}", score=row["score"]) for row in ranked
@@ -315,3 +324,5 @@ def test_find_similar_reranks_and_limits(monkeypatch):
     result = asyncio.run(search_mod.find_similar(99))
     assert len(result) == 6
     assert result[0]["id"] == 15
+    assert len(connections) == 2
+    assert all(connection.closed for connection in connections)

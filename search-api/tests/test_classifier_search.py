@@ -1,5 +1,6 @@
 import asyncio
 import struct
+import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -412,3 +413,195 @@ def test_cli_custom_output_and_resume(classifier_fixture, deterministic_embeddin
     assert resumed.value.code == 0 and custom.exists()
     monkeypatch.setattr(classifiers.settings, "classifier_database", custom)
     assert _search("Молоток штукатурный", mode="hybrid")["okpdKtru"][0]["confident"]
+
+
+@pytest.fixture
+def tracked_connections(monkeypatch):
+    connections = []
+    connect = classifiers.sqlite3.connect
+
+    class TrackedConnection(classifiers.sqlite3.Connection):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.open_thread = threading.get_ident()
+            self.close_thread = None
+            connections.append(self)
+
+        def close(self):
+            self.close_thread = threading.get_ident()
+            super().close()
+
+    def tracked_connect(*args, **kwargs):
+        return connect(*args, **kwargs, factory=TrackedConnection)
+
+    monkeypatch.setattr(classifiers.sqlite3, "connect", tracked_connect)
+    return connections
+
+
+def _assert_worker_connections_closed(connections, event_loop_thread):
+    assert connections
+    for conn in connections:
+        assert conn.open_thread != event_loop_thread
+        assert conn.close_thread == conn.open_thread
+        with pytest.raises(classifiers.sqlite3.ProgrammingError, match="closed"):
+            conn.execute("SELECT 1")
+
+
+@pytest.mark.parametrize("hook", ["validate_classifier_index", "_exact_boosts", "_text_hits",
+                                  "_semantic_hits", "_pair_okpd_ktru"])
+def test_concurrent_search_workers_leave_event_loop_responsive(
+        classifier_fixture, deterministic_embeddings, monkeypatch, hook, tracked_connections):
+    # The semantic fixture returns immediately, like a cached query embedding.
+    _rebuild_fixture(classifier_fixture)
+    asyncio.run(classifiers.embed_classifier_pending(path=classifier_fixture, batch_size=2))
+    tracked_connections.clear()
+    original = getattr(classifiers, hook)
+    entered = []
+    release = threading.Event()
+    lock = threading.Lock()
+    loop_thread = threading.get_ident()
+    mode = "hybrid" if hook == "_semantic_hits" else "text"
+    first_calls = set()
+
+    def blocked(conn, *args, **kwargs):
+        assert threading.get_ident() != loop_thread
+        # Validation occurs in both phases; only block each request's first phase.
+        with lock:
+            first = len(entered) < 2 and id(conn) not in first_calls
+            if first:
+                first_calls.add(id(conn))
+                entered.append(conn)
+        if first:
+            assert release.wait(timeout=3), "event loop did not release concurrent workers"
+        return original(conn, *args, **kwargs)
+
+    monkeypatch.setattr(classifiers, hook, blocked)
+    embed = classifiers.embed_query
+
+    async def cached_embedding(query):
+        assert threading.get_ident() == loop_thread
+        return await embed(query)
+
+    monkeypatch.setattr(classifiers, "embed_query", cached_embedding)
+
+    async def run():
+        tasks = [asyncio.create_task(search_classifiers(query="Молоток штукатурный", mode=mode))
+                 for _ in range(2)]
+        ticks = 0
+        deadline = asyncio.get_running_loop().time() + 2
+        try:
+            while len(entered) < 2 and asyncio.get_running_loop().time() < deadline:
+                ticks += 1
+                await asyncio.sleep(0.001)
+            assert len(entered) == 2
+            assert entered[0] is not entered[1]
+            assert ticks > 0
+        finally:
+            release.set()
+            results = await asyncio.gather(*tasks)
+        assert all(result["okpdKtru"][0]["confident"] for result in results)
+
+    asyncio.run(run())
+    assert len(tracked_connections) == 4
+    _assert_worker_connections_closed(tracked_connections, loop_thread)
+
+
+def test_cancelled_search_closes_inflight_worker_connection(classifier_fixture, monkeypatch, tracked_connections):
+    entered = threading.Event()
+    release = threading.Event()
+    original = classifiers._text_hits
+
+    def blocked(conn, query, limit):
+        entered.set()
+        assert release.wait(timeout=3)
+        return original(conn, query, limit)
+
+    monkeypatch.setattr(classifiers, "_text_hits", blocked)
+
+    async def run():
+        task = asyncio.create_task(search_classifiers(query="Молоток", mode="text"))
+        deadline = asyncio.get_running_loop().time() + 2
+        try:
+            while not entered.is_set() and asyncio.get_running_loop().time() < deadline:
+                await asyncio.sleep(0.001)
+            assert entered.is_set()
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        finally:
+            release.set()
+            await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(run())  # Waits for the executor to finish its cancelled request's worker.
+    assert len(tracked_connections) == 1
+    _assert_worker_connections_closed(tracked_connections, threading.get_ident())
+
+
+@pytest.mark.parametrize("hook", ["validate_classifier_index", "_exact_boosts", "_text_hits",
+                                  "_semantic_hits", "_pair_okpd_ktru", "embed_query"])
+def test_search_errors_close_worker_connections(
+        classifier_fixture, deterministic_embeddings, monkeypatch, hook, tracked_connections):
+    # Build before tracking search-owned connections.
+    _rebuild_fixture(classifier_fixture)
+    asyncio.run(classifiers.embed_classifier_pending(path=classifier_fixture, batch_size=2))
+    tracked_connections.clear()
+    loop_thread = threading.get_ident()
+
+    def failure(*args, **kwargs):
+        assert threading.get_ident() != loop_thread
+        raise RuntimeError("search stage failed")
+
+    async def embedding_failure(query):
+        assert threading.get_ident() == loop_thread
+        raise RuntimeError("search stage failed")
+
+    monkeypatch.setattr(classifiers, hook, embedding_failure if hook == "embed_query" else failure)
+    with pytest.raises(RuntimeError, match="search stage failed"):
+        _search("Молоток", mode="hybrid")
+    assert len(tracked_connections) == (2 if hook in {"_semantic_hits", "_pair_okpd_ktru"} else 1)
+    _assert_worker_connections_closed(tracked_connections, loop_thread)
+
+
+def test_connection_setup_error_closes_connection(classifier_fixture, monkeypatch, tracked_connections):
+    def failure(conn):
+        raise RuntimeError("extension setup failed")
+
+    monkeypatch.setattr(classifiers.sqlite_vec, "load", failure)
+    with pytest.raises(RuntimeError, match="extension setup failed"):
+        _search("Молоток")
+    _assert_worker_connections_closed(tracked_connections, threading.get_ident())
+
+
+def test_invalid_index_rejected_before_remote_embedding(classifier_fixture, monkeypatch, tracked_connections):
+    async def unexpected(query):
+        raise AssertionError("Invalid index must be rejected before embedding")
+
+    monkeypatch.setattr(classifiers, "embed_query", unexpected)
+    with pytest.raises(RuntimeError, match="Эмбеддинги"):
+        _search("Молоток", mode="hybrid")
+    _assert_worker_connections_closed(tracked_connections, threading.get_ident())
+
+
+def test_semantic_timing_includes_async_embedding(
+        classifier_fixture, deterministic_embeddings, monkeypatch, caplog, tracked_connections):
+    _rebuild_fixture(classifier_fixture)
+    asyncio.run(classifiers.embed_classifier_pending(path=classifier_fixture, batch_size=2))
+    tracked_connections.clear()
+    embed = classifiers.embed_query
+    loop_thread = threading.get_ident()
+
+    async def delayed_embedding(query):
+        assert threading.get_ident() == loop_thread
+        await asyncio.sleep(0.04)
+        return await embed(query)
+
+    monkeypatch.setattr(classifiers, "embed_query", delayed_embedding)
+    with caplog.at_level("INFO", logger="uvicorn.error"):
+        result = _search("unknown", mode="semantic")
+    record = next(record for record in caplog.records if record.msg.startswith("Classifier search mode="))
+    timings = record.args[-1]
+    assert timings["semantic"] >= 35
+    assert result["durationMs"] >= timings["semantic"]
+    assert {"setup", "exact", "text", "semantic", "ranking_pairs"} == timings.keys()
+    assert len(tracked_connections) == 2
+    _assert_worker_connections_closed(tracked_connections, loop_thread)

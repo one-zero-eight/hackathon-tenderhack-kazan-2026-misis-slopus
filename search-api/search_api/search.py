@@ -1,14 +1,16 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import time
+from contextlib import closing
 from typing import Any, Literal
 
 import httpx
 
 from search_api.config import MAX_DESCRIPTION_LENGTH, settings
-from search_api.database import get_db, has_vectors
+from search_api.database import get_db, has_vectors, open_database
 from search_api.embeddings import embed_query, embed_texts
 from search_api.ste_catalog import (
     category_stats,
@@ -86,10 +88,27 @@ async def run_search(
     started = time.perf_counter()
     timings: dict[str, int] = {}
     offset = (page - 1) * settings.page_size
-    db = get_db()
-    category_ids = resolve_category_ids(category_id)
+
+    def prepare():
+        category_ids = resolve_category_ids(category_id)
+        direct = None
+        if not query:
+            products, total = list_products(category_id=category_id, offset=offset, limit=settings.page_size)
+            direct = ([{**product_to_dict(p), "score": None, "match": "catalog"} for p in products], total)
+        elif query.isdigit():
+            product = find_product(int(query))
+            if product and (category_ids is None or product.category_id in category_ids):
+                direct = ([{**product_to_dict(product), "score": None, "match": "text"}] if page == 1 else [], 1)
+        timings["setup"] = round((time.perf_counter() - started) * 1000)
+        vectors_ready = False
+        if direct is None and mode != "text":
+            stage = time.perf_counter()
+            vectors_ready = has_vectors(get_db())
+            timings["vectorCheck"] = round((time.perf_counter() - stage) * 1000)
+        return category_ids, direct, vectors_ready
+
+    category_ids, direct, vectors_ready = await asyncio.to_thread(prepare)
     category_list = sorted(category_ids) if category_ids is not None else None
-    timings["setup"] = round((time.perf_counter() - started) * 1000)
 
     def hydrate_hits(ranked: list[dict]) -> list[dict]:
         stage = time.perf_counter()
@@ -110,17 +129,8 @@ async def run_search(
             "timingsMs": dict(timings),
         }
 
-    if not query:
-        items, total = list_products(category_id=category_id, offset=offset, limit=settings.page_size)
-        return finish([{**product_to_dict(p), "score": None, "match": "catalog"} for p in items], total)
-
-    if query.isdigit():
-        product = find_product(int(query))
-        if product and (category_ids is None or product.category_id in category_ids):
-            return finish(
-                [{**product_to_dict(product), "score": None, "match": "text"}] if page == 1 else [],
-                1,
-            )
+    if direct is not None:
+        return finish(*direct)
 
     tokens = fts_query(query)
     if category_list is None:
@@ -131,7 +141,7 @@ async def run_search(
         category_sql = f" AND s.category_id IN ({placeholders})"
         category_params = list(category_list)
 
-    def text_rows(limit: int, skip: int = 0) -> list[dict]:
+    def text_rows(db, limit: int, skip: int = 0) -> list[dict]:
         if not tokens:
             return []
         sql = f"""
@@ -143,46 +153,28 @@ async def run_search(
         """
         return [{"id": int(row["id"])} for row in db.execute(sql, [tokens, *category_params, limit, skip]).fetchall()]
 
-    if mode == "text":
-        stage = time.perf_counter()
-        total = 0
-        if tokens:
-            total = int(db.execute(
-                f"""
-                SELECT count(*) AS n FROM products_fts
-                JOIN index_state s ON s.product_id = products_fts.rowid
-                WHERE products_fts MATCH ?{category_sql}
-                """,
-                [tokens, *category_params],
-            ).fetchone()["n"])
-        ranked = [{"id": row["id"], "score": None, "match": "text"} for row in text_rows(settings.page_size, offset)]
-        timings["text"] = round((time.perf_counter() - stage) * 1000)
-        return finish(hydrate_hits(ranked), total)
-
     def text_page() -> dict[str, Any]:
         nonlocal mode
         mode = "text"
-        stage_local = time.perf_counter()
-        total = 0
-        if tokens:
-            total = int(db.execute(
-                f"""
-                SELECT count(*) AS n FROM products_fts
-                JOIN index_state s ON s.product_id = products_fts.rowid
-                WHERE products_fts MATCH ?{category_sql}
-                """,
-                [tokens, *category_params],
-            ).fetchone()["n"])
-        ranked = [{"id": row["id"], "score": None, "match": "text"} for row in text_rows(settings.page_size, offset)]
-        timings["text"] = round((time.perf_counter() - stage_local) * 1000)
+        stage = time.perf_counter()
+        with closing(open_database()) as db:
+            total = 0
+            if tokens:
+                total = int(db.execute(
+                    f"""
+                    SELECT count(*) AS n FROM products_fts
+                    JOIN index_state s ON s.product_id = products_fts.rowid
+                    WHERE products_fts MATCH ?{category_sql}
+                    """,
+                    [tokens, *category_params],
+                ).fetchone()["n"])
+            ranked = [{"id": row["id"], "score": None, "match": "text"}
+                      for row in text_rows(db, settings.page_size, offset)]
+        timings["text"] = round((time.perf_counter() - stage) * 1000)
         return finish(hydrate_hits(ranked), total)
 
-    stage = time.perf_counter()
-    vectors_ready = has_vectors(db)
-    timings["vectorCheck"] = round((time.perf_counter() - stage) * 1000)
-    if not vectors_ready:
-        # Vectors not ready yet — fall back to FTS instead of failing the request.
-        return text_page()
+    if mode == "text" or not vectors_ready:
+        return await asyncio.to_thread(text_page)
 
     stage = time.perf_counter()
     try:
@@ -191,7 +183,7 @@ async def run_search(
         logger.warning("Embedding unavailable, falling back to text search: %s", exc)
         timings["embedding"] = round((time.perf_counter() - stage) * 1000)
         timings["embeddingFallback"] = 1
-        return text_page()
+        return await asyncio.to_thread(text_page)
     timings["embedding"] = round((time.perf_counter() - stage) * 1000)
     if category_list is None:
         vec_sql = """
@@ -209,19 +201,24 @@ async def run_search(
             ORDER BY distance
         """
         vec_params = [vector, settings.retrieval_limit, *category_list]
-    stage = time.perf_counter()
-    vector_rows = [{"id": int(r["id"]), "distance": float(r["distance"])} for r in db.execute(vec_sql, vec_params).fetchall()]
-    timings["knn"] = round((time.perf_counter() - stage) * 1000)
 
-    stage = time.perf_counter()
-    if mode == "hybrid":
-        ranked = fuse_ranks(vector_rows, text_rows(settings.retrieval_limit))[: settings.retrieval_limit]
-    else:
-        ranked = [{"id": row["id"], "score": 1 - row["distance"], "match": "semantic"} for row in vector_rows]
+    def retrieve() -> dict:
+        with closing(open_database()) as db:
+            stage = time.perf_counter()
+            vector_rows = [{"id": int(r["id"]), "distance": float(r["distance"])}
+                           for r in db.execute(vec_sql, vec_params).fetchall()]
+            timings["knn"] = round((time.perf_counter() - stage) * 1000)
 
-    timings["ranking"] = round((time.perf_counter() - stage) * 1000)
-    page_rows = ranked[offset: offset + settings.page_size]
-    return finish(hydrate_hits(page_rows), len(ranked))
+            stage = time.perf_counter()
+            if mode == "hybrid":
+                ranked = fuse_ranks(vector_rows, text_rows(db, settings.retrieval_limit))[: settings.retrieval_limit]
+            else:
+                ranked = [{"id": row["id"], "score": 1 - row["distance"], "match": "semantic"} for row in vector_rows]
+            timings["ranking"] = round((time.perf_counter() - stage) * 1000)
+        page_rows = ranked[offset: offset + settings.page_size]
+        return finish(hydrate_hits(page_rows), len(ranked))
+
+    return await asyncio.to_thread(retrieve)
 
 
 SIMILAR_RETRIEVAL_K = 16
@@ -231,28 +228,39 @@ SIMILAR_RESULT_LIMIT = 6
 async def find_similar(product_id: int) -> list[dict]:
     from search_api.jev_rerank import product_query_text, rerank_products
 
-    product = find_product(product_id)
-    db = get_db()
-    if product is None or not has_vectors(db):
+    def prepare():
+        product = find_product(product_id)
+        if product is None:
+            return None, None
+        with closing(open_database()) as db:
+            if not has_vectors(db):
+                return None, None
+            row = db.execute("SELECT embedding FROM product_vectors WHERE product_id = ?", (product_id,)).fetchone()
+            return product, row["embedding"] if row is not None else None
+
+    product, vector = await asyncio.to_thread(prepare)
+    if product is None:
         return []
-    row = db.execute("SELECT embedding FROM product_vectors WHERE product_id = ?", (product_id,)).fetchone()
-    if row is not None:
-        vector = row["embedding"]
-    else:
+    if vector is None:
         from search_api.normalize import embedding_document
         vector = (await embed_texts([embedding_document(product)], "document"))[0]
-    neighbors = db.execute(
-        """
-        SELECT product_id AS id, distance FROM product_vectors
-        WHERE embedding MATCH ? AND k = ? ORDER BY distance
-        """,
-        (vector, SIMILAR_RETRIEVAL_K),
-    ).fetchall()
-    ranked = [
-        {"id": int(r["id"]), "score": 1 - float(r["distance"]), "match": "semantic"}
-        for r in neighbors if int(r["id"]) != product_id
-    ][: SIMILAR_RETRIEVAL_K - 1]
-    hits = _hydrate_hits(ranked)
+
+    def retrieve():
+        with closing(open_database()) as db:
+            neighbors = db.execute(
+                """
+                SELECT product_id AS id, distance FROM product_vectors
+                WHERE embedding MATCH ? AND k = ? ORDER BY distance
+                """,
+                (vector, SIMILAR_RETRIEVAL_K),
+            ).fetchall()
+        ranked = [
+            {"id": int(r["id"]), "score": 1 - float(r["distance"]), "match": "semantic"}
+            for r in neighbors if int(r["id"]) != product_id
+        ][: SIMILAR_RETRIEVAL_K - 1]
+        return _hydrate_hits(ranked)
+
+    hits = await asyncio.to_thread(retrieve)
     hits = await rerank_products(product_query_text(product), hits)
     return hits[:SIMILAR_RESULT_LIMIT]
 

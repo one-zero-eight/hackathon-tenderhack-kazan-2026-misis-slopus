@@ -24,6 +24,8 @@ _TRANSIENT_STATUS = {502, 503, 504}
 _RETRY_DELAYS = (1.0, 3.0, 8.0, 20.0)
 
 _query_cache: dict[str, bytes] = {}
+_query_requests: dict[tuple[asyncio.AbstractEventLoop, str], asyncio.Task[bytes]] = {}
+_query_waiters: dict[tuple[asyncio.AbstractEventLoop, str], int] = {}
 
 
 def _float16_to_sqlite(raw: bytes) -> bytes:
@@ -252,8 +254,30 @@ async def embed_query(query: str) -> bytes:
     cached = _query_cache.get(query)
     if cached is not None:
         return cached
-    vector = (await embed_texts([query], "query"))[0]
-    _query_cache[query] = vector
-    if len(_query_cache) > 128:
-        _query_cache.pop(next(iter(_query_cache)))
-    return vector
+    key = (asyncio.get_running_loop(), query)
+    task = _query_requests.get(key)
+    if task is None:
+        async def compute() -> bytes:
+            vector = (await embed_texts([query], "query"))[0]
+            _query_cache[query] = vector
+            if len(_query_cache) > 128:
+                _query_cache.pop(next(iter(_query_cache)))
+            return vector
+
+        task = asyncio.create_task(compute())
+        _query_requests[key] = task
+    _query_waiters[key] = _query_waiters.get(key, 0) + 1
+    try:
+        # Cancelling one search branch must not cancel the other branch's embedding.
+        return await asyncio.shield(task)
+    finally:
+        remaining = _query_waiters[key] - 1
+        if remaining:
+            _query_waiters[key] = remaining
+        else:
+            del _query_waiters[key]
+            del _query_requests[key]
+            if not task.done():
+                task.cancel()
+            # Also retrieve any error if the last waiter was cancelled.
+            await asyncio.gather(task, return_exceptions=True)

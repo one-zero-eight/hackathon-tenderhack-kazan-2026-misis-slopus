@@ -432,11 +432,6 @@ function CreateCharRow(props: {
                     </button>
                   </div>
                 </Show>
-                <Show when={item().badges.length}>
-                  <span class="create-char-badges">
-                    <For each={item().badges}>{badge => <span class="create-char-badge">{badge}</span>}</For>
-                  </span>
-                </Show>
               </dt>
               <dd>
                 <div class="create-char-value" classList={{ "has-confidence": !!item().autofill && !!item().value.trim() }}>
