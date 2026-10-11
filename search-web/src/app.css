@@ -17,7 +17,7 @@ html, body, #app { min-height: 100%; }
 .site-header {
   background: #fff;
   border-bottom: 1px solid var(--pp-gray-blue, #d4dbe6);
-  box-shadow: none;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.08);
 }
 .header-inner { display: flex; align-items: center; height: var(--header-height); gap: 28px; }
 .header-inner nav { display: flex; height: 100%; gap: 20px; align-items: center; font-size: 13px; font-weight: 500; color: #8c8c8c; flex-wrap: wrap; }
