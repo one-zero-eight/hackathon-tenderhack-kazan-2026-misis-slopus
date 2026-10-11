@@ -1,4 +1,4 @@
-import type { AutofillEvidence, DraftCharacteristic } from "./types";
+import type { AutofillEvidence, DraftCharacteristic, VotedCode } from "./types";
 import type { SpellerError } from "./yandex-speller";
 
 export type EvidenceSpan = {
@@ -8,8 +8,9 @@ export type EvidenceSpan = {
   name: string;
   value: string;
   unit: string;
-  source: AutofillEvidence["source"];
+  source: AutofillEvidence["source"] | "category";
   conversion: AutofillEvidence["conversion"];
+  categories?: { name: string; code: string; classifier: string }[];
 };
 
 function escapeHtml(text: string): string {
@@ -66,6 +67,39 @@ export function collectEvidenceSpans(
   return spans.sort((a, b) => a.start - b.start || a.end - b.end);
 }
 
+const CATEGORY_STOP_WORDS = new Set(["для", "или", "при", "без", "под", "над", "тип", "вид", "прочие", "прочий", "прочая", "прочее", "прочих", "изделия", "изделие", "товары", "товар", "услуги", "услуга"]);
+
+/** Lexical matches only: these spans are not LLM evidence for classification. */
+export function collectCategorySpans(
+  text: string,
+  categories: { classifier: string; category: VotedCode | null }[],
+): EvidenceSpan[] {
+  const tokens = [...text.matchAll(/[\p{L}\p{N}]+(?:-[\p{L}\p{N}]+)*/gu)];
+  const fold = (word: string) => word.toLocaleLowerCase("ru").replaceAll("ё", "е");
+  const matches = new Map<number, EvidenceSpan>();
+  for (const { classifier, category } of categories) {
+    if (!category) continue;
+    const words = new Set((category.name.match(/[\p{L}\p{N}]+(?:-[\p{L}\p{N}]+)*/gu) ?? [])
+      .map(fold).filter((word) => word.length >= 3 && !CATEGORY_STOP_WORDS.has(word)));
+    for (const token of tokens) {
+      if (!words.has(fold(token[0]))) continue;
+      const start = token.index!;
+      const categoryInfo = { name: category.name, code: category.code, classifier };
+      const prior = matches.get(start);
+      if (prior) {
+        prior.categories!.push(categoryInfo);
+        continue;
+      }
+      matches.set(start, {
+        id: `category:${start}`, start, end: start + token[0].length,
+        name: "Совпадение с названием категории", value: category.name, unit: "",
+        source: "category", conversion: null, categories: [categoryInfo],
+      });
+    }
+  }
+  return [...matches.values()].sort((a, b) => a.start - b.start);
+}
+
 export function formatEvidenceConversion(conversion: AutofillEvidence["conversion"]): string | null {
   if (!conversion) return null;
   const source = conversion.factor != null && conversion.factor !== 0
@@ -79,7 +113,8 @@ function formatCompact(value: number): string {
   return Number.isFinite(value) ? Number(value.toPrecision(12)).toString() : String(value);
 }
 
-export function evidenceSourceLabel(source: AutofillEvidence["source"]): string {
+export function evidenceSourceLabel(source: EvidenceSpan["source"]): string {
+  if (source === "category") return "категория";
   return source === "rules" ? "регулярка" : "из текста";
 }
 
@@ -126,7 +161,8 @@ export function highlightDescription(
     if (evidenceMark) {
       const span = evidence[evidenceMark.index]!;
       const flash = flashId != null && span.id === flashId ? " is-flash" : "";
-      out += `<span class="autofill-evidence${flash}" data-evidence-id="${escapeHtml(span.id)}" data-evidence-index="${evidenceMark.index}">`;
+      const categoryClass = span.source === "category" ? " category-evidence" : "";
+      out += `<span class="autofill-evidence${categoryClass}${flash}" data-evidence-id="${escapeHtml(span.id)}" data-evidence-index="${evidenceMark.index}">`;
     }
     return out;
   };

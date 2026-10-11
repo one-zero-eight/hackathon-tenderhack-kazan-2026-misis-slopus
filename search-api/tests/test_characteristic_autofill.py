@@ -98,6 +98,62 @@ def mock_providers(monkeypatch, *, llm_handler=None, jev_handler=None):
     ))
 
 
+@pytest.mark.parametrize("count_value", [500, "500 листов"])
+def test_paper_grammage_and_sheets_are_accepted_with_ktru_units(monkeypatch, count_value):
+    text = (
+        "Бумага офисная для принтера и копира, формат А4, белая, "
+        "плотность 80 г/м2, 500 листов в пачке, для ежедневной печати в канцелярии."
+    )
+    mock_providers(monkeypatch, llm_handler=mapping_handler(
+        {"0": "80 г/м2", "1": count_value},
+        {"0": "плотность 80 г/м2", "1": "500 листов в пачке"},
+    ))
+    result = asyncio.run(autofill.autofill_characteristics(request(
+        text=text, additionalAllowed=False, characteristics=[
+            {"id": "grammage", "name": "Масса бумаги площадью 1м2", "unit": "г",
+             "options": ["≥80 … <90 г"],
+             "ranges": [{"option": "≥80 … <90 г", "min": 80, "max": 90, "maxInclusive": False}]},
+            {"id": "sheets", "name": "Количество листов в пачке", "unit": "шт.",
+             "options": ["≥50 шт.", "≥100 шт.", "≥500 шт."],
+             "ranges": [{"option": "≥50 шт.", "min": 50},
+                        {"option": "≥100 шт.", "min": 100},
+                        {"option": "≥500 шт.", "min": 500}]},
+        ],
+    )))
+    rows = {row["id"]: row for row in result["characteristics"]}
+    assert result["filled"] == 2
+    assert rows["grammage"]["value"] == "80"
+    assert rows["grammage"]["rangeOption"] == "≥80 … <90 г"
+    assert rows["grammage"]["conversion"]["from"] == "г/м2"
+    assert rows["sheets"]["value"] == "500"
+    assert rows["sheets"]["rangeOption"] == "≥500 шт."
+    for row in rows.values():
+        assert row["status"] == "accepted"
+        assert not row["errors"]
+        assert text[row["evidence"]["start"]:row["evidence"]["end"]] == row["quote"]
+
+
+@pytest.mark.parametrize("name, expected", [
+    ("Масса бумаги площадью 1 м²", 80),
+    ("Масса бумаги площадью 2м2", 160),
+    ("Масса бумаги площадью 100 см²", 0.8),
+    ("Масса бумаги", None),
+    ("Масса бумаги площадью 0м2", None),
+])
+def test_density_to_mass_requires_explicit_reference_area(name, expected):
+    field = autofill.AutofillCharacteristic(id="mass", name=name, numeric=True, unit="г")
+    item = autofill.ExtractedValue(
+        field_id="mass", value=80, source_unit="г/м²", source_literal="80", quote="плотность 80 г/м²",
+    )
+    value, errors, _ = autofill.validate_value(field, item, item.quote)
+    if expected is None:
+        assert "несовместимые единицы измерения" in errors
+    else:
+        assert not errors
+        assert value == pytest.approx(expected)
+    assert autofill.convert_units(80, "г/м²", "г")[1] == ["несовместимые единицы измерения"]
+
+
 def test_product_model_and_manufacturer_are_extracted_without_explicit_labels(monkeypatch):
     text = 'Дрель-шуруповерт аккумуляторная Ставр "ДА-10,8/2 (2,6 Л)"'
 
@@ -258,6 +314,63 @@ def test_autofill_logs_failed_stage(monkeypatch, caplog):
     assert "stage=llm_extract" in caplog.text
     assert "status=error" in caplog.text
     assert "finished duration_ms=" in caplog.text
+
+
+def test_jev_verification_does_not_send_unrelated_schema_or_all_enum_options(monkeypatch):
+    seen = []
+
+    def jev(req):
+        payload = json.loads(req.content)
+        seen.append(payload)
+        assert payload["state"] == {"source_text": "Молоток 500 г"}
+        instructions = payload["questions"]["f0"]["instructions"]
+        assert instructions["field_name"] == "Масса"
+        assert instructions["target_unit"] == "кг"
+        assert instructions["field_hint"] == "Масса всего товара"
+        assert instructions["claim"]["value"] == 500
+        assert "Неизвлечённое поле" not in req.content.decode()
+        assert len(req.content) < 6000
+        return httpx.Response(200, json={
+            "answers": {qid: {"type": "noul", "noul": 0.95} for qid in payload["questions"]},
+        })
+
+    mock_providers(monkeypatch, llm_handler=mapping_handler({"0": "500 г"}), jev_handler=jev)
+    fields = [{"id": "mass", "name": "Масса", "numeric": True, "unit": "кг", "hint": "Масса всего товара"}]
+    fields.extend({
+        "id": f"unused:{i}", "name": f"Неизвлечённое поле {i}",
+        "options": [f"Вариант {j}" for j in range(100)],
+    } for i in range(39))
+    result = asyncio.run(autofill.autofill_characteristics(request(
+        text="Молоток 500 г", characteristics=fields, additionalAllowed=False,
+    )))
+    assert result["characteristics"][0]["value"] == "0.5"
+    assert seen
+
+
+def test_jev_http_error_preserves_provider_reason_in_logs_and_response(monkeypatch, caplog):
+    import logging
+
+    message = "A prompt has 11903 tokens, more than the maximum context length of 8192 tokens."
+    mock_providers(monkeypatch, jev_handler=lambda req: httpx.Response(400, json={"error": {"message": message}}))
+    with caplog.at_level(logging.INFO, logger="uvicorn.error"):
+        with pytest.raises(autofill.AutofillError, match="maximum context length of 8192"):
+            asyncio.run(autofill.autofill_characteristics(request()))
+    assert "failed: TypeSafe API: HTTP 400" in caplog.text
+    assert message in caplog.text
+
+
+def test_claim_question_includes_selected_value_label_not_the_entire_enum():
+    field = autofill.AutofillCharacteristic(
+        id="material", name="Материал", options=["01", "02"],
+        optionLabels={"01": "Дерево", "02": "Металл"}, hint="Материал рукоятки",
+    )
+    extraction = autofill.Extraction(fields=[autofill.ExtractedValue(
+        field_id="material", value="01", quote="деревянная", source_unit=None, source_literal=None,
+    )], additional=[])
+    instructions = autofill.build_claim_questions(extraction, [field])["f0"]["instructions"]
+    assert instructions["value_label"] == "Дерево"
+    assert instructions["field_hint"] == "Материал рукоятки"
+    assert "Металл" not in json.dumps(instructions, ensure_ascii=False)
 
 
 def test_autofill_llm_jev_converts_units_and_returns_statuses(monkeypatch):

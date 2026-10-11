@@ -1,9 +1,36 @@
 import { isRangeCharacteristic, matchCharacteristicOption, matchNumberToRange, parseCharacteristicNumber, shortUnitName } from "./characteristic-options";
-import type { CatalogCharacteristic, DraftCharacteristic } from "./types";
+import type { CatalogCharacteristic, DraftCharacteristic, WebEnrichmentSuggestion } from "./types";
 
 function normName(name: string): string {
   return name.normalize("NFKC").toLocaleLowerCase("ru").replaceAll("ё", "е")
     .replace(/[\s_,;:!?"'«»„“”()\[\]{}]+/g, " ").trim().replace(/^[ .]+|[ .]+$/g, "");
+}
+
+/** Internet facts stay separate from official schemas and never overwrite their values. */
+export function appendWebCharacteristics(
+  fields: DraftCharacteristic[], enrichment: WebEnrichmentSuggestion | null | undefined,
+): DraftCharacteristic[] {
+  if (!enrichment) return fields;
+  const seen = new Set(fields.map((field) => field.webSource
+    ? normName(field.webSource.fact)
+    : normName(`${field.name}: ${field.value}${field.unit ? ` ${field.unit}` : ""}`)));
+  const added: DraftCharacteristic[] = [];
+  for (const raw of enrichment.facts) {
+    const fact = raw.trim();
+    if (!fact || seen.has(normName(fact))) continue;
+    seen.add(normName(fact));
+    const separator = fact.indexOf(":");
+    const name = separator > 0 ? fact.slice(0, separator).trim() : "Сведения о товаре";
+    const value = separator > 0 ? fact.slice(separator + 1).trim() : fact;
+    if (!name || !value) continue;
+    added.push({
+      id: `web:${encodeURIComponent(normName(fact))}`, name, value, unit: "",
+      rangeOption: "", required: false, badges: [], options: [], optionLabels: {},
+      ranges: [], multiple: false, source: "custom", custom: true, hint: "",
+      webSource: { fact, sources: enrichment.sources.filter((source) => /^https?:\/\//i.test(source.url)) },
+    });
+  }
+  return [...fields, ...added];
 }
 
 /** Observed catalog values are examples, not an exhaustive schema or product facts. */
@@ -17,7 +44,7 @@ export function appendCatalogCharacteristics(
     if (!stats && !field.catalogFrequency) return field;
     return { ...field, catalogFrequency: stats };
   });
-  const names = new Set(base.map((item) => normName(item.name)));
+  const names = new Set(base.filter((item) => !item.webSource).map((item) => normName(item.name)));
   const identities = new Set<string>();
   const added: DraftCharacteristic[] = [];
   for (const item of statistics) {
@@ -194,7 +221,7 @@ export function buildDisplayCharacteristics(items: DraftCharacteristic[]): Displ
     ...catalog,
     ...items.filter((item) => item.source === "catalog" && !item.custom
       && !catalog.some((field) => normName(field.name) === normName(item.name))
-      && !custom.some((field) => normName(field.name) === normName(item.name)))
+      && !custom.some((field) => !field.webSource && normName(field.name) === normName(item.name)))
       .map((item) => ({ ...item, linkedIds: [item.id] })),
     ...custom.map((item) => ({ ...item, linkedIds: [item.id] })),
   ];

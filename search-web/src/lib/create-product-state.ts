@@ -57,12 +57,14 @@ export function setDescription(text: string): string {
     manuallyEditedProductFields.delete("name");
     autofilledProductValues.delete("name");
     autofilledProductEvidence.delete("name");
+    setCharacteristics((items) => items.filter((item) => !item.webSource));
     updateDescription(text);
   });
   return text;
 }
 
 export function characteristicEditKey(item: DraftCharacteristic): string {
+  if (item.webSource) return item.id;
   if (item.source === "catalog") return `catalog:${item.id}:${item.unit}`;
   const name = item.name.trim().toLocaleLowerCase("ru").replaceAll("ё", "е");
   return `${item.source}:${name}:${item.unit}`;

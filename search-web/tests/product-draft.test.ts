@@ -21,11 +21,88 @@ import {
   autofilledProductValues,
   autofilledProductEvidence,
 } from "../src/lib/create-product-state";
-import type { CatalogCharacteristic, CategoryPairDecision, DraftCharacteristic } from "../src/lib/types";
+import type { CatalogCharacteristic, CategoryPairDecision, DraftCharacteristic, WebEnrichmentSuggestion } from "../src/lib/types";
 import { characteristicRangeProblem } from "../src/lib/characteristic-options";
 import { draftFromSpgzCharacteristic } from "../src/lib/spgz-characteristics";
-import { appendCatalogCharacteristics, autofillConfidencePresentation, buildDisplayCharacteristics, catalogFrequencyLabel, catalogOptionPopularity, characteristicSourceLabel, retainTemplateCharacteristics, schemaEquivalent } from "../src/lib/merge-characteristics";
+import { appendCatalogCharacteristics, appendWebCharacteristics, autofillConfidencePresentation, buildDisplayCharacteristics, catalogFrequencyLabel, catalogOptionPopularity, characteristicSourceLabel, retainTemplateCharacteristics, schemaEquivalent } from "../src/lib/merge-characteristics";
 
+
+const webSuggestion: WebEnrichmentSuggestion = {
+  brand: "Ставр", model: "ДА-10", query: "Ставр ДА-10 характеристики", message: "Найдено в интернете",
+  sources: [
+    { title: "Характеристики", url: "https://example.com/specs", snippet: "Мощность 500 Вт" },
+    { title: "Unsafe", url: "javascript:alert(1)", snippet: "" },
+  ],
+  facts: ["Мощность: 500 Вт", "Материал: Сталь", "Мощность: 500 Вт", "Номинальное напряжение 18 В"],
+  suggestedDescription: "Дрель, мощность 500 Вт",
+};
+
+test("internet facts immediately become optional editable rows without overwriting official fields", () => {
+  const official = { ...draftFromSpgzCharacteristic({ name: "Мощность", options: [] }), value: "400 Вт", required: true };
+  const fields = appendWebCharacteristics([official], webSuggestion);
+  assert.equal(fields[0], official);
+  assert.equal(fields.length, 4);
+  const web = fields[1];
+  assert.equal(web.name, "Мощность");
+  assert.equal(web.value, "500 Вт");
+  assert.equal(web.custom, true);
+  assert.equal(web.required, false);
+  assert.equal(web.autofill, undefined, "web suggestions must not claim verified confidence");
+  assert.equal(web.webSource?.fact, "Мощность: 500 Вт");
+  assert.equal(web.webSource?.sources.length, 1);
+  assert.equal(fields[3].value, "Номинальное напряжение 18 В");
+  assert.equal(buildDisplayCharacteristics(fields).filter((field) => field.webSource).length, 3);
+  assert.deepEqual(appendWebCharacteristics(fields, webSuggestion), fields, "repeated facts must not create duplicate rows");
+});
+
+test("internet facts already present in filled fields are not duplicated", () => {
+  const official = { ...draftFromSpgzCharacteristic({ name: "Мощность", options: [] }), value: "500", unit: "Вт" };
+  const fields = appendWebCharacteristics([official], { ...webSuggestion, facts: ["Мощность: 500 Вт", "Материал:", " "] });
+  assert.deepEqual(fields, [official]);
+});
+
+test("internet suggestions do not hide catalog schemas with the same name", () => {
+  const statistics: CatalogCharacteristic = {
+    id: "catalog:power", name: "Мощность", unit: "Вт", numeric: true, count: 10, total: 20,
+    frequency: 0.5, scope: "category", examples: ["400", "500"], exampleCounts: { "400": 5, "500": 5 }, numericValueCounts: null,
+  };
+  const web = appendWebCharacteristics([], { ...webSuggestion, facts: ["Мощность: 500 Вт"] });
+  const fields = appendCatalogCharacteristics(web, [statistics]);
+  assert.equal(fields.length, 2);
+  assert.ok(buildDisplayCharacteristics(fields).some((field) => field.source === "catalog"));
+  assert.notEqual(characteristicEditKey(web[0]), characteristicEditKey({ ...web[0], webSource: undefined }));
+});
+
+test("internet provenance and row removal survive query draft restoration", () => {
+  const original = captureQueryDraft();
+  try {
+    setCharacteristics(appendWebCharacteristics([], webSuggestion));
+    const saved = captureQueryDraft();
+    setCharacteristics([]);
+    restoreQueryDraft(saved);
+    assert.equal(characteristics()[0].webSource?.sources[0].url, "https://example.com/specs");
+    setCharacteristics((items) => items.filter((item) => item.id !== saved.characteristics[0].id));
+    const removed = captureQueryDraft();
+    restoreQueryDraft(saved);
+    restoreQueryDraft(removed);
+    assert.equal(characteristics().length, 2);
+    assert.ok(characteristics().every((item) => item.id !== saved.characteristics[0].id));
+  } finally { restoreQueryDraft(original); }
+});
+
+test("editing description removes internet facts from the previous product", () => {
+  const original = captureQueryDraft();
+  const originalDescription = description();
+  try {
+    setDescription("Дрель Ставр ДА-10");
+    const custom = { ...draftFromSpgzCharacteristic({ name: "Материал", options: [] }), source: "custom" as const, custom: true, value: "Сталь" };
+    setCharacteristics(appendWebCharacteristics([custom], webSuggestion));
+    setDescription("Дрель Ставр ДА-10");
+    assert.equal(characteristics().length, 3, "unchanged text retains internet fields and avoids duplicating existing facts");
+    setDescription("Молоток 500 г с деревянной рукояткой");
+    assert.deepEqual(characteristics(), [custom]);
+  } finally { setDescription(originalDescription); restoreQueryDraft(original); }
+});
 
 test("query drafts preserve independent pair decisions, manual locks and edited values", () => {
   const original = captureQueryDraft();

@@ -200,6 +200,8 @@ export type DraftCharacteristic = {
   /** Last autofill diagnostics for this field, independent of the editable value. */
   autofillDiagnostics?: AutofillDiagnostics;
   custom?: boolean;
+  /** Unverified internet suggestion; not an authoritative catalog characteristic. */
+  webSource?: { fact: string; sources: WebEnrichmentSuggestion["sources"] };
   /** Choice partitions siblings and sets refined KTRU / СПГЗ. */
   refinesKtru?: boolean;
   /** When false, value is kept but does not switch KTRU / СПГЗ. Default true. */

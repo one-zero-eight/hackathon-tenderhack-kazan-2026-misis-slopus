@@ -130,6 +130,10 @@
   -webkit-box-decoration-break: clone;
   pointer-events: none;
 }
+.create-describe-spell-backdrop .category-evidence {
+  background: color-mix(in srgb, #28754b 18%, transparent);
+  box-shadow: inset 0 -1px color-mix(in srgb, #28754b 55%, transparent);
+}
 .create-describe-spell-backdrop .autofill-evidence::after {
   content: "";
   position: absolute;
@@ -1195,6 +1199,13 @@
   letter-spacing: 0.02em;
   white-space: nowrap;
 }
+
+.create-char-source.create-char-source-web { color: #8a5700; background: #fff4db; border: 1px solid #dfbd77; border-radius: 4px; padding: 3px 6px; }
+.create-char-web-note { margin-top: 8px; color: #765119; font-size: 11px; line-height: 1.5; }
+.create-char-web-note p { margin: 0; }
+.create-char-web-sources { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 4px; }
+.create-char-web-sources a { text-decoration: underline; text-underline-offset: 2px; }
+.create-char-web-warning { margin: 0 0 12px; padding: 10px 12px; border-left: 3px solid #dfbd77; background: #fff8e9; color: #765119; font-size: 12px; line-height: 1.5; }
 
 @media (max-width: 800px) {
   .create-vote-card { grid-template-columns: 1fr; }

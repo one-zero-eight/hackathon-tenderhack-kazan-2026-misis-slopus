@@ -148,7 +148,7 @@ UNIT_GROUPS = [
     ("time", 1, ["с", "сек", "секунда"]),
     ("time", 60, ["мин", "минута"]),
     ("time", 3600, ["ч", "час"]),
-    ("count", 1, ["шт", "штука", "ед", "единица"]),
+    ("count", 1, ["шт", "штука", "ед", "единица", "лист", "листа", "листов"]),
     ("percent", 1, ["%", "процент"]),
 ]
 
@@ -925,6 +925,25 @@ def validate_value(
             converted, unit_errors = convert_units(
                 float(value), item.source_unit, field.unit or None
             )
+            # KTRU expresses grammage as the mass of a specified paper area.
+            # Density -> mass is valid only with that explicit reference area;
+            # never treat г/м² as grams for an ordinary mass field.
+            source = parse_unit(item.source_unit) if item.source_unit else None
+            target = parse_unit(field.unit) if field.unit else None
+            area = re.search(
+                r"площад(?:ью|и)\s*([0-9]+(?:[.,][0-9]+)?)\s*(мм|см|дм|м)(?:²|2|\^2)(?!\w)",
+                field.name, re.IGNORECASE,
+            )
+            if (
+                unit_errors and source and source[0] == "density"
+                and target and target[0] == "mass"
+                and re.search(r"\bмасс", field.name, re.IGNORECASE) and area
+            ):
+                area_unit = parse_unit(f"{area.group(2)}2")
+                reference_area = float(area.group(1).replace(",", "."))
+                if area_unit and reference_area > 0:
+                    converted = float(value) * source[1] * reference_area * area_unit[1] / 1_000_000 / target[1]
+                    unit_errors = [] if math.isfinite(converted) else ["переполнение при переводе единиц"]
         errors.extend(unit_errors)
         if converted is not None:
             if item.source_unit and field.unit:
@@ -999,8 +1018,14 @@ async def ask_jev(
             except httpx.TimeoutException as exc:
                 raise AutofillError("TypeSafe не ответил вовремя") from exc
             except httpx.HTTPStatusError as exc:
+                try:
+                    error = exc.response.json().get("error", {})
+                    detail = error.get("message", "") if isinstance(error, dict) else str(error)
+                except (ValueError, AttributeError):
+                    detail = ""
+                suffix = f": {str(detail)[:500]}" if detail else ""
                 raise AutofillError(
-                    f"TypeSafe API: HTTP {exc.response.status_code}"
+                    f"TypeSafe API: HTTP {exc.response.status_code}{suffix}"
                 ) from exc
             except (httpx.RequestError, ValueError) as exc:
                 raise AutofillError("Не удалось получить ответ TypeSafe") from exc
@@ -1057,6 +1082,18 @@ def empty_field(field: AutofillCharacteristic) -> dict[str, Any]:
 
 def format_number(value: float) -> str:
     return format(value, ".12g")
+
+
+def matching_range_option(field: AutofillCharacteristic, value: float) -> str:
+    matches = [entry for entry in field.ranges if entry.contains(value)]
+    if not matches:
+        return ""
+    # Nested catalog thresholds (≥50, ≥100, … ≥500) must select the
+    # strongest applicable bounds, not whichever option happens to be first.
+    return min(matches, key=lambda entry: (
+        -(entry.min if entry.min is not None else -math.inf),
+        entry.max if entry.max is not None else math.inf,
+    )).option
 
 
 def product_missing() -> dict[str, dict[str, Any]]:
@@ -1261,11 +1298,15 @@ def build_claim_questions(
                     "field_name": (field.name if field else item.field_id)
                     if isinstance(item, ExtractedValue) else item.name,
                     "claim": item.model_dump(),
+                    "target_unit": field.unit if field else "",
+                    "field_hint": field.hint if field else "",
+                    "value_label": field.optionLabels.get(str(item.value), "") if field else "",
                     "question": (
                         "Подтверждает ли source_text значение claim для характеристики field_name "
                         "товара, включая исходную единицу и порядок подписанных размеров? "
-                        "Число ещё НЕ конвертировано. Отсутствие единицы в selected_schema "
+                        "Число ещё НЕ конвертировано. Отсутствие единицы в target_unit "
                         "не опровергает явно указанную исходную единицу: она сохраняется в значении. "
+                        "field_hint уточняет смысл поля; value_label расшифровывает значение схемы. "
                         "Цитата не должна менять смысл. "
                         "Граница ограничения или диапазона не является точным числом. "
                         "Учитывай отрицания и синонимы, но не переноси свойства компонента "
@@ -1302,6 +1343,9 @@ async def autofill_characteristics(body: AutofillRequest) -> dict[str, Any]:
             ),
         )
         return result
+    except AutofillError as exc:
+        logger.error("Characteristic autofill request=%s failed: %s", request_id, exc)
+        raise
     finally:
         logger.info(
             "Characteristic autofill request=%s finished duration_ms=%s status=%s stages_ms=%s",
@@ -1385,16 +1429,9 @@ async def _autofill_characteristics(
                     ),
                 },
             }
-        state = {
-            "source_text": body.text,
-            "selected_schema": schema_dump(
-                schema_fields,
-                additional_allowed=additional_allowed,
-                recommended=recommended,
-                standards=body.standards,
-            ),
-            "extraction": extraction.model_dump(),
-        }
+        # Each question carries its claim and field semantics. Sending every enum,
+        # range and unrelated field here overflows Jev's 8192-token context.
+        state = {"source_text": body.text}
         try:
             answers, jev_model = await timed(
                 "jev_verify", ask_jev(client, key, state, questions, jev_usage)
@@ -1475,14 +1512,7 @@ async def _autofill_characteristics(
         }
         if field is not None and not errors and isinstance(value, (int, float)):
             if field.ranges:
-                row["rangeOption"] = next(
-                    (
-                        entry.option
-                        for entry in field.ranges
-                        if entry.contains(float(value))
-                    ),
-                    "",
-                )
+                row["rangeOption"] = matching_range_option(field, float(value))
             row["value"] = (
                 format_number(float(value))
                 if field.unit or field.ranges
@@ -1535,14 +1565,7 @@ async def _autofill_characteristics(
                 if field.ranges and isinstance(value, str):
                     try:
                         number = float(value.split()[0])
-                        range_option = next(
-                            (
-                                entry.option
-                                for entry in field.ranges
-                                if entry.contains(number)
-                            ),
-                            "",
-                        )
+                        range_option = matching_range_option(field, number)
                     except ValueError:
                         range_option = ""
                 result_fields.append(

@@ -40,6 +40,7 @@ import {
 import { getCatalogCharacteristics, getCatalogSpecialization, getDirectoryNode, getDirectoryRecord, getDirectoryRevealPath, getKtruNode, getKtruRecord, getKtruRevealPath } from "~/lib/rpc";
 import {
   appendCatalogCharacteristics,
+  appendWebCharacteristics,
   autofillConfidencePresentation,
   buildDisplayCharacteristics,
   catalogFrequencyLabel,
@@ -144,6 +145,7 @@ import {
 import { draftFromSpgzCharacteristic } from "~/lib/spgz-characteristics";
 import { normalizeQuery, parseQueryFile, parseQueryHistory, QUERY_HISTORY_KEY, QUERY_HISTORY_KEY_LEGACY, QueryQueue, rememberQuery, updateHistorySnapshot, compactHistorySnapshots, type QueuedQuery, type QueryHistoryItem, type QueryHistorySnapshot, type QueryStatus } from "~/lib/query-queue";
 import {
+  collectCategorySpans,
   collectEvidenceSpans,
   evidenceFromField,
   evidenceSourceLabel,
@@ -418,12 +420,14 @@ function CreateCharRow(props: {
                       {item().name}
                       <Show when={item().required}><span class="create-char-req" aria-label="обязательная">*</span></Show>
                     </span>
-                    <span class="create-char-source">{characteristicSourceLabel("custom")}</span>
+                    <span class="create-char-source" classList={{ "create-char-source-web": !!item().webSource }} title={item().webSource ? "Найдено в интернете, не подтверждено описанием или справочниками" : undefined}>
+                      {item().webSource ? "Из интернета" : characteristicSourceLabel("custom")}
+                    </span>
                     <button type="button" class="create-char-remove" aria-label={`Изменить схему: ${item().name}`} title="Изменить тип, единицы и схему" onClick={() => props.onEditSchema(item())}>
                       <Pencil size={14} />
                     </button>
                     {locate()}
-                    <button type="button" class="create-char-remove" aria-label="Удалить характеристику" onClick={() => props.onRemove(item().id)}>
+                    <button type="button" class="create-char-remove" aria-label={`Удалить характеристику: ${item().name}`} title={item().webSource ? "Убрать интернет-характеристику из карточки" : "Удалить характеристику"} onClick={() => props.onRemove(item().id)}>
                       <X size={14} />
                     </button>
                   </div>
@@ -608,6 +612,18 @@ function CreateCharRow(props: {
                 </Show>
                 </div>
                 <AutofillRejected item={item()} />
+                <Show when={item().webSource}>{(web) =>
+                  <div class="create-char-web-note" role="note">
+                    <p>Необязательное поле. Проверьте достоверность и возможность включения в карточку; при необходимости удалите.</p>
+                    <Show when={web().sources.length}>
+                      <div class="create-char-web-sources">
+                        <For each={web().sources}>{(source, index) =>
+                          <a href={source.url} target="_blank" rel="noopener noreferrer" title={source.title}>Источник {index() + 1}</a>
+                        }</For>
+                      </div>
+                    </Show>
+                  </div>
+                }</Show>
                 <Show when={item().refinesKtru && props.onTogglePositionRefine} fallback={
                   <Show when={item().hint}>
                     <p class="create-char-hint">
@@ -1419,7 +1435,7 @@ export default function NewProduct() {
       clearAutofill();
       nextRefineSeq();
       setCharacteristics((items) => items
-        .filter((item) => !item.templateKtruCode)
+        .filter((item) => !item.templateKtruCode && !item.webSource)
         .map((item) => ({ ...item, value: "", rangeOption: "", autofill: undefined, autofillDiagnostics: undefined })));
     });
     if (templateCode && ktruVote()?.code !== templateCode) {
@@ -1612,8 +1628,15 @@ export default function NewProduct() {
 
   const evidenceSpans = createMemo(() => {
     productEvidenceVersion();
-    if (!autofillCompleted()) return [];
     const text = description();
+    const categories = !suggesting() && suggestAcceptedQuery() === normalizeQuery(text)
+      ? collectCategorySpans(text, [
+        { classifier: "КТРУ", category: ktruVote() },
+        { classifier: "ОКПД2", category: okpd2() },
+        { classifier: "СПГЗ", category: spgz() },
+        { classifier: "КПГЗ", category: kpgz() },
+      ]) : [];
+    if (!autofillCompleted()) return categories;
     const product = ([
       { id: "product:manufacturer", key: "manufacturer" as const, name: "Производитель", value: brand() },
       { id: "product:article", key: "article" as const, name: "Артикул", value: sku() },
@@ -1623,7 +1646,7 @@ export default function NewProduct() {
       if (!evidence || autofilledProductValues.get(item.key) !== item.value) return [];
       return [{ id: item.id, name: item.name, value: item.value, evidence }];
     });
-    return collectEvidenceSpans(text, characteristics(), product);
+    return [...categories, ...collectEvidenceSpans(text, characteristics(), product)];
   });
 
   const spellHighlight = createMemo(() => highlightDescription(
@@ -2008,7 +2031,7 @@ export default function NewProduct() {
     standards: charStandards(),
     ktruCode: ktruVote()?.code ?? null,
     additionalAllowed: noNewFeatures() == null ? null : !noNewFeatures()!,
-    excludedNames: characteristics().filter((item) => item.custom || item.source === "custom").map((item) => item.name),
+    excludedNames: characteristics().filter((item) => !item.webSource && (item.custom || item.source === "custom")).map((item) => item.name),
   }));
 
   const requestAutofill = (webFacts: string[] = []) => {
@@ -2161,7 +2184,7 @@ export default function NewProduct() {
         applyProduct("model", productSnapshot.model, setModel);
         setProductEvidenceVersion((version) => version + 1);
 
-        const existingNames = new Set(characteristics().map((item) => item.name.trim().toLocaleLowerCase("ru").replaceAll("ё", "е")));
+        const existingNames = new Set(characteristics().filter((item) => !item.webSource).map((item) => item.name.trim().toLocaleLowerCase("ru").replaceAll("ё", "е")));
         const additions = (result.additional_fields ?? [])
           .filter((item) => item.status === "accepted" && item.value != null && String(item.value).trim())
           .filter((item) => !existingNames.has(item.name.trim().toLocaleLowerCase("ru").replaceAll("ё", "е")))
@@ -2191,6 +2214,7 @@ export default function NewProduct() {
           }).filter((item) => !item.templateKtruCode || item.value.trim() || item.rangeOption.trim()),
           ...additions,
         ]);
+        setCharacteristics((items) => appendWebCharacteristics(items, result.webEnrichment));
         setAutofillDurationMs(result.durationMs);
         setAutofillStatus(result.status);
         setWebEnrichment(result.webEnrichment ?? null);
@@ -2299,8 +2323,8 @@ export default function NewProduct() {
     }
     setCharacteristics((items) => [
       ...items.filter((item) => item.id !== field.id
-        && !(item.source === "catalog" && characteristicNameKey(item.name) === characteristicNameKey(field.name))),
-      field,
+        && !(!prior?.webSource && item.source === "catalog" && characteristicNameKey(item.name) === characteristicNameKey(field.name))),
+      { ...field, webSource: prior?.webSource },
     ]);
     markCharacteristicEdited(new Set([field.id]));
     setCharacteristicEditorOpen(false);
@@ -2323,7 +2347,11 @@ export default function NewProduct() {
 
   const removeCharacteristic = (id: string) => {
     const ids = new Set(linkedIdsFor(id));
+    const removedFacts = new Set(characteristics().filter((item) => ids.has(item.id) && item.webSource).map((item) => item.webSource!.fact));
     setCharacteristics((items) => items.filter((item) => !ids.has(item.id)));
+    if (removedFacts.size) {
+      setWebEnrichment((current) => current ? { ...current, facts: current.facts.filter((fact) => !removedFacts.has(fact.trim())) } : null);
+    }
     saveActiveQueryDraft();
   };
 
@@ -2480,9 +2508,17 @@ export default function NewProduct() {
                         return <>
                           <p class="create-describe-spell-tip-label">{evidenceSourceLabel(span.source)}</p>
                           <p class="create-describe-spell-tip-word">{span.name}</p>
-                          <p class="create-describe-evidence-value">
-                            → {span.value}{span.unit ? ` ${span.unit}` : ""}
-                          </p>
+                          <Show when={span.categories} fallback={
+                            <p class="create-describe-evidence-value">
+                              → {span.value}{span.unit ? ` ${span.unit}` : ""}
+                            </p>
+                          }>
+                            <For each={span.categories}>{(category) =>
+                              <p class="create-describe-evidence-value">
+                                {category.classifier} {category.code}: {category.name}
+                              </p>
+                            }</For>
+                          </Show>
                           <Show when={conversion}>
                             <p class="create-describe-evidence-conversion">{conversion}</p>
                           </Show>
@@ -2534,12 +2570,12 @@ export default function NewProduct() {
           </Show>
         </div>
       </Show>
-      <Show when={webEnrichment() && autofillCompleted() ? webEnrichment() : null}>
+      <Show when={webEnrichment()?.facts.length && autofillCompleted() ? webEnrichment() : null}>
         {(enrichment) => (
           <Card class="create-web-enrichment-card">
             <CardHeader>
-              <CardTitle>Заполнить характеристики по данным из интернета?</CardTitle>
-              <CardDescription>{enrichment().message}</CardDescription>
+              <CardTitle>Характеристики из интернета добавлены в список</CardTitle>
+              <CardDescription>Они отмечены «Из интернета» и не являются обязательными. Проверьте, можно ли включить их в конечную карточку, или удалите ненужные.</CardDescription>
             </CardHeader>
             <CardContent>
               <p class="create-web-enrichment-label">Найденные характеристики</p>
@@ -2548,17 +2584,8 @@ export default function NewProduct() {
               </ul>
             </CardContent>
             <CardFooter class="create-web-enrichment-footer">
-              <Button
-                type="button"
-                variant="default"
-                size="sm"
-                disabled={autofillBusy()}
-                onClick={() => requestAutofill(enrichment().facts)}
-              >
-                Да, заполнить характеристики
-              </Button>
               <Button type="button" variant="outline" size="sm" onClick={() => setWebEnrichment(null)}>
-                Нет
+                Скрыть сообщение
               </Button>
             </CardFooter>
           </Card>
@@ -2668,6 +2695,9 @@ export default function NewProduct() {
               </a>
             </>}</For>
           </p>
+        </Show>
+        <Show when={noNewFeatures() && visibleCharacteristics().some((item) => item.webSource)}>
+          <p class="create-char-web-warning" role="note">Выбранный КТРУ запрещает дополнительные характеристики. Поля «Из интернета» показаны только для справки — не включайте их в карточку.</p>
         </Show>
         <Show when={visibleCharacteristics().length} fallback={
           <div class="create-char-empty">
