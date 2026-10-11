@@ -2,6 +2,7 @@
 secrets/
 .venv/
 __pycache__/
+.env
 *.pyc
 
 # Compressed exports, Parquet catalogs and the data README are versioned.
