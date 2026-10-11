@@ -28,6 +28,7 @@ from pydantic import (
 
 from search_api.characteristic_normalization import normalize_value
 from search_api.config import MAX_DESCRIPTION_LENGTH, ROOT, settings
+from search_api.units import convert_units, parse_unit, unit_short_name, units_for_kind
 from search_api.web_enrichment import enrich_from_web, identity_from_product
 
 logger = logging.getLogger("uvicorn.error")
@@ -138,44 +139,6 @@ COVERAGE_PROMPT = EXTRACT_PROMPT + """
 Для одиночного поля из already не предлагай другое значение. Для m=1 можно добавить отсутствующее значение.
 Отсутствующее поле не обязательно указано в тексте: если доказательств нет, пропусти его. Если пропусков нет, верни {}.
 """
-UNIT_GROUPS = [
-    ("length", 0.001, ["мкм", "микрометр"]),
-    ("length", 1, ["мм", "миллиметр"]),
-    ("length", 10, ["см", "сантиметр"]),
-    ("length", 25.4, ["дюйм", "дюйма", "дюймов", "inch", "inches"]),
-    ("length", 100, ["дм", "дециметр"]),
-    ("length", 1000, ["м", "метр"]),
-    ("length", 1_000_000, ["км", "километр"]),
-    ("mass", 0.001, ["мг", "миллиграмм"]),
-    ("mass", 1, ["г", "гр", "грамм"]),
-    ("mass", 1000, ["кг", "килограмм", "kg"]),
-    ("mass", 1_000_000, ["т", "тонна"]),
-    ("volume", 1, ["мл", "миллилитр", "см3", "кубический сантиметр"]),
-    ("volume", 1000, ["л", "литр", "дм3", "кубический дециметр"]),
-    ("volume", 1_000_000, ["м3", "кубический метр"]),
-    ("area", 1, ["мм2", "квадратный миллиметр"]),
-    ("area", 100, ["см2", "квадратный сантиметр"]),
-    ("area", 1_000_000, ["м2", "квадратный метр"]),
-    ("density", 1, ["г/м2", "г/кв.м", "грамм на квадратный метр", "gsm"]),
-    ("power", 1, ["вт", "ватт", "w"]),
-    ("power", 1000, ["квт", "киловатт", "kw"]),
-    ("time", 1, ["с", "сек", "секунда"]),
-    ("time", 60, ["мин", "минута"]),
-    ("time", 3600, ["ч", "час"]),
-    ("frequency", 1, ["гц", "герц", "hz", "hertz"]),
-    ("frequency", 1000, ["кгц", "килогерц", "khz"]),
-    ("frequency", 1_000_000, ["мгц", "мегагерц", "mhz"]),
-    ("frequency", 1_000_000_000, ["ггц", "гигагерц", "ghz"]),
-    ("data_size", 1, ["байт", "byte"]),
-    ("data_size", 1000, ["кб", "килобайт", "kb", "kilobyte"]),
-    ("data_size", 1_000_000, ["мб", "мегабайт", "mb", "megabyte"]),
-    ("data_size", 1_000_000_000, ["гб", "гигабайт", "gb", "gigabyte"]),
-    ("data_size", 1_000_000_000_000, ["тб", "терабайт", "tb", "terabyte"]),
-    ("count", 1, ["шт", "штука", "ед", "единица", "лист", "листа", "листов",
-                  "ядро", "ядра", "ядер", "ядрами", "ядрах"]),
-    ("percent", 1, ["%", "процент"]),
-]
-
 
 class AutofillConfigError(RuntimeError):
     pass
@@ -217,6 +180,7 @@ class AutofillCharacteristic(BaseModel):
         default_factory=list, max_length=MAX_CHOICES
     )
     unit: str = Field(default="", max_length=200)
+    okeiCode: str | None = Field(default=None, pattern=r"^\d{3,4}$")
     numeric: bool = False
     multiple: bool = False
     required: bool = False
@@ -225,6 +189,8 @@ class AutofillCharacteristic(BaseModel):
 
     @model_validator(mode="after")
     def valid_options(self):
+        if self.okeiCode:
+            self.unit = unit_short_name(self.unit, self.okeiCode)
         if any(
             not option.strip() or len(option) > 2000 or option == NONE
             for option in [*self.options, *self.examples]
@@ -304,52 +270,6 @@ class ProductExtraction(StrictModel):
     article: ProductValue | None
 
 
-def parse_unit(raw: str) -> tuple[str, float] | None:
-    text = (
-        raw.lower()
-        .replace("ё", "е")
-        .replace("²", "2")
-        .replace("³", "3")
-        .strip()
-        .rstrip(".")
-    )
-    for part in text.split(";"):
-        part = part.strip()
-        for dimension, factor, aliases in UNIT_GROUPS:
-            if part in aliases:
-                return dimension, factor
-        for dimension, factor, aliases in UNIT_GROUPS:
-            if any(
-                len(alias) >= 4 and part.startswith(alias.rstrip("аяь"))
-                for alias in aliases
-            ):
-                return dimension, factor
-    return None
-
-
-def convert_units(
-    value: float, source_unit: str | None, target_unit: str | None
-) -> tuple[float | None, list[str]]:
-    errors: list[str] = []
-    if not target_unit:
-        if source_unit and parse_unit(source_unit):
-            return None, ["единица отсутствует в схеме"]
-        return value, errors
-    if not source_unit:
-        return None, ["не указана исходная единица измерения"]
-    source, target = parse_unit(source_unit), parse_unit(target_unit)
-    if source is not None and target is not None:
-        if source[0] != target[0]:
-            return None, ["несовместимые единицы измерения"]
-        converted = value * source[1] / target[1]
-        if not math.isfinite(converted):
-            return None, ["переполнение при переводе единиц"]
-        return converted, errors
-    if source_unit.strip().casefold() == target_unit.strip().casefold():
-        return value, errors
-    return None, ["неизвестная единица: пересчёт невозможен"]
-
-
 OUT_OF_RANGE_ERROR = "значение вне допустимых диапазонов схемы"
 SUSPICIOUS_SCALE_FACTOR = 50
 
@@ -401,14 +321,14 @@ def scale_suggestion(
     if fits(source[1]) is not None:
         return None  # ошибка не в масштабе: число с этой единицей допустимо
     options = []
-    for dimension, factor, aliases in UNIT_GROUPS:
+    for unit in units_for_kind(source[0]):
+        factor = unit.factor
         if (
-            dimension == source[0]
-            and factor != source[1]
+            factor != source[1]
             and (converted := fits(factor)) is not None
         ):
             options.append(
-                (abs(math.log10(factor / source[1])), factor, aliases[0], converted)
+                (abs(math.log10(factor / source[1])), factor, unit.short_name, converted)
             )
     if not options:
         return None
@@ -990,17 +910,26 @@ def validate_value(
         # An unconstrained numeric field with missing unit metadata can retain
         # the explicit source unit in its value. Never infer a target unit or
         # compare a unit-bearing number against unitless ranges/options.
-        if not field.unit and not field.ranges and not field.options:
+        if not field.unit and not field.okeiCode and not field.ranges and not field.options:
             converted, unit_errors = float(value), []
         else:
             converted, unit_errors = convert_units(
-                float(value), item.source_unit, field.unit or None
+                float(value), item.source_unit, field.unit or None,
+                target_okei_code=field.okeiCode,
             )
             # KTRU expresses grammage as the mass of a specified paper area.
             # Density -> mass is valid only with that explicit reference area;
             # never treat г/м² as grams for an ordinary mass field.
             source = parse_unit(item.source_unit) if item.source_unit else None
-            target = parse_unit(field.unit) if field.unit else None
+            target = parse_unit(field.okeiCode or field.unit) if field.okeiCode or field.unit else None
+            # A catalog count of sheets is expressed as pieces only when the
+            # characteristic explicitly identifies the counted object.
+            if (
+                unit_errors and source and source[0] == "okei:625"
+                and target and target[0] == "count"
+                and re.search(r"\bлист", field.name, re.IGNORECASE)
+            ):
+                converted, unit_errors = float(value), []
             area = re.search(
                 r"площад(?:ью|и)\s*([0-9]+(?:[.,][0-9]+)?)\s*(мм|см|дм|м)(?:²|2|\^2)(?!\w)",
                 field.name, re.IGNORECASE,

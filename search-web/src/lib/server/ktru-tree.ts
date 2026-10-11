@@ -7,7 +7,6 @@ import {
   buildCharacteristicHint,
   buildCharacteristicOptionLabels,
   dedupeCharacteristicOptions,
-  shortUnitName,
 } from "../characteristic-options";
 import {
   pickDiscriminatingCharacteristics,
@@ -16,6 +15,8 @@ import {
 } from "../specialization";
 import type { CharacteristicRange, KtruChildrenPage, KtruSpecialization, KtruTreeNode } from "../types";
 import { classifiersSqlitePath, ktruParquetPath, ktruSqlitePath, moyKtruParquetPath } from "./config";
+
+import { getOkeiUnit } from "./okei-unit";
 
 interface LightRow {
   code: string;
@@ -475,6 +476,7 @@ export type KtruCharacteristicPart = {
   text: string;
   okeiCode?: string;
   okeiName?: string;
+  unit?: string;
 };
 
 export type KtruCharacteristic = {
@@ -488,6 +490,7 @@ export type KtruCharacteristic = {
   optionLabels: Record<string, string>;
   ranges: CharacteristicRange[];
   unit?: string;
+  okeiCode?: string;
   hint: string;
   multiple: boolean;
 };
@@ -595,13 +598,15 @@ function formatKtruValueParts(value: {
     }
   }
   const okeiCode = value.unit?.code ? String(value.unit.code) : undefined;
-  const okeiName = value.unit?.name ? String(value.unit.name) : undefined;
-  const shortUnit = shortUnitName(okeiName);
-  if (!chunks.length && shortUnit) return [{ text: shortUnit, okeiCode, okeiName }];
+  const metadata = okeiCode ? getOkeiUnit(okeiCode) : undefined;
+  const okeiName = metadata?.name ?? value.unit?.name;
+  const shortUnit = metadata?.short ?? okeiName ?? "";
+  if (!chunks.length && shortUnit) return [{ text: shortUnit, okeiCode, okeiName, unit: shortUnit }];
   return chunks.map(text => ({
     text: shortUnit ? `${text} ${shortUnit}` : text,
     okeiCode,
     okeiName,
+    unit: shortUnit,
   }));
 }
 
@@ -638,8 +643,8 @@ function parseKtruCharacteristics(raw: Record<string, unknown>, standards: strin
     const parts = (row.values ?? []).flatMap(formatKtruValueParts);
     const values = parts.map(part => part.text).filter(Boolean).join(" · ") || "—";
     const options = dedupeCharacteristicOptions(parts.map(part => part.text).filter(Boolean));
-    const unit = shortUnitName(parts.find((part) => part.okeiName)?.okeiName)
-      || shortUnitName((row.values ?? []).find((entry) => entry.unit?.name)?.unit?.name);
+    const unitPart = parts.find((part) => part.okeiCode || part.unit);
+    const unit = unitPart?.unit ?? "";
     const optionLabels = buildCharacteristicOptionLabels(name, options, standards);
     const hint = buildCharacteristicHint({ name, options, unit, standards });
     return [{
@@ -653,6 +658,7 @@ function parseKtruCharacteristics(raw: Record<string, unknown>, standards: strin
       optionLabels,
       ranges,
       unit: unit || undefined,
+      okeiCode: unitPart?.okeiCode,
       hint,
       multiple,
     }];

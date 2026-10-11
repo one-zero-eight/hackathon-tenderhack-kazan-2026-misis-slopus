@@ -1,4 +1,5 @@
-import { matchNumberToRange, shortUnitName } from "./characteristic-options";
+import { matchNumberToRange } from "./characteristic-options";
+import { characteristicUnitsEquivalent } from "./merge-characteristics";
 import type { CatalogCharacteristic, CharacteristicRange, DraftCharacteristic } from "./types";
 
 export type CharacteristicKind = "text" | "number" | "choice" | "boolean" | "range";
@@ -6,6 +7,7 @@ export type CharacteristicSchema = {
   name: string;
   kind: CharacteristicKind;
   unit: string;
+  okeiCode?: string;
   options: string[];
   ranges: CharacteristicRange[];
   multiple: boolean;
@@ -40,6 +42,7 @@ export function inferCatalogSchema(item: CatalogCharacteristic): CharacteristicS
     name: item.name,
     kind: item.numeric ? "number" : boolean ? "boolean" : "text",
     unit: item.unit,
+    okeiCode: item.okeiCode,
     options: boolean ? ["Да", "Нет"] : [],
     ranges: [], multiple: false, required: false, hint: "",
   };
@@ -50,7 +53,7 @@ export function schemaFromCharacteristic(item: DraftCharacteristic): Characteris
     name: item.name,
     kind: item.ranges.length ? "range" : item.options.length === 2 && item.options.every((option) => /^(да|нет)$/iu.test(option))
       ? "boolean" : item.options.length ? "choice" : item.numeric ? "number" : "text",
-    unit: item.unit, options: [...item.options], ranges: item.ranges.map((range) => ({ ...range })),
+    unit: item.unit, okeiCode: item.okeiCode, options: [...item.options], ranges: item.ranges.map((range) => ({ ...range })),
     multiple: item.multiple, required: item.required, hint: item.hint,
   };
 }
@@ -86,7 +89,7 @@ export function characteristicValueProblem(schema: CharacteristicSchema, value: 
 }
 
 export function draftFromCharacteristicSchema(
-  schema: CharacteristicSchema, id: string, prior?: Pick<DraftCharacteristic, "value">, statistics?: CatalogCharacteristic,
+  schema: CharacteristicSchema, id: string, prior?: Pick<DraftCharacteristic, "value"> & Partial<Pick<DraftCharacteristic, "unit" | "okeiCode">>, statistics?: CatalogCharacteristic,
 ): DraftCharacteristic {
   const numeric = schema.kind === "number" || schema.kind === "range";
   const ranges = schema.kind === "range" ? schema.ranges.map((range) => ({
@@ -99,13 +102,17 @@ export function draftFromCharacteristicSchema(
   const options = schema.kind === "boolean" ? ["Да", "Нет"]
     : schema.kind === "choice" ? [...new Set(schema.options.map((value) => value.trim()).filter(Boolean))]
       : ranges.map((range) => range.option);
-  const matchingStatistics = statistics && shortUnitName(statistics.unit) === shortUnitName(schema.unit)
+  const unit = schema.unit.trim();
+  const matchingMetadata = [statistics, prior].find((item) => item?.unit?.trim() === unit);
+  const okeiCode = matchingMetadata ? schema.okeiCode ?? matchingMetadata.okeiCode
+    : prior?.unit !== undefined || statistics ? undefined : schema.okeiCode;
+  const matchingStatistics = statistics && characteristicUnitsEquivalent(statistics, { unit, okeiCode })
     && statistics.numeric === numeric ? statistics : undefined;
   return {
     id, name: schema.name.trim(), value: prior?.value ?? "",
     rangeOption: ranges.length && prior?.value.trim() && Number.isFinite(Number(prior.value.replace(",", ".")))
       ? matchNumberToRange(Number(prior.value.replace(",", ".")), ranges) ?? "" : "",
-    unit: schema.unit.trim(), numeric, required: schema.required,
+    unit, okeiCode, numeric, required: schema.required,
     options, optionLabels: {}, ranges,
     multiple: (schema.kind === "text" || schema.kind === "choice") && schema.multiple,
     hint: schema.hint.trim(), badges: [], source: "custom", custom: true,

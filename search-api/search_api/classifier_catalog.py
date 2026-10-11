@@ -12,20 +12,9 @@ from typing import Any, Iterator
 import pysqlite3 as sqlite3
 
 from search_api.config import settings
+from search_api.units import unit_short_name
 
 Json = dict[str, Any]
-_UNIT_SHORT = {
-    "миллиметр": "мм", "сантиметр": "см", "метр": "м", "килограмм": "кг",
-    "грамм": "г", "тонна": "т", "литр": "л", "миллилитр": "мл",
-    "штука": "шт.", "пара": "пар", "комплект": "компл.", "упаковка": "упак.",
-}
-_OKEI_SHORT = {
-    "003": "мм", "004": "см", "005": "дм", "006": "м", "008": "км",
-    "055": "м²", "059": "га", "111": "мл", "112": "л", "113": "м³", "116": "мл",
-    "161": "мг", "163": "г", "166": "кг", "168": "т", "206": "ц",
-    "214": "Вт", "215": "кВт", "222": "В", "226": "А", "356": "ч", "359": "сут",
-    "362": "мес", "366": "г", "796": "шт", "778": "упак", "839": "компл",
-}
 _RANGE_OP = {"greaterOrEqual": "≥", "lessOrEqual": "≤", "greater": ">", "less": "<", "equal": "="}
 _MATH_OP = {3: ">", 4: "<", 6: "≥", 7: "≤"}
 _CONDITIONS = {1: "без ограничения значения", 3: "больше", 4: "меньше", 5: "диапазон",
@@ -183,9 +172,8 @@ def _pick_discriminating(children: list[Json], preferred_names: list[str] | None
     return sorted(chosen, key=lambda item: (-item["score"], _fold(item["name"])))
 
 
-def short_unit_name(value: Any) -> str:
-    name = _text(value).split(";")[0].strip()
-    return _UNIT_SHORT.get(name.lower(), name)
+def short_unit_name(value: Any, code: str | None = None) -> str:
+    return unit_short_name(_text(value), code)
 
 
 def _dedupe_options(options: list[str]) -> list[str]:
@@ -236,7 +224,7 @@ def _ktru_parts(value: Json) -> list[Json]:
     unit = value.get("unit") or {}
     meta = {key: _text(unit[source]) for key, source in (("okeiCode", "code"), ("okeiName", "name"))
             if unit.get(source)}
-    short = short_unit_name(unit.get("name"))
+    short = short_unit_name(unit.get("name"), unit.get("code"))
     if not chunks and short:
         return [{"text": short, **meta}]
     return [{"text": f"{text} {short}" if short else text, **meta} for text in chunks]
@@ -272,7 +260,8 @@ def _ktru_characteristics(raw: Json, standards: list[str]) -> list[Json]:
         values = row.get("values") or []
         parts = [part for value in values for part in _ktru_parts(value)]
         options = _dedupe_options([part["text"] for part in parts if part["text"]])
-        unit = next((short_unit_name(part["okeiName"]) for part in parts if part.get("okeiName")), "")
+        unit_part = next((part for part in parts if part.get("okeiCode") or part.get("okeiName")), {})
+        unit = short_unit_name(unit_part.get("okeiName"), unit_part.get("okeiCode"))
         badges = ["обязательная"] if row.get("required") else []
         if _text(row.get("type")) == "1":
             badges.append("качественная")
@@ -297,6 +286,8 @@ def _ktru_characteristics(raw: Json, standards: list[str]) -> list[Json]:
             parsed["code"] = _text(row["code"])
         if unit:
             parsed["unit"] = unit
+        if unit_part.get("okeiCode"):
+            parsed["okeiCode"] = unit_part["okeiCode"]
         result.append(parsed)
     return result
 
@@ -309,8 +300,45 @@ def draft_ktru_characteristics(record: Json | None) -> list[Json]:
                    if badge.strip().lower() not in {"обязательная", "качественная", "количественная"}],
         "hint": item.get("hint") or "", "options": list(item.get("options") or []),
         "optionLabels": dict(item.get("optionLabels") or {}), "ranges": list(item.get("ranges") or []),
-        "unit": item.get("unit") or "", "multiple": bool(item.get("multiple")), "source": "ktru",
+        "unit": item.get("unit") or "", "okeiCode": item.get("okeiCode"),
+        "multiple": bool(item.get("multiple")), "source": "ktru",
     } for item in (record or {}).get("characteristics", [])]
+
+
+def _spgz_enum_ranges(options: list[str]) -> list[Json]:
+    """Parse numeric SPGZ choices, preserving exact option keys and inclusivity."""
+    number = r"[+-]?\d+(?:[.,]\d+)?"
+    comparison = re.compile(rf"(>=|<=|>|<|=)\s*({number})")
+    result = []
+    for option in options:
+        text = option.strip().replace("≥", ">=").replace("≤", "<=").replace("…", " ")
+        if re.fullmatch(number, text):
+            value = _number(text)
+            result.append({"option": option, "min": value, "max": value,
+                           "minInclusive": True, "maxInclusive": True})
+            continue
+        matches = list(comparison.finditer(text))
+        if not matches or len(matches) > 2 or comparison.sub("", text).strip():
+            return []
+        bounds: Json = {"option": option, "min": None, "max": None,
+                        "minInclusive": True, "maxInclusive": True}
+        for match in matches:
+            op, raw = match.groups()
+            value = _number(raw)
+            if op == "=":
+                if len(matches) != 1:
+                    return []
+                bounds.update(min=value, max=value)
+            else:
+                side = "min" if op.startswith(">") else "max"
+                if bounds[side] is not None:
+                    return []
+                bounds[side] = value
+                bounds[f"{side}Inclusive"] = op.endswith("=")
+        if bounds["min"] is not None and bounds["max"] is not None and bounds["min"] > bounds["max"]:
+            return []
+        result.append(bounds)
+    return result
 
 
 def draft_spgz_characteristics(record: Json | None) -> list[Json]:
@@ -318,13 +346,14 @@ def draft_spgz_characteristics(record: Json | None) -> list[Json]:
     for item in (record or {}).get("characteristics", []):
         options = [option.strip() for option in item.get("options", []) if option.strip()]
         badges = item.get("badges") or []
-        unit = next((short_unit_name(part["okeiName"]) for part in item.get("parts", []) if part.get("okeiName")), "")
+        unit_part = next((part for part in item.get("parts", []) if part.get("okeiCode") or part.get("okeiName")), {})
+        unit = short_unit_name(unit_part.get("okeiName"), unit_part.get("okeiCode"))
         result.append({
             "id": f"spgz:{item.get('code') or item['name']}", "name": item["name"],
             "value": "", "rangeOption": "", "required": bool(item.get("required")) or any("обязательн" in b.lower() for b in badges),
             "badges": [b for b in badges if not re.search("обязательн|качественн|количественн", b, re.I)],
             "hint": f"Ограничение СПГЗ: {item['value']}" if not options and item.get("value") and item["value"] != "—" else "",
-            "options": options, "optionLabels": {}, "ranges": [], "unit": unit,
+            "options": options, "optionLabels": {}, "ranges": [], "unit": unit, "okeiCode": unit_part.get("okeiCode"),
             "numeric": any(b.lower() == "количественная" for b in badges), "multiple": False, "source": "spgz",
         })
     return result
@@ -438,7 +467,7 @@ class ClassifierCatalog:
             seen.add(code)
             row = db.execute("SELECT name FROM okei WHERE code=? AND kind='unit' LIMIT 1", (code,)).fetchone()
             name = row["name"].split(";")[0].strip() if row else code
-            result.append({"code": code, "name": name, "short": _OKEI_SHORT.get(code, name.lower() or code)})
+            result.append({"code": code, "name": name, "short": short_unit_name(name, code)})
         return result
 
     @staticmethod
@@ -464,22 +493,29 @@ class ClassifierCatalog:
             result["code"] = str(item["kpgzCharacteristicId"])
         enums = [_text(entry.get("value")).strip() for entry in item.get("characteristicSpgzEnums") or []]
         enums = [entry for entry in enums if entry]
-        if enums:
-            return {**result, "value": " · ".join(enums), "options": enums, "parts": [{"text": value} for value in enums]}
         dimensions = [
             (r"масс|вес|нетто|брутто", {"161", "163", "166", "168", "206"}),
-            (r"длин|ширин|высот|толщин|диаметр|глубин|радиус|пролёт|пролет", {"003", "004", "005", "006", "008", "018"}),
+            (r"длин|ширин|высот|толщин|диаметр|диагонал|глубин|радиус|пролёт|пролет", {"003", "004", "005", "006", "008", "018", "039"}),
             (r"площад", {"055", "059", "058", "061"}),
             (r"объ[её]м|ёмкост|емкост", {"111", "112", "113", "116", "118"}),
             (r"мощност", {"214", "215", "216"}),
+            (r"частот", {"290", "291", "292", "293", "295"}),
             (r"время|срок|продолжительн|возраст", {"354", "355", "356", "359", "360", "362", "366"}),
             (r"количество|число|кол-во", {"796", "778", "839", "868", "875", "876"}),
         ]
         unit = None
         for pattern, codes in dimensions:
             if re.search(pattern, name.lower()):
-                unit = next((unit for unit in units if unit["code"] in codes), None)
+                candidates = [entry for entry in units if entry["code"] in codes]
+                unit = candidates[0] if len(candidates) == 1 else None
                 break
+        if enums:
+            parts = [{"text": value} for value in enums]
+            if unit:
+                for part in parts:
+                    part.update(okeiCode=unit["code"], okeiName=unit["name"])
+                result.update(unit=unit["short"], okeiCode=unit["code"])
+            return {**result, "value": " · ".join(enums), "options": enums, "parts": parts}
         v1, v2 = (_text(item.get(key)).strip() for key in ("value1", "value2"))
         low, high = (_MATH_OP.get(_number(item.get(key)), "") for key in ("minMathNotation", "maxMathNotation"))
         if v1 and v2 and v1 != v2:

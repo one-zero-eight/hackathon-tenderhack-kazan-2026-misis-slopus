@@ -17,6 +17,7 @@ dependencies = [
     "pysqlite3-binary>=0.5.4.post2",
     "pymorphy3>=2.0.6",
     "ddgs>=9.16.0",
+    "pint>=0.25",
 ]
 
 [project.scripts]

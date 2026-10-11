@@ -30,6 +30,7 @@ import {
 } from "./config";
 import { getKtruNodeByCode, getKtruRecord, getKtruSpecialization, getSoleTemplateKtruForOkpd, listKtruByOkpd } from "./ktru-tree";
 import { getSteCatalog } from "./ste-catalog";
+import { getOkeiUnit } from "./okei-unit";
 
 const CLASSIFIERS_SCHEMA = "classifiers-full-v4";
 
@@ -49,6 +50,7 @@ export interface DirCharacteristicPart {
   text: string;
   okeiCode?: string;
   okeiName?: string;
+  unit?: string;
 }
 
 export interface DirCharacteristic {
@@ -60,6 +62,8 @@ export interface DirCharacteristic {
   /** Selectable catalog values (SPGZ enums). Absent for free-text / constraint-only rows. */
   options?: string[];
   parts?: DirCharacteristicPart[];
+  unit?: string;
+  okeiCode?: string;
 }
 
 export interface DirListBlock {
@@ -584,61 +588,43 @@ function spgzMathOp(code: string | number | null | undefined): string {
   }
 }
 
-/** Short national labels for common OKEI codes (full names stay in the ОКЕИ field). */
-const OKEI_SHORT: Record<string, string> = {
-  "003": "мм", "004": "см", "005": "дм", "006": "м", "008": "км",
-  "055": "м²", "059": "га",
-  "111": "мл", "112": "л", "113": "м³", "116": "мл",
-  "161": "мг", "163": "г", "166": "кг", "168": "т", "206": "ц",
-  "214": "Вт", "215": "кВт", "222": "В", "226": "А",
-  "356": "ч", "359": "сут", "362": "мес", "366": "г",
-  "796": "шт", "778": "упак", "839": "компл",
-};
-
-function okeiShort(code: string, fullName?: string): string {
-  if (OKEI_SHORT[code]) return OKEI_SHORT[code];
-  const base = (fullName || "").split(";")[0].trim().toLocaleLowerCase("ru-RU");
-  return base || code;
-}
-
 type SpgzOkeiRef = { id?: number; code?: string | number | null };
 
 function resolveSpgzOkeis(refs: SpgzOkeiRef[] | null | undefined): { code: string; name: string; short: string }[] {
   if (!Array.isArray(refs) || !refs.length) return [];
-  const database = ensureDb();
   const out: { code: string; name: string; short: string }[] = [];
   const seen = new Set<string>();
   for (const ref of refs) {
     const code = String(ref?.code ?? "").trim();
     if (!code || seen.has(code)) continue;
     seen.add(code);
-    const row = database.prepare("SELECT name FROM okei WHERE code=? AND kind='unit' LIMIT 1").get(code) as { name: string } | undefined;
-    const name = row?.name?.split(";")[0].trim() || code;
-    out.push({ code, name, short: okeiShort(code, name) });
+    const unit = getOkeiUnit(code);
+    if (unit) out.push(unit);
   }
   return out;
 }
 
 /** Pick position OKEI only when it matches the characteristic dimension (per-char units are absent in SPGZ export). */
-function unitForSpgzCharacteristic(name: string, okeis: { code: string; short: string }[]): string {
-  if (!okeis.length) return "";
+function unitForSpgzCharacteristic<T extends { code: string }>(name: string, okeis: T[]): T | undefined {
+  if (!okeis.length) return undefined;
   const n = name.toLocaleLowerCase("ru-RU");
   const mass = /масс|вес|нетто|брутто/.test(n);
-  const length = /длин|ширин|высот|толщин|диаметр|глубин|радиус|пролёт|пролет/.test(n);
+  const length = /длин|ширин|высот|толщин|диаметр|диагонал|глубин|радиус|пролёт|пролет/.test(n);
   const area = /площад/.test(n);
   const volume = /объ[её]м|ёмкост|емкост/.test(n);
   const power = /мощност/.test(n);
   const time = /время|срок|продолжительн|возраст/.test(n);
   const count = /количество|число|кол-во/.test(n);
-  const pick = (allowed: string[]) => okeis.find(item => allowed.includes(item.code))?.short || "";
+  const pick = (allowed: string[]) => okeis.find(item => allowed.includes(item.code));
   if (mass) return pick(["161", "163", "166", "168", "206"]);
-  if (length) return pick(["003", "004", "005", "006", "008", "018"]);
+  if (length) return pick(["003", "004", "005", "006", "008", "018", "039"]);
   if (area) return pick(["055", "059", "058", "061"]);
   if (volume) return pick(["111", "112", "113", "116", "118"]);
   if (power) return pick(["214", "215", "216"]);
   if (time) return pick(["354", "355", "356", "359", "360", "362", "366"]);
   if (count) return pick(["796", "778", "839", "868", "875", "876"]);
-  return "";
+  if (/частот/.test(n)) return pick(["290", "291", "292", "293"]);
+  return undefined;
 }
 
 function spgzConditionLabel(conditionTypeId: number | null | undefined): string {
@@ -679,11 +665,7 @@ function formatSpgzCharacteristic(item: {
   if (item.catalogVariantId === 2) badges.push("выбираемая");
   if (item.codeCharKTRU) badges.push(`КТРУ ${item.codeCharKTRU}`);
 
-  const unitCode = (() => {
-    const short = unitForSpgzCharacteristic(name, okeis);
-    return okeis.find(item => item.short === short)?.code || "";
-  })();
-  const unitMeta = unitCode ? okeis.find(item => item.code === unitCode) : undefined;
+  const unitMeta = item.valueTypeId === 1 ? unitForSpgzCharacteristic(name, okeis) : undefined;
   const unitShort = unitMeta?.short || "";
   const withUnit = (value: string) => (unitShort ? `${value} ${unitShort}` : value);
 
@@ -696,7 +678,9 @@ function formatSpgzCharacteristic(item: {
       required,
       badges,
       options: enums,
-      parts: enums.map(text => ({ text })),
+      unit: unitShort,
+      okeiCode: unitMeta?.code,
+      parts: enums.map(text => ({ text, unit: unitShort, okeiCode: unitMeta?.code, okeiName: unitMeta?.name })),
       code: item.kpgzCharacteristicId != null ? String(item.kpgzCharacteristicId) : undefined,
     };
   }
@@ -726,8 +710,11 @@ function formatSpgzCharacteristic(item: {
     required,
     badges,
     code: item.kpgzCharacteristicId != null ? String(item.kpgzCharacteristicId) : undefined,
+    unit: unitShort,
+    okeiCode: unitMeta?.code,
     parts: value === "—" ? [] : [{
       text: value,
+      unit: unitShort,
       okeiCode: unitMeta?.code,
       okeiName: unitMeta?.name,
     }],

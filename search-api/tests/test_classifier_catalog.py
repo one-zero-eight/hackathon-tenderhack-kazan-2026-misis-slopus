@@ -128,9 +128,11 @@ def test_ktru_ranges_preserve_decimal_bounds_and_inclusivity(catalog):
         {"option": ">10 мм", "min": 10, "max": None, "minInclusive": False, "maxInclusive": False},
     ]
     assert item["unit"] == "мм"
+    assert item["okeiCode"] == "003"
     draft = module.draft_ktru_characteristics(catalog.get_ktru_record("ranged"))[0]
     assert draft["value"] == draft["rangeOption"] == ""
     assert draft["ranges"] == item["ranges"]
+    assert draft["okeiCode"] == "003"
     assert draft["badges"] == []
     assert draft["source"] == "ktru"
 
@@ -189,6 +191,32 @@ def test_spgz_schema_units_badges_and_manual_drafts(catalog):
     assert drafts[3]["numeric"] is True
     assert drafts[3]["unit"] == ""
     assert all(row["value"] == row["rangeOption"] == "" for row in drafts)
+
+
+def test_spgz_enum_diagonal_retains_unique_okei_unit(catalog):
+    with sqlite3.connect(catalog.classifiers_path) as db:
+        db.execute("INSERT INTO okei VALUES(4,'039','Дюйм (25,4 мм)','дюйм','1','1','unit',NULL,0)")
+    _add_spgz(catalog, 1, okeis=[{"code": "039"}, {"code": "796"}], characteristics=[
+        _spgz_characteristic(">=18", name="Размер диагонали", valueTypeId=1),
+    ])
+    record = module.get_directory_record("spgz", "1")
+    field = record["characteristics"][0]
+    assert field["okeiCode"] == "039"
+    assert field["parts"][0]["okeiCode"] == "039"
+    draft = module.draft_spgz_characteristics(record)[0]
+    assert draft["okeiCode"] == "039"
+    assert draft["unit"] == "дюйм"
+
+
+def test_spgz_does_not_pick_arbitrary_unit_from_multiple_length_units(catalog):
+    with sqlite3.connect(catalog.classifiers_path) as db:
+        db.execute("INSERT INTO okei VALUES(4,'039','Дюйм (25,4 мм)','дюйм','1','1','unit',NULL,0)")
+    _add_spgz(catalog, 1, okeis=[{"code": "039"}, {"code": "003"}], characteristics=[
+        _spgz_characteristic(">=18", name="Размер диагонали", valueTypeId=1),
+    ])
+    draft = module.draft_spgz_characteristics(module.get_directory_record("spgz", "1"))[0]
+    assert draft["okeiCode"] is None
+    assert draft["unit"] == ""
 
 
 def test_units_are_not_guessed_across_dimensions(catalog):

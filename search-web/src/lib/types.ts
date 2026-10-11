@@ -189,6 +189,8 @@ export type DraftCharacteristic = {
   optionLabels: Record<string, string>;
   ranges: CharacteristicRange[];
   unit: string;
+  /** Authoritative OKEI identity; keep leading zeroes. */
+  okeiCode?: string;
   /** Quantitative schema field, including SPGZ fields without a declared unit. */
   numeric?: boolean;
   multiple: boolean;
@@ -215,6 +217,7 @@ export type CatalogCharacteristic = {
   /** Morphologically normalized backend identity; display name remains readable. */
   nameKey?: string;
   unit: string;
+  okeiCode?: string;
   numeric: boolean;
   count: number;
   total: number;
@@ -229,7 +232,7 @@ export type CatalogCharacteristic = {
 
 export type CharacteristicAutofillInput = {
   text: string;
-  characteristics: (Pick<DraftCharacteristic, "id" | "name" | "options" | "optionLabels" | "ranges" | "unit" | "numeric" | "multiple" | "required" | "hint" | "source"> & { examples?: string[] })[];
+  characteristics: (Pick<DraftCharacteristic, "id" | "name" | "options" | "optionLabels" | "ranges" | "unit" | "okeiCode" | "numeric" | "multiple" | "required" | "hint" | "source"> & { examples?: string[] })[];
   standards: string[];
   ktruCode?: string | null;
   additionalAllowed?: boolean | null;

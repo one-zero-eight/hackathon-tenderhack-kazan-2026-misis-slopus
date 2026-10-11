@@ -1,5 +1,5 @@
 import { isRangeCharacteristic, matchCharacteristicOption, matchNumberToRange, parseCharacteristicNumber, shortUnitName } from "./characteristic-options";
-import type { CatalogCharacteristic, DraftCharacteristic, WebEnrichmentSuggestion } from "./types";
+import type { CatalogCharacteristic, CharacteristicAutofillInput, DraftCharacteristic, WebEnrichmentSuggestion } from "./types";
 
 function normName(name: string): string {
   return name.normalize("NFKC").toLocaleLowerCase("ru").replaceAll("ё", "е")
@@ -41,7 +41,7 @@ export function appendCatalogCharacteristics(
   const base = fields.filter((item) => item.source !== "catalog").map((field) => {
     if (field.custom || field.source === "custom") return field;
     const stats = statistics.find((item) => normName(item.name) === normName(field.name)
-      && shortUnitName(item.unit) === shortUnitName(field.unit));
+      && characteristicUnitsEquivalent(item, field));
     if (!stats && !field.catalogFrequency) return field;
     return { ...field, catalogFrequency: stats };
   });
@@ -50,13 +50,14 @@ export function appendCatalogCharacteristics(
   const added: DraftCharacteristic[] = [];
   for (const item of statistics) {
     const key = normName(item.name);
-    const identity = `${item.nameKey ?? key}\0${item.unit}`;
+    const identity = `${item.nameKey ?? key}\0${item.okeiCode ?? item.unit}`;
     if (names.has(key) || identities.has(identity)) continue;
     identities.add(identity);
     const prior = previous.find((field) => field.source === "catalog"
-      && (field.id === item.id || (normName(field.name) === key && field.unit === item.unit)));
+      && characteristicUnitsEquivalent(field, item)
+      && (field.id === item.id || normName(field.name) === key));
     added.push({
-      id: item.id, name: item.name, unit: item.unit, numeric: item.numeric,
+      id: item.id, name: item.name, unit: item.unit, okeiCode: item.okeiCode, numeric: item.numeric,
       value: prior?.value ?? "", rangeOption: "", required: false, badges: [],
       options: [], optionLabels: {}, ranges: [], multiple: false, source: "catalog",
       hint: "", catalogFrequency: item,
@@ -130,10 +131,17 @@ export function optionsEquivalent(a: string[], b: string[]): boolean {
   return true;
 }
 
+export function characteristicUnitsEquivalent(
+  a: { unit: string; okeiCode?: string }, b: { unit: string; okeiCode?: string },
+): boolean {
+  if (a.okeiCode || b.okeiCode) return a.okeiCode === b.okeiCode;
+  return shortUnitName(a.unit) === shortUnitName(b.unit);
+}
+
 export function schemaEquivalent(a: DraftCharacteristic, b: DraftCharacteristic): boolean {
-  if (a.source === "catalog" && b.source === "catalog") return a.id === b.id && a.unit === b.unit;
+  if (!characteristicUnitsEquivalent(a, b)) return false;
+  if (a.source === "catalog" && b.source === "catalog") return a.id === b.id;
   if (normName(a.name) !== normName(b.name)) return false;
-  if (shortUnitName(a.unit) !== shortUnitName(b.unit)) return false;
   if (!!a.numeric !== !!b.numeric) return false;
   if (!!a.multiple !== !!b.multiple) return false;
   if (!optionsEquivalent(a.options ?? [], b.options ?? [])) return false;
@@ -238,7 +246,7 @@ export function hasNewAutofillFields(
 ): boolean {
   const signature = (field: DraftCharacteristic) => JSON.stringify([
     field.id, field.name, field.source, field.options, field.optionLabels,
-    field.ranges, field.unit, !!field.numeric, !!field.multiple, field.hint,
+    field.ranges, field.unit, field.okeiCode, !!field.numeric, !!field.multiple, field.hint,
   ]);
   const known = new Set(previous.map(signature));
   return current.some((field) => !field.custom && field.source !== "custom" && !field.webSource
@@ -259,6 +267,14 @@ export function retainTemplateCharacteristics(
       && !names.has(normName(item.name)) && !ids.has(item.id))
       .map((item) => ({ ...item, templateKtruCode: templateCode })),
   ];
+}
+
+/** Keep the extraction schema identical to the displayed official/catalog rows. */
+export function autofillCharacteristicFields(fields: DraftCharacteristic[]): CharacteristicAutofillInput["characteristics"] {
+  return fields.filter((item) => !item.custom && item.source !== "custom")
+    .map(({ id, name, options, optionLabels, ranges, unit, okeiCode, numeric, multiple, required, hint, source, catalogFrequency }) =>
+      ({ id, name, options, optionLabels, ranges, unit, okeiCode, numeric, multiple, required, hint, source,
+        examples: catalogFrequency?.examples ?? [] }));
 }
 
 export function autofillConfidencePresentation(confidence: number): { percent: number; level: "high" | "medium" | "low"; label: string } {

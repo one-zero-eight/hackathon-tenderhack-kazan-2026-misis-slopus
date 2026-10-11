@@ -42,6 +42,8 @@ import { getCatalogCharacteristics, getCatalogSpecialization, getDirectoryNode, 
 import {
   appendCatalogCharacteristics,
   appendWebCharacteristics,
+  autofillCharacteristicFields,
+  characteristicUnitsEquivalent,
   autofillConfidencePresentation,
   buildDisplayCharacteristics,
   catalogFrequencyLabel,
@@ -145,6 +147,7 @@ import {
   suggesting,
 } from "~/lib/create-product-state";
 import { draftFromSpgzCharacteristic } from "~/lib/spgz-characteristics";
+import { buildKtruDraftFields } from "~/lib/ktru-characteristics";
 import { normalizeQuery, parseQueryFile, parseQueryHistory, QUERY_HISTORY_KEY, QUERY_HISTORY_KEY_LEGACY, QueryQueue, rememberQuery, updateHistorySnapshot, compactHistorySnapshots, type QueuedQuery, type QueryHistoryItem, type QueryHistorySnapshot, type QueryStatus } from "~/lib/query-queue";
 import {
   collectCategorySpans,
@@ -248,6 +251,7 @@ function withCatalogSpecialization(
       multiple: false,
       numeric: false,
       unit: "",
+      okeiCode: undefined,
       ranges: [],
       badges: item.badges.filter((entry) => !/^уточняет /.test(entry)),
       hint: item.hint || hint,
@@ -1071,68 +1075,6 @@ export default function NewProduct() {
     return true;
   };
 
-  const buildKtruDraftFields = (
-    record: Pick<NonNullable<Awaited<ReturnType<typeof getKtruRecord>>>, "characteristics">,
-    previous: DraftCharacteristic[],
-    keepPrevious: boolean,
-  ): DraftCharacteristic[] => {
-    const previousByName = new Map(
-      previous
-        .filter((item) => item.source === "ktru" || item.source === "both")
-        .map((item) => [normCharName(item.name), item]),
-    );
-    return (record.characteristics ?? []).map((item) => {
-      const options = item.options ?? [];
-      const ranges = item.ranges ?? [];
-      const id = item.code || item.name;
-      const prior = keepPrevious ? previousByName.get(normCharName(item.name)) : undefined;
-      if (isRangeCharacteristic(item)) {
-        return {
-          id,
-          name: item.name,
-          value: prior?.value.trim() ? prior.value : "",
-          rangeOption: prior?.rangeOption.trim()
-            ? mapValueToOptions(prior.rangeOption, options) || prior.rangeOption
-            : "",
-          required: item.required,
-          badges: item.badges.filter((badge) =>
-            !/^(обязательная|качественная|количественная)$/i.test(badge.trim())),
-          hint: item.hint || "",
-          options,
-          optionLabels: item.optionLabels ?? {},
-          ranges,
-          unit: item.unit || "",
-          numeric: true,
-          multiple: !!item.multiple,
-          source: "ktru" as const,
-          autofill: prior?.value.trim() ? prior.autofill : undefined,
-          autofillDiagnostics: prior?.value.trim() ? prior.autofillDiagnostics : undefined,
-        };
-      }
-      return {
-        id,
-        name: item.name,
-        value: prior?.value.trim()
-          ? (options.length ? mapValueToOptions(prior.value, options) || prior.value : prior.value)
-          : "",
-        rangeOption: "",
-        required: item.required,
-        badges: item.badges.filter((badge) =>
-          !/^(обязательная|качественная|количественная)$/i.test(badge.trim())),
-        hint: item.hint || "",
-        options,
-        optionLabels: item.optionLabels ?? {},
-        ranges: [],
-        unit: item.unit || "",
-        numeric: /количественная/i.test(item.badges.join(" ")) || (!!item.unit && !(item.options ?? []).length),
-        multiple: !!item.multiple,
-        source: "ktru" as const,
-        autofill: prior?.value.trim() ? prior.autofill : undefined,
-        autofillDiagnostics: prior?.value.trim() ? prior.autofillDiagnostics : undefined,
-      };
-    });
-  };
-
   const buildSpgzDraftFields = (
     record: NonNullable<Awaited<ReturnType<typeof getDirectoryRecord>>>,
     previous: DraftCharacteristic[],
@@ -1145,7 +1087,8 @@ export default function NewProduct() {
     );
     return (record.characteristics ?? []).map((item) => {
       const draft = draftFromSpgzCharacteristic(item);
-      const prior = keepPrevious ? previousByName.get(normCharName(draft.name)) : undefined;
+      const previousField = keepPrevious ? previousByName.get(normCharName(draft.name)) : undefined;
+      const prior = previousField && characteristicUnitsEquivalent(previousField, draft) ? previousField : undefined;
       return {
         ...draft,
         value: prior?.value.trim()
@@ -2063,12 +2006,7 @@ export default function NewProduct() {
 
   const autofillInput = createMemo(() => JSON.stringify({
     text: description().trim(),
-    characteristics: displayCharacteristics()
-      .filter((item) => !item.custom && item.source !== "custom")
-      .map(({ id, name, options, optionLabels, ranges, unit, numeric, multiple, required, hint, source, catalogFrequency }) =>
-        ({ id, name, options, optionLabels, ranges, unit, numeric, multiple, required, hint,
-          source: source === "catalog" ? "catalog" : source === "spgz" ? "spgz" : source === "both" ? "both" : "ktru",
-          examples: catalogFrequency?.examples ?? [] })),
+    characteristics: autofillCharacteristicFields(displayCharacteristics()),
     standards: charStandards(),
     ktruCode: ktruVote()?.code ?? null,
     additionalAllowed: noNewFeatures() !== true,

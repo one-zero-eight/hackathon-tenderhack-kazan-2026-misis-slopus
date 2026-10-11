@@ -10,11 +10,15 @@ export function draftFromSpgzCharacteristic(
     value?: string;
     badges?: string[];
     options?: string[];
-    parts?: { text: string; okeiName?: string }[];
+    unit?: string;
+    okeiCode?: string;
+    parts?: { text: string; unit?: string; okeiCode?: string; okeiName?: string }[];
   },
 ): DraftCharacteristic {
   const options = (item.options ?? []).map((option) => option.trim()).filter(Boolean);
-  const unit = shortUnitName(item.parts?.find((part) => part.okeiName)?.okeiName);
+  const unitPart = item.parts?.find((part) => part.okeiCode || part.unit || part.okeiName);
+  const unit = item.unit ?? unitPart?.unit ?? shortUnitName(unitPart?.okeiName);
+  const okeiCode = item.okeiCode ?? unitPart?.okeiCode;
   const required = !!item.required
     || (item.badges ?? []).some((badge) => /обязательн/i.test(badge));
   const badges = (item.badges ?? []).filter((badge) =>
@@ -31,6 +35,7 @@ export function draftFromSpgzCharacteristic(
     optionLabels: {},
     ranges: [],
     unit,
+    okeiCode,
     numeric: (item.badges ?? []).some((badge) => /^количественная$/i.test(badge)),
     multiple: false,
     source: "spgz",

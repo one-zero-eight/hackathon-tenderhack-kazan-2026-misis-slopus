@@ -163,6 +163,42 @@ def test_screen_refresh_frequency_converts_hertz_and_selects_range(monkeypatch, 
         assert row["evidence"]["quote"] == quote
 
 
+@pytest.mark.parametrize("code,unit,expected,minimum", [
+    ("039", "", "27", 18),
+    ("039", "см", "27", 18),
+    ("004", "", "68.58", 60),
+    ("003", "", "685.8", 600),
+])
+def test_diagonal_uses_authoritative_okei_code_and_matches_range(monkeypatch, code, unit, expected, minimum):
+    quote = "диагональ 27 дюймов"
+    mock_providers(monkeypatch, llm_handler=mapping_handler({"0": "27 дюймов"}, {"0": quote}))
+    row = asyncio.run(autofill.autofill_characteristics(request(
+        text=f"Монитор, {quote}", additionalAllowed=False, characteristics=[{
+            "id": "diagonal", "name": "Размер диагонали", "unit": unit, "okeiCode": code,
+            "numeric": True, "options": [f">={minimum}"],
+            "ranges": [{"option": f">={minimum}", "min": minimum}],
+        }],
+    )))["characteristics"][0]
+    assert row["status"] == "accepted", row["errors"]
+    assert float(row["value"]) == pytest.approx(float(expected))
+    assert row["rangeOption"] == f">={minimum}"
+    assert row["conversion"]["from"] == "дюймов"
+    assert row["evidence"]["quote"] == quote
+
+
+def test_unknown_okei_code_does_not_fall_back_to_unit_label(monkeypatch):
+    quote = "диагональ 27 дюймов"
+    mock_providers(monkeypatch, llm_handler=mapping_handler({"0": "27 дюймов"}, {"0": quote}))
+    row = asyncio.run(autofill.autofill_characteristics(request(
+        text=quote, additionalAllowed=False, characteristics=[{
+            "id": "diagonal", "name": "Размер диагонали", "unit": "дюйм", "okeiCode": "9999",
+            "numeric": True,
+        }],
+    )))["characteristics"][0]
+    assert row["status"] == "rejected"
+    assert row["value"] is None
+
+
 @pytest.mark.parametrize("name, expected", [
     ("Масса бумаги площадью 1 м²", 80),
     ("Масса бумаги площадью 2м2", 160),
@@ -1230,7 +1266,7 @@ def test_scale_suggestion_points_to_the_nearest_unit_that_fits():
 
 @pytest.mark.parametrize("field, number, unit", [
     (numeric_field("см", 1, 5), 3, "см"),     # число уже допустимо: ошибка не в масштабе
-    (numeric_field("кг", 0.1, 2), 10, "т"),   # ни одна единица той же величины не подходит
+    (numeric_field("кг", 0.1, 2), 1e12, "т"), # даже микрограммы не попадают в диапазон
     (numeric_field("кг", 0.1, 2), 3, "м"),    # другая величина
     (numeric_field("см", 1, 5), 0, "м"),      # ноль: масштаб ни на что не влияет
     (numeric_field("см", 1, 5), 3, "штук"),   # неизвестная единица
@@ -1268,8 +1304,8 @@ def test_autofill_returns_scale_hint_for_rejected_value_but_never_fills_it(monke
 
 
 def test_autofill_has_no_hint_when_nothing_fits(monkeypatch):
-    mock_providers(monkeypatch, llm_handler=mapping_handler({"size": "10 т"}))
-    row = asyncio.run(autofill.autofill_characteristics(size_request("Масса 10 т", "кг", 0.1, 2)))["characteristics"][0]
+    mock_providers(monkeypatch, llm_handler=mapping_handler({"size": "1000000000000 т"}))
+    row = asyncio.run(autofill.autofill_characteristics(size_request("Масса 1000000000000 т", "кг", 0.1, 2)))["characteristics"][0]
     assert row["status"] == "rejected" and row["suggestion"] is None
 
 

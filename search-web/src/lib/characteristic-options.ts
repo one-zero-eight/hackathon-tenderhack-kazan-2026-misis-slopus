@@ -1,11 +1,31 @@
 import type { CharacteristicRange } from "./types";
 
-const UNIT_SHORT: Record<string, string> = {
+/** Display aliases only: never infer an OKEI code or conversion from these labels. */
+const UNIT_DISPLAY_ALIASES: Record<string, string> = {
   миллиметр: "мм",
   сантиметр: "см",
   метр: "м",
+  дециметр: "дм",
+  километр: "км",
+  "дюйм (25,4 мм)": "дюйм",
   килограмм: "кг",
   грамм: "г",
+  миллиграмм: "мг",
+  центнер: "ц",
+  "квадратный метр": "м²",
+  гектар: "га",
+  "кубический метр": "м³",
+  ватт: "Вт",
+  киловатт: "кВт",
+  мегаватт: "МВт",
+  вольт: "В",
+  ампер: "А",
+  секунда: "с",
+  минута: "мин",
+  час: "ч",
+  сутки: "сут",
+  месяц: "мес",
+  год: "г",
   герц: "Гц",
   килогерц: "кГц",
   мегагерц: "МГц",
@@ -93,7 +113,7 @@ export function characteristicRangeProblem(item: {
 export function shortUnitName(name: string | null | undefined): string {
   const full = String(name ?? "").split(";")[0]?.trim() ?? "";
   if (!full) return "";
-  return UNIT_SHORT[full.toLocaleLowerCase("ru")] ?? full;
+  return UNIT_DISPLAY_ALIASES[full.toLocaleLowerCase("ru")] ?? full;
 }
 
 /**

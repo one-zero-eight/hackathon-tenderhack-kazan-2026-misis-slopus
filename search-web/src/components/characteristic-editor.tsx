@@ -76,7 +76,7 @@ export function CharacteristicEditor(props: {
     setSubmitted(true);
     if (problem()) return;
     const id = props.item?.id ?? `custom-${crypto.randomUUID()}`;
-    props.onSave(draftFromCharacteristicSchema(schema(), id, { value: value() }, selectedStats()));
+    props.onSave(draftFromCharacteristicSchema(schema(), id, { ...props.item, value: value() }, selectedStats()));
   };
 
   return <DialogContent class="create-characteristic-dialog">
@@ -106,9 +106,11 @@ export function CharacteristicEditor(props: {
             </select>
           </label>
           <TextField class="create-characteristic-field" value={schema().unit} onChange={(unit) => {
-            update("unit", unit);
+            setSchema((current) => ({ ...current, unit,
+              okeiCode: unit.trim() === current.unit.trim() ? current.okeiCode : undefined }));
             const match = props.statistics.find((item) => characteristicNameKey(item.name) === characteristicNameKey(schema().name) && item.unit === unit);
-            if (match) setSelectedStats(match);
+            setSelectedStats(match);
+            if (match) update("okeiCode", match.okeiCode);
           }}>
             <TextFieldLabel>Единица измерения</TextFieldLabel>
             <TextFieldInput placeholder="Без единицы, мм, кг…" list="characteristic-unit-suggestions" />

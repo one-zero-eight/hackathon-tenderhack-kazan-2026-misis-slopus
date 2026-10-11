@@ -73,9 +73,9 @@ export function setDescription(text: string): string {
 
 export function characteristicEditKey(item: DraftCharacteristic): string {
   if (item.webSource) return item.id;
-  if (item.source === "catalog") return `catalog:${item.id}:${item.unit}`;
+  if (item.source === "catalog") return `catalog:${item.id}:${item.okeiCode ?? item.unit}`;
   const name = item.name.trim().toLocaleLowerCase("ru").replaceAll("ё", "е");
-  return `${item.source}:${name}:${item.unit}`;
+  return `${item.source}:${name}:${item.okeiCode ?? item.unit}`;
 }
 
 export function preserveManualCharacteristics(fields: DraftCharacteristic[], previous: DraftCharacteristic[]): DraftCharacteristic[] {
