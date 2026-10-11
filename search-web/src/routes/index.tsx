@@ -1815,8 +1815,18 @@ export default function NewProduct() {
     setSimilar(progress?.neighbors ?? []);
     setSimilarDurationMs(progress?.neighborsDurationMs ?? null);
     setSuggesting(true);
-    if (!ktruLocked()) setOkpdKtruDecision(null);
-    if (!spgzLocked()) setKpgzSpgzDecision(null);
+    // Clear votes up front — otherwise a failed refine leaves the previous query's categories permanently.
+    if (!ktruLocked()) {
+      setOkpdKtruDecision(null);
+      setSelected(null);
+      setOkpd2(null);
+      setKtruVote(null);
+    }
+    if (!spgzLocked()) {
+      setKpgzSpgzDecision(null);
+      setKpgz(null);
+      setSpgz(null);
+    }
     const started = performance.now();
     setSuggestDurationMs(null);
     let alive = true;
@@ -1962,13 +1972,33 @@ export default function NewProduct() {
             // Retain current values while the refined schema is loaded; manual
             // edits must survive the intermediate template-only schema.
             setCharacteristics(nextChars);
-            await applyCatalogPositions({
+            const applied = await applyCatalogPositions({
               ktruCode: resolvedKtruCode && !ktruLocked() ? resolvedKtruCode : null,
               spgzCode: resolvedSpgzCode && !spgzLocked() ? resolvedSpgzCode : null,
               discriminatorValues: refineSelected,
               applyPositionRefine: true,
               reuseSpecialization: true,
             });
+            if (!alive) return;
+            // apply can no-op (seq/description race) after skipping draft votes above — paint them.
+            if (!applied) {
+              batch(() => {
+                if (!ktruLocked()) {
+                  setKtruVote(draft.ktru);
+                  if (draft.ktru && draft.ktruNode) {
+                    setSelected(draft.ktruNode);
+                    setGeneratedFor(`${draft.ktruNode.code}\u0000${query}`);
+                  } else {
+                    setSelected(null);
+                    setGeneratedFor(`\u0000${query}`);
+                  }
+                }
+                if (!spgzLocked()) {
+                  setKpgz(draft.kpgz);
+                  setSpgz(draft.spgz);
+                }
+              });
+            }
           }
           if (!alive) return;
           batch(() => {
