@@ -1916,6 +1916,28 @@ export default function NewProduct() {
     });
   };
 
+  let autoAutofillAttemptedKey = "";
+  createEffect(on([
+    description, suggestAcceptedQuery, suggesting, catalogCharacteristicsLoading,
+    ktruVote, kpgz, spgz, displayCharacteristics,
+  ], () => {
+    const text = description().trim();
+    if (text.length < 12 || suggesting() || catalogCharacteristicsLoading()) return;
+    if (suggestAcceptedQuery() !== normalizeQuery(text)) return;
+    if (!(ktruVote()?.code || kpgz()?.code || spgz()?.code) || !displayCharacteristics().length) return;
+    const key = JSON.stringify([text, ktruVote()?.code, kpgz()?.code, spgz()?.code]);
+    if (key === autoAutofillAttemptedKey || autofillBusy() || autofillCompleted()) return;
+    // Wait for category/schema effects to settle before using the existing
+    // request pipeline. Do not retry failures or rerun on autofilled values.
+    const timer = setTimeout(() => {
+      if (!mounted || suggesting() || catalogCharacteristicsLoading() || autofillBusy() || autofillCompleted()) return;
+      if (description().trim() !== text || suggestAcceptedQuery() !== normalizeQuery(text)) return;
+      autoAutofillAttemptedKey = key;
+      requestAutofill();
+    }, 150);
+    onCleanup(() => clearTimeout(timer));
+  }));
+
   createEffect(on(description, () => {
     if (autofillRequestedText() === null && !autofilling()) return;
     autofillController?.abort();
