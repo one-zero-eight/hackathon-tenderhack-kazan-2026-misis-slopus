@@ -23,6 +23,25 @@ def request(**kwargs):
     )
 
 
+def quoted_fields(mapping, quotes=None):
+    """Build provider field objects with exact, test-authored evidence."""
+    quotes = quotes or {}
+    result = {}
+    for key, value in mapping.items():
+        if key == "product" or isinstance(value, dict):
+            result[key] = value
+        elif isinstance(value, list):
+            evidence = quotes.get(key, value)
+            result[key] = [
+                {"value": item, "quote": quote}
+                for item, quote in zip(value, evidence, strict=True)
+            ]
+        else:
+            quote = quotes.get(key, "рукоятка деревянная" if value == "Дерево" else str(value))
+            result[key] = {"value": value, "quote": quote}
+    return result
+
+
 def mock_providers(monkeypatch, *, llm_handler=None, jev_handler=None):
     monkeypatch.setattr(settings, "typesafe_api_key", SecretStr("test-secret"))
     monkeypatch.setattr(settings, "typesafe_confidence", 0.85)
@@ -47,7 +66,7 @@ def mock_providers(monkeypatch, *, llm_handler=None, jev_handler=None):
             },
         }
         return httpx.Response(200, json={
-            "choices": [{"message": {"content": json.dumps(content, ensure_ascii=False)}}],
+            "choices": [{"message": {"content": json.dumps(quoted_fields(content), ensure_ascii=False)}}],
             "usage": {"prompt_tokens": 10, "completion_tokens": 5},
         })
 
@@ -79,6 +98,37 @@ def mock_providers(monkeypatch, *, llm_handler=None, jev_handler=None):
     ))
 
 
+def test_product_model_and_manufacturer_are_extracted_without_explicit_labels(monkeypatch):
+    text = 'Дрель-шуруповерт аккумуляторная Ставр "ДА-10,8/2 (2,6 Л)"'
+
+    def llm(req):
+        body = json.loads(req.content)
+        prompt = body["messages"][0]["content"]
+        assert "product.name НЕ заменяет отдельные поля" in prompt
+        assert "включая числа, запятые, дроби и скобки" in prompt
+        return httpx.Response(200, json={
+            "choices": [{"message": {"content": json.dumps({
+                "product": {
+                    "name": text,
+                    "manufacturer": "Ставр",
+                    "model": "ДА-10,8/2 (2,6 Л)",
+                },
+            }, ensure_ascii=False)}}],
+        })
+
+    mock_providers(monkeypatch, llm_handler=llm)
+    result = asyncio.run(autofill.autofill_characteristics(request(
+        text=text, characteristics=[], additionalAllowed=False,
+    )))
+    for key, expected in (("manufacturer", "Ставр"), ("model", "ДА-10,8/2 (2,6 Л)")):
+        row = result["product"][key]
+        assert row["status"] == "accepted"
+        assert row["value"] == expected
+        assert row["quote"] == expected
+        assert text[row["evidence"]["start"]:row["evidence"]["end"]] == expected
+    assert result["product"]["article"]["status"] == "missing"
+
+
 def test_autofill_logs_stages_and_total(monkeypatch, caplog):
     import logging
 
@@ -93,14 +143,21 @@ def test_autofill_logs_stages_and_total(monkeypatch, caplog):
 
 
 @pytest.mark.parametrize("additional_allowed", [False, None, True])
-def test_autofill_extracts_characteristics_and_product_in_one_llm_call(monkeypatch, additional_allowed):
+def test_autofill_extracts_product_once_and_reviews_allowed_additional_fields(monkeypatch, additional_allowed):
     calls = []
 
     def llm_handler(req):
         calls.append(json.loads(req.content))
+        if "missing" in json.loads(calls[-1]["messages"][1]["content"]):
+            return httpx.Response(200, json={
+                "choices": [{"message": {"content": "{}"}}],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+            })
         return httpx.Response(200, json={
             "choices": [{"message": {"content": json.dumps({
-                "0": "Дерево", "1": "500 г", "Цвет": "синий",
+                "0": {"value": "Дерево", "quote": "рукоятка деревянная"},
+                "1": {"value": "500 г", "quote": "500 г"},
+                "Цвет": {"value": "синий", "quote": "цвет синий"},
                 "product": {"model": "M500", "manufacturer": "Bosch", "article": "AB-12"},
             })}}],
             "usage": {"prompt_tokens": 10, "completion_tokens": 5},
@@ -111,12 +168,15 @@ def test_autofill_extracts_characteristics_and_product_in_one_llm_call(monkeypat
         text="Молоток Bosch M500, 500 г, рукоятка деревянная, цвет синий, арт. AB-12",
         additionalAllowed=additional_allowed,
     )))
-    assert len(calls) == 1
+    assert len(calls) == (2 if additional_allowed else 1)
     assert result["filled"] == 2
     assert result["product"]["model"]["value"] == "M500"
     assert result["product"]["manufacturer"]["value"] == "Bosch"
     assert result["product"]["article"]["source"] == "rules"
-    assert result["usage"]["llm"] == {"input_tokens": 10, "output_tokens": 5}
+    assert result["usage"]["llm"] == (
+        {"input_tokens": 20, "output_tokens": 10} if additional_allowed
+        else {"input_tokens": 10, "output_tokens": 5}
+    )
     assert [row["name"] for row in result["additional_fields"]] == (
         ["Цвет"] if additional_allowed else []
     )
@@ -198,8 +258,11 @@ def test_catalog_fields_are_extracted_by_id_without_constraining_examples(monkey
         payload = json.loads(body["messages"][1]["content"])
         assert payload["schema"]["0"] == {"n": "Высота", "t": "number", "u": "мм"}
         assert payload["schema"]["1"] == {"n": "Материал", "t": "text"}
-        content = {"0": "1,8 м", "1": "сталь"}
-        return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(content, ensure_ascii=False)}}]})
+        content = {} if "missing" in payload else {
+            "0": {"value": "1,8 м", "quote": "высота 1,8 м"},
+            "1": {"value": "сталь", "quote": "материал сталь"},
+        }
+        return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(quoted_fields(content), ensure_ascii=False)}}]})
 
     mock_providers(monkeypatch, llm_handler=llm_handler)
     body = request(
@@ -270,15 +333,15 @@ def test_extraction_uses_json_object_once_with_short_keys(monkeypatch):
         calls.append(body["response_format"]["type"])
         prompt = body["messages"][0]["content"]
         assert '"k":' not in prompt
-        assert '"0":"500 г"' in prompt
-        assert '"1":"деревянная"' in prompt
+        assert '"0":{"value":"500 г","quote":"Молоток 500 г"}' in prompt
+        assert '"1":{"value":"деревянная","quote":"рукоятка деревянная"}' in prompt
         assert '"product":{"name":' in prompt
         payload = json.loads(body["messages"][1]["content"])
         assert "schema" in payload and "text" in payload
         assert set(payload["schema"]) == {"0", "1"}
         assert "spgz:" not in json.dumps(payload["schema"])
         assert "selected_schema" not in payload
-        return httpx.Response(200, json={"choices": [{"message": {"content": '{"0":"Дерево","1":"500 г"}'}}]})
+        return mapping_handler({"0": "Дерево", "1": "500 г"})(req)
 
     mock_providers(monkeypatch, llm_handler=llm_handler)
 
@@ -294,10 +357,10 @@ def test_extraction_uses_json_object_once_with_short_keys(monkeypatch):
     assert {item.field_id for item in extraction.fields} == {"handle", "mass"}
 
 
-def test_map_to_extraction_grounds_number_unit_and_enum_stem():
+def test_map_to_extraction_preserves_supplied_number_and_enum_quotes():
     body = request()
     extraction = autofill.map_to_extraction(
-        {"handle": "Дерево", "mass": "500 г"},
+        quoted_fields({"handle": "Дерево", "mass": "500 г"}),
         body.characteristics,
         body.text,
         additional_allowed=False,
@@ -321,7 +384,7 @@ def test_ground_quote_prefers_occurrence_with_literal():
 def test_rejects_out_of_range_after_conversion(monkeypatch):
     def llm_handler(req):
         content = {"0": "10 т"}
-        return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(content, ensure_ascii=False)}}]})
+        return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(quoted_fields(content), ensure_ascii=False)}}]})
 
     mock_providers(monkeypatch, llm_handler=llm_handler)
     body = request(text="Масса 10 т", characteristics=[{
@@ -388,8 +451,8 @@ def test_invalid_jev_answers_are_rejected(monkeypatch, payload):
 
 def test_fabricated_quote_is_rejected(monkeypatch):
     def llm_handler(req):
-        content = {"0": "Пластик"}
-        return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(content, ensure_ascii=False)}}]})
+        content = {"0": {"value": "Пластик", "quote": "рукоятка пластиковая"}}
+        return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(quoted_fields(content), ensure_ascii=False)}}]})
 
     mock_providers(monkeypatch, llm_handler=llm_handler)
     result = asyncio.run(autofill.autofill_characteristics(request(
@@ -403,7 +466,7 @@ def test_fabricated_quote_is_rejected(monkeypatch):
 def test_multiple_values_are_joined(monkeypatch):
     def llm_handler(req):
         content = {"0": ["Красный", "Синий"]}
-        return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(content, ensure_ascii=False)}}]})
+        return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(quoted_fields(content), ensure_ascii=False)}}]})
 
     mock_providers(monkeypatch, llm_handler=llm_handler)
     result = asyncio.run(autofill.autofill_characteristics(request(
@@ -417,7 +480,7 @@ def test_multiple_values_are_joined(monkeypatch):
 def test_unitless_number_with_physical_unit_is_rejected(monkeypatch):
     def llm_handler(req):
         content = {"0": "450 мм"}
-        return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(content, ensure_ascii=False)}}]})
+        return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(quoted_fields(content), ensure_ascii=False)}}]})
 
     mock_providers(monkeypatch, llm_handler=llm_handler)
     result = asyncio.run(autofill.autofill_characteristics(request(
@@ -431,7 +494,7 @@ def test_unitless_number_with_physical_unit_is_rejected(monkeypatch):
 def test_additional_fields_require_explicit_permission(monkeypatch):
     def llm_handler(req):
         content = {"Цвет": "синий"}
-        return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(content, ensure_ascii=False)}}]})
+        return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(quoted_fields(content), ensure_ascii=False)}}]})
 
     mock_providers(monkeypatch, llm_handler=llm_handler)
     denied = asyncio.run(autofill.autofill_characteristics(request(
@@ -509,7 +572,7 @@ def test_product_rules_win_and_llm_still_generates_name(monkeypatch):
             "name": "Дрель Ставр ДА-10, арт. AB-12",
             "model": "fabricated", "manufacturer": "fabricated", "article": "fabricated",
         }}
-        return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(content)}}]})
+        return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(quoted_fields(content))}}]})
 
     mock_providers(monkeypatch, llm_handler=llm_handler)
     text = "Дрель, модель ДА-10, производитель Ставр, артикул AB-12"
@@ -609,7 +672,7 @@ def test_product_name_is_missing_when_llm_cannot_identify_product(monkeypatch):
 def test_missing_required_field_marks_needs_review(monkeypatch):
     def llm_handler(req):
         content = {}
-        return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(content)}}]})
+        return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(quoted_fields(content))}}]})
 
     mock_providers(monkeypatch, llm_handler=llm_handler)
     result = asyncio.run(autofill.autofill_characteristics(request(characteristics=[
@@ -699,10 +762,10 @@ def test_scale_suggestion_needs_ranges():
     assert autofill.scale_suggestion(field, 3, "м") is None
 
 
-def mapping_handler(mapping):
-    """LLM отвечает компактным соответствием «id поля → значение», цитаты ищет код."""
+def mapping_handler(mapping, quotes=None):
+    """Return provider field objects, preserving product's string values."""
     def handler(req):
-        content = mapping
+        content = quoted_fields(mapping, quotes)
         return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(content, ensure_ascii=False)}}]})
     return handler
 
@@ -739,11 +802,11 @@ def test_written_number_parses_strings_and_rejects_the_rest():
 @pytest.mark.parametrize("raw, text, accepted", [
     ("1,8 м", "Длина 1,8 м", True),     # число с запятой и единицей одной строкой
     ("1600 м", "Длина 1600 м", True),
-    ("1,8", "Длина 1,8 м", True),       # единицу «м» код берёт из текста рядом с числом
+    ("1,8", "Длина 1,8 м", True),       # единицу «м» код берёт из предоставленной цитаты
     ("до 2 м", "Длина до 2 м", False),  # не число — поле не заполняется
 ])
 def test_numeric_value_as_string_is_grounded_in_the_text(monkeypatch, raw, text, accepted):
-    mock_providers(monkeypatch, llm_handler=mapping_handler({"size": raw}))
+    mock_providers(monkeypatch, llm_handler=mapping_handler({"size": raw}, {"size": text}))
     row = asyncio.run(autofill.autofill_characteristics(size_request(text, "м", 1, 2000)))["characteristics"][0]
     assert (row["status"] == "accepted") is accepted
     if accepted:
@@ -760,7 +823,7 @@ def test_canonical_option_matches_case_and_yo_but_only_unambiguously():
 
 
 def test_enum_value_in_other_form_is_filled_with_the_schema_option(monkeypatch):
-    mock_providers(monkeypatch, llm_handler=mapping_handler({"color": "Чёрная"}))
+    mock_providers(monkeypatch, llm_handler=mapping_handler({"color": "Чёрная"}, {"color": "чёрная"}))
     body = request(text="Мышь чёрная", characteristics=[{"id": "color", "name": "Цвет", "options": ["Черный", "Белый"]}])
     row = asyncio.run(autofill.autofill_characteristics(body))["characteristics"][0]
     assert row["status"] == "accepted" and row["value"] == "Черный" and row["errors"] == []
