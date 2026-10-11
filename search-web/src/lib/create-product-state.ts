@@ -128,7 +128,9 @@ export function captureQueryDraft() {
   });
 }
 
-export function restoreQueryDraft(draft: ReturnType<typeof captureQueryDraft>) {
+export type QueryDraft = ReturnType<typeof captureQueryDraft>;
+
+export function restoreQueryDraft(draft: QueryDraft) {
   batch(() => {
     setName(draft.name); setSku(draft.sku); setModel(draft.model); setBrand(draft.brand);
     setSelected(draft.selected); setOkpd2(draft.okpd2); setKpgz(draft.kpgz);
