@@ -251,7 +251,7 @@ def test_specialization_pairs_siblings_and_preserves_names_and_current_value(cat
     assert catalog.get_catalog_specialization({"ktruCode": "template", "kpgzCode": "01.10"})["currentValues"] is None
     node = catalog.get_ktru_node("steel")
     assert node["name"] == "Молоток слесарный"
-    assert node["variantLabel"] is None
+    assert node["variantLabel"] == "Тип: Слесарный"
     assert node["isTemplate"] is False
     assert catalog.get_ktru_node("template")["childCount"] == 2
 
@@ -279,11 +279,21 @@ def test_different_spgz_discriminator_does_not_pair_unrelated_values(catalog):
     assert all(option["spgzCode"] is None for option in spec["options"])
 
 
-def test_variant_label_only_when_beautiful_name_does_not_explain_variant(catalog):
+def test_variant_label_always_surfaces_discriminating_characteristics(catalog):
     _add_siblings(catalog)
-    with sqlite3.connect(catalog.ktru_path) as db:
-        db.execute("UPDATE ktru SET name='Молоток' WHERE code='steel'")
     assert catalog.get_ktru_node("steel")["variantLabel"] == "Тип: Слесарный"
+    assert catalog.get_ktru_node("wood")["variantLabel"] == "Тип: Столярный"
+    _add_ktru(catalog, "density-template", name="Наволочки", template=True)
+    _add_ktru(
+        catalog, "density-soft", name="Наволочка ХБ, плотность от 160 г/кв.м", parent="density-template",
+        characteristics=[_characteristic(name="Плотность ткани, гр/кв.м", value="≥160", code="density", type="2", kind="2")],
+    )
+    _add_ktru(
+        catalog, "density-exact", name="Наволочка ХБ ≥155 г/кв.м", parent="density-template",
+        characteristics=[_characteristic(name="Плотность ткани, гр/кв.м", value="≥155", code="density", type="2", kind="2")],
+    )
+    assert catalog.get_ktru_node("density-soft")["variantLabel"] == "Плотность ткани, гр/кв.м: ≥160"
+    assert catalog.get_ktru_node("density-exact")["variantLabel"] == "Плотность ткани, гр/кв.м: ≥155"
 
 
 def test_specialization_filters_inactive_ktru_and_excluded_spgz(catalog):

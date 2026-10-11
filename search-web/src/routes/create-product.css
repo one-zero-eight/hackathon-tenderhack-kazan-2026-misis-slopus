@@ -411,32 +411,18 @@
 .create-vote-variant { display: block; margin-top: 2px; color: #264b82; font-size: 11px; font-weight: 650; line-height: 1.35; overflow-wrap: anywhere; }
 .ktru-picker-body {
   display: grid;
-  grid-template-columns: minmax(280px, 1fr) minmax(280px, 1.05fr);
-  gap: 12px;
+  grid-template-columns: minmax(280px, 1.05fr) minmax(0, 1.2fr);
+  gap: 16px;
   flex: 1;
   min-height: 0;
-  padding: 12px 16px;
+  padding: 14px 16px;
   overflow: hidden;
 }
 .ktru-picker-body .ktru-panel { min-height: 0; height: 100%; }
 .ktru-picker-detail { display: flex; flex-direction: column; min-height: 0; }
-.ktru-picker-detail-scroll { flex: 1; min-height: 0; overflow: auto; }
+.ktru-picker-body .dir-detail-scroll { flex: 1; min-height: 0; overflow: auto; }
 .ktru-picker-body .ktru-tree,
-.ktru-picker-body .ktru-json,
-.ktru-picker-body .ktru-detail { max-height: none; }
-.ktru-detail { flex: 1; overflow: auto; padding: 14px 16px; }
-.ktru-detail-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 10px; margin-bottom: 10px; }
-.ktru-detail-head strong { font-size: 14px; line-height: 1.35; }
-.ktru-detail-head code { font-size: 11px; color: #7f8792; }
-.ktru-detail-description { margin: 0 0 12px; color: #1a1a1a; font-size: 12px; line-height: 1.55; }
-.ktru-detail-meta { margin: 0 0 14px; display: flex; flex-direction: column; gap: 6px; }
-.ktru-detail-meta > div { display: grid; grid-template-columns: 88px minmax(0, 1fr); gap: 8px; font-size: 12px; }
-.ktru-detail-meta dt { margin: 0; color: #7f8792; }
-.ktru-detail-meta dd { margin: 0; overflow-wrap: anywhere; }
-.ktru-detail-chars h3 { margin: 0 0 8px; font-size: 12px; }
-.ktru-detail-chars ul { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 4px; }
-.ktru-detail-chars li { display: flex; justify-content: space-between; gap: 10px; font-size: 11px; color: #1a1a1a; }
-.ktru-detail-chars em { color: #f67319; font-style: normal; font-size: 10px; }
+.ktru-picker-body .ktru-json { max-height: none; }
 .create-similar-row {
   display: flex;
   gap: 12px;
