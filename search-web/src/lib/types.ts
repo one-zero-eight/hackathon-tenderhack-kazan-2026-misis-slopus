@@ -231,6 +231,7 @@ export type CharacteristicAutofillInput = {
   ktruCode?: string | null;
   additionalAllowed?: boolean | null;
   excludedNames?: string[];
+  webFacts?: string[];
 };
 
 export type WebEnrichmentSuggestion = {

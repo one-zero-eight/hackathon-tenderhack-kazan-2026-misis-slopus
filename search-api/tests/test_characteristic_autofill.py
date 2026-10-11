@@ -129,6 +129,44 @@ def test_product_model_and_manufacturer_are_extracted_without_explicit_labels(mo
     assert result["product"]["article"]["status"] == "missing"
 
 
+def test_confirmed_web_facts_fill_characteristics_without_changing_description(monkeypatch):
+    text = "Молоток, рукоятка деревянная, артикул AB-12"
+    source_text = f"{text}\n\nМасса: 500 г"
+
+    def llm(req):
+        body = json.loads(req.content)
+        state = json.loads(body["messages"][1]["content"])
+        assert state["text"] == source_text
+        return httpx.Response(200, json={
+            "choices": [{"message": {"content": json.dumps(quoted_fields({
+                "0": "Дерево", "1": "500 г",
+                "product": {"name": text, "article": "AB-12"},
+            }), ensure_ascii=False)}}],
+        })
+
+    def jev(req):
+        body = json.loads(req.content)
+        assert body["state"]["source_text"] == source_text
+        return httpx.Response(200, json={
+            "model": "jev",
+            "answers": {qid: {"type": "noul", "noul": 0.95} for qid in body["questions"]},
+        })
+
+    async def unexpected_web_search(*_args, **_kwargs):
+        pytest.fail("Confirmed web facts must not trigger another internet search")
+
+    mock_providers(monkeypatch, llm_handler=llm, jev_handler=jev)
+    monkeypatch.setattr(autofill, "enrich_from_web", unexpected_web_search)
+    body = request(text=text, webFacts=["Масса: 500 г"], additionalAllowed=False)
+    result = asyncio.run(autofill.autofill_characteristics(body))
+    mass = next(item for item in result["characteristics"] if item["id"] == "mass")
+    assert mass["status"] == "accepted"
+    assert mass["value"] == "0.5"
+    assert mass["rangeOption"] == "< 1"
+    assert body.text == text
+    assert result["webEnrichment"] is None
+
+
 def test_autofill_logs_stages_and_total(monkeypatch, caplog):
     import logging
 
@@ -464,8 +502,12 @@ def test_fabricated_quote_is_rejected(monkeypatch):
 
 
 def test_multiple_values_are_joined(monkeypatch):
+    calls = []
+
     def llm_handler(req):
-        content = {"0": ["Красный", "Синий"]}
+        payload = json.loads(json.loads(req.content)["messages"][1]["content"])
+        calls.append(payload)
+        content = {} if "missing" in payload else {"0": ["Красный", "Синий"]}
         return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(quoted_fields(content), ensure_ascii=False)}}]})
 
     mock_providers(monkeypatch, llm_handler=llm_handler)
@@ -475,25 +517,93 @@ def test_multiple_values_are_joined(monkeypatch):
     )))
     assert result["characteristics"][0]["value"] == "Красный · Синий"
     assert result["characteristics"][0]["status"] == "accepted"
+    assert len(calls) == 2
+    assert calls[1]["missing"] == []
+    assert calls[1]["already"]["fields"] == [
+        {"id": "0", "value": "Красный", "quote": "Красный"},
+        {"id": "0", "value": "Синий", "quote": "Синий"},
+    ]
 
 
-def test_unitless_number_with_physical_unit_is_rejected(monkeypatch):
-    def llm_handler(req):
-        content = {"0": "450 мм"}
-        return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(quoted_fields(content), ensure_ascii=False)}}]})
-
-    mock_providers(monkeypatch, llm_handler=llm_handler)
+@pytest.mark.parametrize("text,name,value", [
+    ("Ширина 450 мм", "Ширина", "450 мм"),
+    ("Перфоратор Makita HR2450FT 780 Вт", "Мощность", "780 Вт"),
+    ("Перфоратор, мощность 0,78 кВт", "Мощность", "0.78 кВт"),
+])
+def test_missing_schema_unit_keeps_explicit_unit_in_value(monkeypatch, text, name, value):
+    source_value = value.replace("0.78", "0,78")
+    mock_providers(monkeypatch, llm_handler=mapping_handler({"0": source_value}))
     result = asyncio.run(autofill.autofill_characteristics(request(
-        text="Ширина 450 мм",
-        characteristics=[{"id": "width", "name": "Ширина", "numeric": True}],
+        text=text, additionalAllowed=False,
+        characteristics=[{"id": "power", "name": name, "numeric": True, "source": "spgz"}],
     )))
-    assert result["characteristics"][0]["status"] == "rejected"
-    assert any("единица отсутствует" in error for error in result["characteristics"][0]["errors"])
+    row = result["characteristics"][0]
+    assert row["status"] == "accepted"
+    assert row["value"] == value
+    assert row["conversion"] is None
+    assert text[row["evidence"]["start"]:row["evidence"]["end"]] == source_value
+
+
+@pytest.mark.parametrize("constraints", [
+    {"options": ["0–1000"], "ranges": [{"option": "0–1000", "min": 0, "max": 1000}]},
+    {"options": ["780", "800"]},
+])
+def test_missing_unit_never_compares_physical_values_with_unitless_constraints(monkeypatch, constraints):
+    mock_providers(monkeypatch, llm_handler=mapping_handler({"0": "780 Вт"}))
+    row = asyncio.run(autofill.autofill_characteristics(request(
+        text="Перфоратор Makita HR2450FT 780 Вт", additionalAllowed=False,
+        characteristics=[{"id": "power", "name": "Мощность", "numeric": True, **constraints}],
+    )))["characteristics"][0]
+    assert row["status"] == "rejected"
+    assert any("единица отсутствует" in error for error in row["errors"])
+
+
+def test_claim_verification_includes_field_name_with_opaque_id():
+    fields = [autofill.AutofillCharacteristic(
+        id="spgz:1609061850", name="Мощность", numeric=True, source="spgz",
+    )]
+    extraction = autofill.map_to_extraction(
+        {fields[0].id: {"value": "780 Вт", "quote": "780 Вт"}},
+        fields, "Перфоратор Makita HR2450FT 780 Вт", additional_allowed=False,
+    )
+    instructions = autofill.build_claim_questions(extraction, fields)["f0"]["instructions"]
+    assert instructions["field_name"] == "Мощность"
+    assert instructions["claim"]["source_unit"] == "Вт"
+    assert "field_name" in instructions["question"]
+    assert "Отсутствие единицы" in instructions["question"]
+
+
+def test_power_supply_paraphrased_quote_is_replaced_with_grounded_evidence(monkeypatch):
+    text = 'Дрель-шуруповерт аккумуляторная Ставр "ДА-10,8/2 (2,6 Л)"'
+    calls = []
+
+    def llm(req):
+        payload = json.loads(json.loads(req.content)["messages"][1]["content"])
+        calls.append(payload)
+        if len(calls) == 1:
+            quote = "От аккумулятора"
+        else:
+            assert payload["missing"] == ["0"]
+            assert payload["already"]["fields"] == []
+            quote = "аккумуляторная"
+        return mapping_handler({"0": "От аккумулятора"}, {"0": quote})(req)
+
+    mock_providers(monkeypatch, llm_handler=llm)
+    row = asyncio.run(autofill.autofill_characteristics(request(
+        text=text, additionalAllowed=False, characteristics=[{
+            "id": "supply", "name": "Тип питания", "options": ["От сети", "От аккумулятора"],
+        }],
+    )))["characteristics"][0]
+    assert len(calls) == 2
+    assert row["status"] == "accepted" and row["value"] == "От аккумулятора"
+    assert row["quote"] == "аккумуляторная"
+    assert text[row["evidence"]["start"]:row["evidence"]["end"]] == row["quote"]
 
 
 def test_additional_fields_require_explicit_permission(monkeypatch):
     def llm_handler(req):
-        content = {"Цвет": "синий"}
+        payload = json.loads(json.loads(req.content)["messages"][1]["content"])
+        content = {} if "missing" in payload else {"Цвет": {"value": "синий", "quote": "цвет синий"}}
         return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(quoted_fields(content), ensure_ascii=False)}}]})
 
     mock_providers(monkeypatch, llm_handler=llm_handler)
@@ -857,3 +967,223 @@ def test_extra_body_is_configurable_and_cannot_override_the_request(monkeypatch)
     monkeypatch.setattr(settings, "openai_extra_body", {"model": "чужая", "temperature": 1, "top_k": 20})
     asyncio.run(autofill.autofill_characteristics(request()))
     assert all(body["model"] == settings.openai_model and body["temperature"] == 0 and body["top_k"] == 20 for body in seen)
+
+
+def test_compact_schema_keeps_hints_labels_and_all_40_options():
+    options = [f"option-{index}" for index in range(40)]
+    labels = {option: f"Описание {index}" for index, option in enumerate(options)}
+    field = autofill.AutofillCharacteristic(
+        id="kind", name="Тип", options=options, optionLabels=labels,
+        hint="Тип именно рукоятки", multiple=True,
+    )
+    assert autofill.compact_schema_for_llm([field]) == {"kind": {
+        "n": "Тип", "t": "enum", "v": options, "labels": labels,
+        "h": "Тип именно рукоятки", "m": 1,
+    }}
+
+
+def test_equal_numbers_keep_explicit_field_context_in_evidence(monkeypatch):
+    text = "Высота 1800 мм; ширина 1800 мм"
+    mock_providers(monkeypatch, llm_handler=mapping_handler(
+        {"0": "1800 мм", "1": "1800 мм"},
+        {"0": "Высота 1800 мм", "1": "ширина 1800 мм"},
+    ))
+    result = asyncio.run(autofill.autofill_characteristics(request(
+        text=text, additionalAllowed=False, characteristics=[
+            {"id": "height", "name": "Высота", "numeric": True, "unit": "мм"},
+            {"id": "width", "name": "Ширина", "numeric": True, "unit": "мм"},
+        ],
+    )))
+    for row, quote in zip(result["characteristics"],
+                          ["Высота 1800 мм", "ширина 1800 мм"], strict=True):
+        assert row["status"] == "accepted"
+        assert row["value"] == "1800"
+        assert row["quote"] == quote
+        evidence = row["evidence"]
+        assert text[evidence["start"]:evidence["end"]] == quote
+    assert result["characteristics"][0]["evidence"]["start"] != result["characteristics"][1]["evidence"]["start"]
+
+
+def test_enum_synonym_uses_canonical_option_with_direct_quote(monkeypatch):
+    mock_providers(monkeypatch, llm_handler=mapping_handler(
+        {"0": "Нет"}, {"0": "без колёс"},
+    ))
+    body = request(text="Шкаф без колёс", additionalAllowed=False, characteristics=[
+        {"id": "wheels", "name": "Наличие колёс", "options": ["Да", "Нет"]},
+    ])
+    row = asyncio.run(autofill.autofill_characteristics(body))["characteristics"][0]
+    assert row["status"] == "accepted" and row["value"] == "Нет"
+    assert row["quote"] == "без колёс"
+    assert body.text[row["evidence"]["start"]:row["evidence"]["end"]] == "без колёс"
+
+
+@pytest.mark.parametrize("value, quote", [
+    ("1800 мм", "Высота 2000 мм"),
+    ("180 мм", "Высота 1800 мм"),
+    ("1800 мм", "Высота 900 мм"),
+    ("1800 см", "Высота 1800 мм"),
+    ("1800 мм", "Высота 1800"),
+    ("12 мм", "Поправка -12 мм"),
+])
+def test_numeric_wrong_quote_substring_and_invented_unit_are_rejected(monkeypatch, value, quote):
+    mock_providers(monkeypatch, llm_handler=mapping_handler({"0": value}, {"0": quote}))
+    row = asyncio.run(autofill.autofill_characteristics(request(
+        text="Высота 1800 мм; ширина 900 мм; Поправка -12 мм", additionalAllowed=False,
+        characteristics=[{"id": "height", "name": "Высота", "numeric": True, "unit": "мм"}],
+    )))["characteristics"][0]
+    assert row["status"] == "rejected" and row["value"] is None
+    assert row["errors"]
+
+
+@pytest.mark.parametrize("quote", [
+    "Длина не менее 120 см", "Длина не более 120 см", "Длина до 120 см",
+    "Длина от 120 см", "Длина ≥ 120 см", "Длина <120 см",
+    "Длина 120–150 см", "Длина около 120 см", "Длина 120 см ± 5 см",
+])
+def test_numeric_limits_are_not_exact_values(monkeypatch, quote):
+    mock_providers(monkeypatch, llm_handler=mapping_handler({"0": "120 см"}, {"0": quote}))
+    row = asyncio.run(autofill.autofill_characteristics(request(
+        text=quote, additionalAllowed=False,
+        characteristics=[{"id": "length", "name": "Длина", "numeric": True, "unit": "см"}],
+    )))["characteristics"][0]
+    assert row["status"] == "rejected" and row["value"] is None
+    assert any("ограничение" in error for error in row["errors"])
+
+
+@pytest.mark.parametrize("literal, value", [("-12", "-12"), ("+12", "12"), ("-1,8", "-1.8")])
+def test_signed_numbers_are_grounded_without_losing_the_sign(monkeypatch, literal, value):
+    text = f"Поправка {literal} мм"
+    mock_providers(monkeypatch, llm_handler=mapping_handler({"0": f"{literal} мм"}, {"0": text}))
+    row = asyncio.run(autofill.autofill_characteristics(request(
+        text=text, additionalAllowed=False,
+        characteristics=[{"id": "offset", "name": "Поправка", "numeric": True, "unit": "мм"}],
+    )))["characteristics"][0]
+    assert row["status"] == "accepted" and row["value"] == value
+    assert row["quote"] == text
+
+
+def test_scalar_field_mappings_are_not_supported():
+    body = request()
+    extraction = autofill.map_to_extraction(
+        {"handle": "Дерево", "mass": "500 г", "Цвет": "синий"},
+        body.characteristics, body.text, additional_allowed=True,
+    )
+    assert extraction.fields == [] and extraction.additional == []
+
+
+def test_second_pass_recovers_only_missed_field_and_sums_usage(monkeypatch):
+    calls = []
+
+    def llm(req):
+        body = json.loads(req.content)
+        payload = json.loads(body["messages"][1]["content"])
+        calls.append(payload)
+        if len(calls) == 1:
+            assert body["messages"][0]["content"] == autofill.EXTRACT_PROMPT
+            content = quoted_fields({"0": "Дерево", "product": {"model": "M500"}})
+        else:
+            assert body["messages"][0]["content"] == autofill.COVERAGE_PROMPT
+            assert payload["missing"] == ["1"]
+            assert payload["already"] == {"fields": [
+                {"id": "0", "value": "Дерево", "quote": "рукоятка деревянная"},
+            ], "additional": []}
+            content = quoted_fields({"1": "500 г"})
+        return httpx.Response(200, json={
+            "choices": [{"message": {"content": json.dumps(content, ensure_ascii=False)}}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+        })
+
+    mock_providers(monkeypatch, llm_handler=llm)
+    result = asyncio.run(autofill.autofill_characteristics(request(
+        text="Молоток M500, 500 г, рукоятка деревянная", additionalAllowed=False,
+    )))
+    assert len(calls) == 2 and result["filled"] == 2
+    assert all(row["status"] == "accepted" for row in result["characteristics"])
+    assert result["product"]["model"]["value"] == "M500"
+    assert result["usage"]["llm"] == {"input_tokens": 20, "output_tokens": 10}
+
+
+def test_second_pass_deduplicates_multiple_and_additional_without_replacing_single(monkeypatch):
+    calls = []
+    text = "Рукоятка деревянная; корпус металлический; цвета красный и синий; отделка матовая"
+
+    def llm(req):
+        payload = json.loads(json.loads(req.content)["messages"][1]["content"])
+        calls.append(payload)
+        if len(calls) == 1:
+            mapping = {"0": "Дерево", "1": ["Красный"], "Отделка": "матовая"}
+            quotes = {"0": "Рукоятка деревянная", "1": ["цвета красный"], "Отделка": "отделка матовая"}
+        else:
+            assert payload["missing"] == []
+            assert len(payload["already"]["fields"]) == 2
+            assert payload["already"]["additional"][0]["name"] == "Отделка"
+            mapping = {
+                "0": "Металл", "1": ["Красный", "Синий"],
+                " отделка ": "матовая", "Материал рукоятки": "Металл",
+                "Корпус": "металлический", "product": {"model": "invented"},
+            }
+            quotes = {
+                "0": "корпус металлический", "1": ["цвета красный", "синий"],
+                " отделка ": "отделка матовая", "Материал рукоятки": "корпус металлический",
+                "Корпус": "корпус металлический",
+            }
+        return mapping_handler(mapping, quotes)(req)
+
+    mock_providers(monkeypatch, llm_handler=llm)
+    body = request(text=text, additionalAllowed=True, characteristics=[
+        {"id": "handle", "name": "Материал рукоятки", "options": ["Дерево", "Металл"]},
+        {"id": "colors", "name": "Цвета", "multiple": True, "options": ["Красный", "Синий"]},
+    ])
+    result = asyncio.run(autofill.autofill_characteristics(body))
+    assert len(calls) == 2
+    rows = {row["id"]: row for row in result["characteristics"]}
+    assert rows["handle"]["value"] == "Дерево"
+    assert rows["colors"]["value"] == "Красный · Синий"
+    assert [row["name"] for row in result["additional_fields"]] == ["Отделка", "Корпус"]
+    assert result["product"]["model"]["status"] == "missing"
+
+
+@pytest.mark.parametrize("failure", ["http", "non_object"])
+def test_second_pass_errors_are_reported(monkeypatch, failure):
+    calls = []
+
+    def llm(req):
+        calls.append(json.loads(req.content))
+        if len(calls) == 1:
+            return mapping_handler({"0": "Дерево"})(req)
+        if failure == "http":
+            return httpx.Response(503)
+        return httpx.Response(200, json={"choices": [{"message": {"content": "[]"}}]})
+
+    mock_providers(monkeypatch, llm_handler=llm)
+    with pytest.raises(autofill.AutofillError):
+        asyncio.run(autofill.autofill_characteristics(request(additionalAllowed=False)))
+    assert len(calls) == 2
+
+
+def test_second_pass_is_cancelled_on_disconnect(monkeypatch):
+    mock_providers(monkeypatch)
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def llm(client, prompt, payload, usage, **kwargs):
+        if prompt == autofill.EXTRACT_PROMPT:
+            return quoted_fields({"0": "Дерево"})
+        assert prompt == autofill.COVERAGE_PROMPT
+        started.set()
+        try:
+            await asyncio.Future()
+        finally:
+            cancelled.set()
+
+    monkeypatch.setattr(autofill, "llm_chat", llm)
+
+    async def run():
+        task = asyncio.create_task(autofill.autofill_characteristics(request(additionalAllowed=False)))
+        await asyncio.wait_for(started.wait(), timeout=1)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=1)
+        assert cancelled.is_set()
+
+    asyncio.run(run())

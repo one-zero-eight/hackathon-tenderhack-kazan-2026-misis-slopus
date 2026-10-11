@@ -19,7 +19,8 @@ export const [name, setName] = createSignal("");
 export const [sku, setSku] = createSignal("");
 export const [model, setModel] = createSignal("");
 export const [brand, setBrand] = createSignal("");
-export const [description, setDescription] = createSignal("");
+const [descriptionValue, updateDescription] = createSignal("");
+export const description = descriptionValue;
 export const [selected, setSelected] = createSignal<KtruTreeNode | null>(null);
 export const [okpd2, setOkpd2] = createSignal<VotedCode | null>(null);
 export const [kpgz, setKpgz] = createSignal<VotedCode | null>(null);
@@ -48,6 +49,18 @@ export const autofilledCharacteristicValues = new Map<string, { value: string; r
 export const manuallyEditedProductFields = new Set<"name" | "model" | "manufacturer" | "article">();
 export const autofilledProductValues = new Map<"name" | "model" | "manufacturer" | "article", string>();
 export const autofilledProductEvidence = new Map<"name" | "model" | "manufacturer" | "article", AutofillEvidence>();
+
+export function setDescription(text: string): string {
+  if (text === description()) return text;
+  batch(() => {
+    setName("");
+    manuallyEditedProductFields.delete("name");
+    autofilledProductValues.delete("name");
+    autofilledProductEvidence.delete("name");
+    updateDescription(text);
+  });
+  return text;
+}
 
 export function characteristicEditKey(item: DraftCharacteristic): string {
   if (item.source === "catalog") return `catalog:${item.id}:${item.unit}`;

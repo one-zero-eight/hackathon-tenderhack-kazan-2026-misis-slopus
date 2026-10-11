@@ -16,8 +16,10 @@ import {
   manuallyEditedCharacteristicValues,
   preserveManualCharacteristics,
   name, setName,
+  description, setDescription,
   manuallyEditedProductFields,
   autofilledProductValues,
+  autofilledProductEvidence,
 } from "../src/lib/create-product-state";
 import type { CatalogCharacteristic, CategoryPairDecision, DraftCharacteristic } from "../src/lib/types";
 import { characteristicRangeProblem } from "../src/lib/characteristic-options";
@@ -84,6 +86,39 @@ test("query drafts preserve generated product names and manual name edits", () =
     assert.equal(manuallyEditedProductFields.has("name"), true);
     assert.equal(autofilledProductValues.get("name"), "Дрель Ставр ДА-10");
   } finally { restoreQueryDraft(original); }
+});
+
+test("changing description clears product name and its manual/autofill state", () => {
+  const original = captureQueryDraft();
+  const originalDescription = description();
+  try {
+    setDescription("Молоток 500 г");
+    setName("Моё название молотка");
+    manuallyEditedProductFields.add("name");
+    autofilledProductValues.set("name", "Молоток 500 г");
+    autofilledProductValues.set("manufacturer", "Зубр");
+    autofilledProductEvidence.set("name", { quote: "Молоток", start: 0, end: 7, source: "llm", conversion: null });
+
+    setDescription("Молоток 500 г");
+    assert.equal(name(), "Моё название молотка", "unchanged description must not reset the name");
+
+    const saved = captureQueryDraft();
+    setDescription("Дрель 600 Вт");
+    assert.equal(name(), "");
+    assert.equal(manuallyEditedProductFields.has("name"), false);
+    assert.equal(autofilledProductValues.has("name"), false);
+    assert.equal(autofilledProductEvidence.has("name"), false);
+    assert.equal(autofilledProductValues.get("manufacturer"), "Зубр");
+
+    setDescription("Молоток 500 г");
+    restoreQueryDraft(saved);
+    assert.equal(name(), "Моё название молотка", "saved query names must still restore");
+    setDescription("");
+    assert.equal(name(), "", "clearing description must also clear the name");
+  } finally {
+    setDescription(originalDescription);
+    restoreQueryDraft(original);
+  }
 });
 
 test("catalog fields supplement schemas without duplicate names or observed-value restrictions", () => {

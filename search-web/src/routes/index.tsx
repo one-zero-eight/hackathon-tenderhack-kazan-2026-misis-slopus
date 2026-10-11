@@ -163,16 +163,6 @@ function formatSuggestTiming(ms: number): string {
   return ms < 1000 ? `${Math.round(ms)} мс` : `${(ms / 1000).toFixed(2)} с`;
 }
 
-/** Split suggested description so the appended web facts can be highlighted. */
-function enrichmentDescriptionParts(original: string, suggested: string): { kept: string; added: string } {
-  const next = suggested.trim();
-  const raw = original.trim();
-  const base = raw.replace(/\.+\s*$/, "");
-  if (base && next.startsWith(base)) return { kept: base, added: next.slice(base.length) };
-  if (raw && next.startsWith(raw)) return { kept: raw, added: next.slice(raw.length) };
-  return { kept: "", added: next };
-}
-
 function normCharName(name: string): string {
   return normSpecName(name);
 }
@@ -789,6 +779,7 @@ export default function NewProduct() {
   const [autofillCompletedText, setAutofillCompletedText] = createSignal<string | null>(null);
   const [autofillStatus, setAutofillStatus] = createSignal<"accepted" | "needs_review" | "no_match" | null>(null);
   const [webEnrichment, setWebEnrichment] = createSignal<WebEnrichmentSuggestion | null>(null);
+  const [autofillWebFacts, setAutofillWebFacts] = createSignal<string[]>([]);
   const autofillBusy = () => autofilling() || autofillRequestedText() !== null;
   const autofillCompleted = () => autofillCompletedText() === description().trim();
   const autofillNeedsReview = () => autofillCompleted() && autofillStatus() === "needs_review";
@@ -1334,6 +1325,7 @@ export default function NewProduct() {
     setAutofillCompletedText(null);
     setAutofillStatus(null);
     setWebEnrichment(null);
+    setAutofillWebFacts([]);
     setEvidenceFlashId(null);
     clearTimeout(evidenceFlashTimer);
     setProductEvidenceVersion((version) => version + 1);
@@ -1907,7 +1899,7 @@ export default function NewProduct() {
     excludedNames: characteristics().filter((item) => item.custom || item.source === "custom").map((item) => item.name),
   }));
 
-  const requestAutofill = () => {
+  const requestAutofill = (webFacts: string[] = []) => {
     const text = description().trim();
     if (text.length < 12 || autofilling() || autofillRequestedText() !== null) return;
     if (suggestAcceptedQuery() !== normalizeQuery(text)) return;
@@ -1919,6 +1911,7 @@ export default function NewProduct() {
       setAutofillCompletedText(null);
       setAutofillStatus(null);
       setWebEnrichment(null);
+      setAutofillWebFacts(webFacts);
       setAutofillRequestedText(text);
     });
   };
@@ -1936,7 +1929,10 @@ export default function NewProduct() {
   createEffect(on([suggesting, autofillRequestedText, catalogCharacteristicsLoading], ([categoryLoading, requestedText, catalogLoading]) => {
     if (requestedText === null || autofilling()) return;
     const key = autofillInput();
-    const input = JSON.parse(key) as Parameters<typeof apiAutofillCharacteristics>[0];
+    const input = {
+      ...JSON.parse(key),
+      webFacts: autofillWebFacts(),
+    } as Parameters<typeof apiAutofillCharacteristics>[0];
     if (requestedText !== input.text || input.text.length < 12) {
       setAutofillRequestedText(null);
       return;
@@ -1958,6 +1954,9 @@ export default function NewProduct() {
         if (!isCurrent()) return;
         if (autofillInput() !== key) throw new Error("Схема характеристик изменилась во время разбора. Запустите разбор заново.");
         const byId = new Map(result.characteristics.map((item) => [item.id, item]));
+        const descriptionEvidence = (evidence: AutofillEvidence | null | undefined) =>
+          evidence && evidence.start >= 0 && evidence.end <= input.text.length
+            && input.text.slice(evidence.start, evidence.end) === evidence.quote ? evidence : null;
         type FieldUpdate = {
           value: string; rangeOption: string;
           autofill: DraftCharacteristic["autofill"];
@@ -1974,7 +1973,7 @@ export default function NewProduct() {
             const previousAuto = autofilledCharacteristicValues.get(characteristicEditKey(current));
             const isEmpty = !current.value.trim() && !current.rangeOption.trim();
             const isPreviousAuto = previousAuto?.value === current.value && previousAuto?.rangeOption === current.rangeOption;
-            if (!isEmpty && !isPreviousAuto) continue;
+            if (!isEmpty && (input.webFacts?.length || !isPreviousAuto)) continue;
             const accepted = answer?.status === "accepted" && answer.value != null && String(answer.value).trim();
             const value = accepted ? String(answer.value) : "";
             const rangeOption = accepted
@@ -1989,7 +1988,7 @@ export default function NewProduct() {
               errors: answer.errors ?? [],
               conversion: answer.conversion ?? null,
               suggestion: answer.suggestion ?? null,
-              evidence: answer.evidence ?? null,
+              evidence: descriptionEvidence(answer.evidence),
               model: result.model,
             } : {
               status: "missing" as const, confidence: null, quote: null, errors: [],
@@ -1999,19 +1998,20 @@ export default function NewProduct() {
               value, rangeOption,
               autofill: accepted ? {
                 confidence: answer!.confidence ?? 0, model: result.model,
-                evidence: answer!.evidence ?? null,
+                evidence: descriptionEvidence(answer!.evidence),
               } : undefined,
               autofillDiagnostics: diagnostics,
             });
             autofilledCharacteristicValues.set(characteristicEditKey(current), { value, rangeOption });
           }
         }
-        autofilledProductEvidence.clear();
+        if (!input.webFacts?.length) autofilledProductEvidence.clear();
         const applyProduct = (
           keyName: "name" | "model" | "manufacturer" | "article",
           current: string,
           setter: (value: string) => void,
         ) => {
+          if (input.webFacts?.length) return;
           const extracted = result.product?.[keyName];
           if (!extracted || extracted.status !== "accepted" || !extracted.value?.trim()) return;
           if (manuallyEditedProductFields.has(keyName)) return;
@@ -2039,12 +2039,12 @@ export default function NewProduct() {
               options: [], optionLabels: {}, ranges: [], unit: item.unit ?? "", multiple: false,
               source: "custom" as const, custom: true, hint: "",
               autofill: item.confidence != null ? {
-                confidence: item.confidence, model: result.model, evidence: item.evidence ?? null,
+                confidence: item.confidence, model: result.model, evidence: descriptionEvidence(item.evidence),
               } : undefined,
               autofillDiagnostics: {
                 status: item.status, confidence: item.confidence, quote: item.quote,
                 errors: item.errors ?? [], conversion: item.conversion ?? null, suggestion: null,
-                evidence: item.evidence ?? null, model: result.model,
+                evidence: descriptionEvidence(item.evidence), model: result.model,
               },
             };
           });
@@ -2398,45 +2398,34 @@ export default function NewProduct() {
         </div>
       </Show>
       <Show when={webEnrichment() && autofillCompleted() ? webEnrichment() : null}>
-        {(enrichment) => {
-          const parts = () => enrichmentDescriptionParts(description(), enrichment().suggestedDescription);
-          return (
+        {(enrichment) => (
           <Card class="create-web-enrichment-card">
             <CardHeader>
-              <CardTitle>Уточните описание по данным из интернета</CardTitle>
+              <CardTitle>Заполнить характеристики по данным из интернета?</CardTitle>
               <CardDescription>{enrichment().message}</CardDescription>
             </CardHeader>
             <CardContent>
-              <p class="create-web-enrichment-label">Предлагаемое описание</p>
-              <p class="create-web-enrichment-text">
-                {parts().kept}
-                <Show when={parts().added || false}>
-                  <span class="create-web-enrichment-added">{parts().added}</span>
-                </Show>
-              </p>
+              <p class="create-web-enrichment-label">Найденные характеристики</p>
+              <ul class="create-web-enrichment-text">
+                <For each={enrichment().facts}>{(fact) => <li>{fact}</li>}</For>
+              </ul>
             </CardContent>
             <CardFooter class="create-web-enrichment-footer">
               <Button
                 type="button"
                 variant="default"
                 size="sm"
-                onClick={() => {
-                  const next = enrichment().suggestedDescription;
-                  setDescription(next);
-                  setWebEnrichment(null);
-                  if (enrichment().brand && !brand().trim()) setBrand(enrichment().brand);
-                  if (enrichment().model && !model().trim()) setModel(enrichment().model);
-                }}
+                disabled={autofillBusy()}
+                onClick={() => requestAutofill(enrichment().facts)}
               >
-                Применить к описанию
+                Да, заполнить характеристики
               </Button>
               <Button type="button" variant="outline" size="sm" onClick={() => setWebEnrichment(null)}>
-                Скрыть
+                Нет
               </Button>
             </CardFooter>
           </Card>
-          );
-        }}
+        )}
       </Show>
     </section>
 
@@ -2512,7 +2501,7 @@ export default function NewProduct() {
               class="create-char-autofill-button"
               disabled={description().trim().length < 12 || autofillBusy() || suggestAcceptedQuery() !== normalizeQuery(description())}
               aria-busy={autofillBusy()}
-              onClick={requestAutofill}
+              onClick={() => requestAutofill()}
             >
               <Show when={autofillBusy()} fallback={
                 <Show when={autofillCompleted() && displayCharacteristics().length > 0} fallback={<Sparkles size={16} />}><Check size={16} /></Show>
@@ -2524,7 +2513,7 @@ export default function NewProduct() {
         <Show when={autofillError()}>
           <div class="create-autofill-error" role="alert">
             <span>{autofillError()}</span>
-            <Button type="button" variant="outline" size="sm" onClick={requestAutofill}>Повторить</Button>
+            <Button type="button" variant="outline" size="sm" onClick={() => requestAutofill(autofillWebFacts())}>Повторить</Button>
           </div>
         </Show>
         <Show when={catalogCharacteristicsLoading()}>
