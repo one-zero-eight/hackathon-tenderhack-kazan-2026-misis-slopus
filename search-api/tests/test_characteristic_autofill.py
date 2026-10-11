@@ -154,6 +154,100 @@ def test_density_to_mass_requires_explicit_reference_area(name, expected):
     assert autofill.convert_units(80, "г/м²", "г")[1] == ["несовместимые единицы измерения"]
 
 
+@pytest.mark.parametrize("raw_value", [1.8, "1.8", "1.8 м", "1,8 м"])
+def test_mouse_cable_length_accepts_decimal_point_from_llm_for_source_comma(monkeypatch, raw_value):
+    text = (
+        "Мышь компьютерная проводная, оптическая, USB, кабель длиной 1,8 м, "
+        "есть боковые кнопки и функция тихого клика, для офисных ноутбуков"
+    )
+    mock_providers(monkeypatch, llm_handler=mapping_handler(
+        {"0": raw_value}, {"0": "кабель длиной 1,8 м"},
+    ))
+    result = asyncio.run(autofill.autofill_characteristics(request(
+        text=text, additionalAllowed=False, characteristics=[
+            {"id": "cable", "name": "Длина кабеля", "unit": "м", "numeric": True,
+             "options": ["≥1.5 … <2 м"],
+             "ranges": [{"option": "≥1.5 … <2 м", "min": 1.5, "max": 2, "maxInclusive": False}]},
+        ],
+    )))
+    row = result["characteristics"][0]
+    assert row["status"] == "accepted"
+    assert row["value"] == "1.8"
+    assert row["rangeOption"] == "≥1.5 … <2 м"
+    assert not row["errors"]
+    assert row["quote"] == "кабель длиной 1,8 м"
+    assert text[row["evidence"]["start"]:row["evidence"]["end"]] == row["quote"]
+
+
+@pytest.mark.parametrize("value, literal", [(1.7, "1.7"), (18, "18")])
+def test_decimal_separator_normalization_does_not_accept_changed_number(value, literal):
+    quote = "кабель длиной 1,8 м"
+    field = autofill.AutofillCharacteristic(id="cable", name="Длина кабеля", numeric=True, unit="м")
+    item = autofill.ExtractedValue(
+        field_id="cable", value=value, source_unit="м", source_literal=literal, quote=quote,
+    )
+    _, errors, _ = autofill.validate_value(field, item, quote)
+    assert "исходное число отсутствует в цитате" in errors
+
+
+@pytest.mark.parametrize("with_units", [False, True])
+def test_laptop_memory_cores_and_screen_units_are_grounded(monkeypatch, with_units):
+    text = (
+        "Ноутбук для офисной работы: экран 15,6 дюйма Full HD, "
+        "оперативная память 16 ГБ, накопитель SSD 512 ГБ, процессор с 8 ядрами."
+    )
+    values = {"0": "16 ГБ", "1": "512 ГБ", "2": "8 ядрами", "3": "15,6 дюйма"} if with_units else {
+        "0": 16, "1": 512, "2": 8, "3": 15.6,
+    }
+    quotes = {"0": "оперативная память 16 ГБ", "1": "накопитель SSD 512 ГБ",
+              "2": "процессор с 8 ядрами", "3": "экран 15,6 дюйма"}
+    fields = [
+        {"id": "ram", "name": "Общий объем установленной оперативной памяти", "unit": "Гигабайт"},
+        {"id": "ssd", "name": "Общий объем накопителей SSD", "unit": "Гигабайт"},
+        {"id": "cores", "name": "Количество ядер процессора", "unit": "шт."},
+        {"id": "screen", "name": "Диагональ экрана", "unit": "Дюйм (25,4 мм)"},
+    ]
+    for field, lower in zip(fields, [16, 500, 8, 15.6], strict=True):
+        option = f"≥{lower} {field['unit']}"
+        field.update(options=[option], ranges=[{"option": option, "min": lower}])
+    mock_providers(monkeypatch, llm_handler=mapping_handler(values, quotes))
+    result = asyncio.run(autofill.autofill_characteristics(request(
+        text=text, additionalAllowed=False, characteristics=fields,
+    )))
+    assert result["filled"] == 4
+    for row, expected in zip(result["characteristics"], ["16", "512", "8", "15.6"], strict=True):
+        assert row["status"] == "accepted"
+        assert row["value"] == expected
+        assert not row["errors"]
+        assert text[row["evidence"]["start"]:row["evidence"]["end"]] == row["quote"]
+
+
+@pytest.mark.parametrize("source, target, value, expected", [
+    ("ГБ", "Гигабайт", 16, 16),
+    ("GB", "Гигабайт", 512, 512),
+    ("МБ", "Мегабайт", 32, 32),
+    ("ТБ", "Гигабайт", 1, 1000),
+    ("ядрами", "шт.", 8, 8),
+    ("ядер", "шт.", 8, 8),
+    ("дюйма", "Дюйм (25,4 мм)", 15.6, 15.6),
+    ("дюйм", "мм", 1, 25.4),
+])
+def test_computer_units_are_converted(source, target, value, expected):
+    converted, errors = autofill.convert_units(value, source, target)
+    assert not errors
+    assert converted == pytest.approx(expected)
+
+
+def test_memory_units_are_not_mass_or_unqualified_counts():
+    assert autofill.convert_units(16, "ГБ", "г")[1] == ["несовместимые единицы измерения"]
+    field = autofill.AutofillCharacteristic(id="cores", name="Количество ядер", numeric=True, unit="шт.")
+    extraction = autofill.map_to_extraction(
+        {"cores": {"value": 8, "quote": "процессор 8"}}, [field], "процессор 8", additional_allowed=False,
+    )
+    _, errors, _ = autofill.validate_value(field, extraction.fields[0], "процессор 8")
+    assert "не указана исходная единица измерения" in errors
+
+
 def test_product_model_and_manufacturer_are_extracted_without_explicit_labels(monkeypatch):
     text = 'Дрель-шуруповерт аккумуляторная Ставр "ДА-10,8/2 (2,6 Л)"'
 
@@ -684,6 +778,64 @@ def test_claim_verification_includes_field_name_with_opaque_id():
     assert instructions["claim"]["source_unit"] == "Вт"
     assert "field_name" in instructions["question"]
     assert "Отсутствие единицы" in instructions["question"]
+
+
+@pytest.mark.parametrize("raw,source,target,expected,bucket", [
+    ("20 см", "20 см", "м", "0.2", "<1"),
+    ("0.2", "20 см", "м", "0.2", "<1"),
+    ("0.2 м", "20 см", "м", "0.2", "<1"),
+    ("200 мм", "200 мм", "м", "0.2", "<1"),
+    ("200", "2 м", "см", "200", "≥2"),
+    ("200 см", "2 м", "см", "200", "≥2"),
+    ("2 м", "2 м", "см", "200", "≥2"),
+    ("0,002 км", "0,002 км", "м", "2", "≥2"),
+])
+def test_cable_length_converts_both_scales_and_recovers_exact_llm_conversion(monkeypatch, raw, source, target, expected, bucket):
+    text = f"Мышь компьютерная беспроводная Logitech M185, USB-приёмник, батарейка в комплекте. длина кабеля {source}"
+    quote = f"длина кабеля {source}"
+
+    def jev(req):
+        payload = json.loads(req.content)
+        claim = payload["questions"]["f0"]["instructions"]["claim"]
+        assert claim["source_literal"] in quote
+        assert claim["source_unit"] in quote
+        assert claim["value"] == float(claim["source_literal"].replace(",", "."))
+        return httpx.Response(200, json={"answers": {"f0": {"type": "noul", "noul": 0.95}}})
+
+    mock_providers(monkeypatch, llm_handler=mapping_handler({"0": raw}, {"0": quote}), jev_handler=jev)
+    row = asyncio.run(autofill.autofill_characteristics(request(
+        text=text, additionalAllowed=False, characteristics=[{
+            "id": "cable", "name": "Длина кабеля", "unit": target, "numeric": True,
+            "options": ["<1", "≥1 … <2", "≥2"],
+            "ranges": [{"option": "<1", "max": 1, "maxInclusive": False},
+                       {"option": "≥1 … <2", "min": 1, "max": 2, "maxInclusive": False},
+                       {"option": "≥2", "min": 2}],
+        }],
+    ))) ["characteristics"][0]
+    assert row["status"] == "accepted", row["errors"]
+    assert row["value"] == expected
+    assert row["rangeOption"] == bucket
+    assert row["conversion"]["to"] == target
+    assert row["evidence"]["quote"] == quote
+    assert row["evidence"]["conversion"]["result"] == float(expected)
+
+
+@pytest.mark.parametrize("raw,quote", [
+    ("0.3 м", "длина кабеля 20 см"),
+    ("0.2 кг", "длина кабеля 20 см"),
+    ("20 м", "длина кабеля 20 см"),
+    ("0.2 м", "длина кабеля не менее 20 см"),
+    ("0.2 м", "длина кабеля 20–30 см"),
+    ("0.2 м", "длина кабеля 20 см, удлинитель 200 мм"),
+])
+def test_numeric_recovery_does_not_accept_wrong_units_values_limits_or_ambiguity(monkeypatch, raw, quote):
+    mock_providers(monkeypatch, llm_handler=mapping_handler({"0": raw}, {"0": quote}))
+    row = asyncio.run(autofill.autofill_characteristics(request(
+        text=f"Мышь компьютерная; {quote}", additionalAllowed=False,
+        characteristics=[{"id": "cable", "name": "Длина кабеля", "unit": "м", "numeric": True}],
+    )))["characteristics"][0]
+    assert row["status"] == "rejected"
+    assert row["value"] is None
 
 
 def test_power_supply_paraphrased_quote_is_replaced_with_grounded_evidence(monkeypatch):

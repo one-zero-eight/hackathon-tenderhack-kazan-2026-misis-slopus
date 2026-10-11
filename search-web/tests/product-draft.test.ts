@@ -33,7 +33,7 @@ const webSuggestion: WebEnrichmentSuggestion = {
     { title: "Характеристики", url: "https://example.com/specs", snippet: "Мощность 500 Вт" },
     { title: "Unsafe", url: "javascript:alert(1)", snippet: "" },
   ],
-  facts: ["Мощность: 500 Вт", "Материал: Сталь", "Мощность: 500 Вт", "Номинальное напряжение 18 В"],
+  facts: ["Мощность: 500 Вт", "Материал: Сталь", "Мощность: 500 Вт", "Номинальное напряжение: 18 В"],
   suggestedDescription: "Дрель, мощность 500 Вт",
 };
 
@@ -50,9 +50,19 @@ test("internet facts immediately become optional editable rows without overwriti
   assert.equal(web.autofill, undefined, "web suggestions must not claim verified confidence");
   assert.equal(web.webSource?.fact, "Мощность: 500 Вт");
   assert.equal(web.webSource?.sources.length, 1);
-  assert.equal(fields[3].value, "Номинальное напряжение 18 В");
+  assert.equal(fields[3].name, "Номинальное напряжение");
+  assert.equal(fields[3].value, "18 В");
   assert.equal(buildDisplayCharacteristics(fields).filter((field) => field.webSource).length, 3);
   assert.deepEqual(appendWebCharacteristics(fields, webSuggestion), fields, "repeated facts must not create duplicate rows");
+});
+
+test("unlabeled search snippets are not added as anonymous product characteristics", () => {
+  const fields = appendWebCharacteristics([], { ...webSuggestion, facts: [
+    "Масса: 6.3 кг", "Вес 16.5 см x 28.5 см x 9.1 см", "2.5 Вт", "вес 6.3 к", "Масса:",
+  ] });
+  assert.equal(fields.length, 1);
+  assert.equal(fields[0].name, "Масса");
+  assert.equal(fields[0].value, "6.3 кг");
 });
 
 test("internet facts already present in filled fields are not duplicated", () => {

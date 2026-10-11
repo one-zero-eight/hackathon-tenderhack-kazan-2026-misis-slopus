@@ -44,11 +44,6 @@ MEASURE_RE = re.compile(
     r"гб|gb|тб|tb|ггц|ghz|mhz|мп|mp|дюйм\w*|\"|″))(?!\w)",
     re.I,
 )
-CLAUSE_SPLIT_RE = re.compile(
-    r"[;|\n•·]|(?<=[.!?])\s+|(?<=,)\s+(?=(?:intel|amd|озу|ram|ssd|hdd|вес|мощность|"
-    r"процессор|память|диск|экран|диагональ|\d))",
-    re.I,
-)
 NOISE_RE = re.compile(
     r"(?i)\b(?:купит\w*|корзин\w*|заказ\w*|клик\w*|консультац\w*|отзыв\w*|обзор\w*|"
     r"добавьте|оформите|просто|выгодн\w*|скидк\w*|доставк\w*|гаранти\w*|"
@@ -102,12 +97,18 @@ SPEC_EXTRACTORS: list[tuple[str, re.Pattern[str]]] = [
     )),
     ("Разрешение", re.compile(r"(?i)(\d{3,4}\s*[xх×]\s*\d{3,4})")),
     ("Масса", re.compile(
-        r"(?i)(?:вес|масса|weight)\s*[:\-]?\s*(\d+(?:[.,]\d+)?\s*кг)"
-        r"|(\d+(?:[.,]\d+)?\s*кг(?:\s*без\s*кабеля)?)"
+        r"(?i)(?<!\w)(?:вес|масса|weight)(?:\s+(?:нетто|net|без\s+кабеля))?"
+        r"\s*[:\-–]?\s*(\d+(?:[.,]\d+)?\s*(?:кг|kg|г|g))(?![\w/²³])"
     )),
     ("Мощность", re.compile(
-        r"(?i)(?:мощность|power(?:\s*input)?|двигатель)\s*[:\-]?\s*(\d+(?:[.,]\d+)?\s*(?:вт|w|квт|kw))"
-        r"|(\d+(?:[.,]\d+)?\s*(?:вт|w)\b)"
+        r"(?i)(?<!\w)(?:мощность|power(?:\s*input)?)\s*[:\-–]?\s*"
+        r"(\d+(?:[.,]\d+)?\s*(?:квт|kw|вт|w))(?![\w/²³])"
+    )),
+    ("Габариты", re.compile(
+        r"(?i)(?<!\w)(?:габариты|размеры|dimensions)\s*[:\-–]?\s*"
+        r"(\d+(?:[.,]\d+)?\s*(?:(?:мм|см|м)\s*)?[xх×*]\s*"
+        r"\d+(?:[.,]\d+)?\s*(?:(?:мм|см|м)\s*)?[xх×*]\s*"
+        r"\d+(?:[.,]\d+)?\s*(?:мм|см|м))(?![\w/²³])"
     )),
     ("Скорость", re.compile(
         r"(?i)(?:скорость|частота(?:\s*вращения)?|no-?load\s*speed|макс\.?\s*число\s*оборот\w*)\s*[:\-]?\s*"
@@ -280,6 +281,22 @@ def _normalize_hits(rows: list[dict[str, Any]], *, limit: int) -> list[dict[str,
     return result
 
 
+def _source_matches_identity(source: dict[str, str], identity: dict[str, str]) -> bool:
+    blob = f"{source.get('title', '')} {source.get('snippet', '')}"
+    if ACCESSORY_RE.search(source.get("title", "")):
+        return False
+    for key in ("brand", "model"):
+        tokens = re.findall(r"[a-zа-яё0-9]+", identity.get(key, ""), re.I)
+        if not tokens:
+            if key == "model":
+                return False
+            continue
+        pattern = r"(?<!\w)" + r"[\W_]*".join(re.escape(token) for token in tokens) + r"(?!\w)"
+        if not re.search(pattern, blob, re.I):
+            return False
+    return True
+
+
 def _rank_sources(sources: list[dict[str, str]], identity: dict[str, str]) -> list[dict[str, str]]:
     brand = identity.get("brand", "").casefold()
     model = identity.get("model", "").casefold()
@@ -350,6 +367,13 @@ _VALID_RAM_GB = frozenset({1, 2, 3, 4, 6, 8, 12, 16, 18, 24, 32, 36, 48, 64, 96,
 
 def _canonicalize_value(label: str, value: str) -> str:
     value = _normalize_fact(value)
+    if label in {"Масса", "Мощность"}:
+        units = r"кг|kg|г|g" if label == "Масса" else r"квт|kw|вт|w"
+        match = re.fullmatch(rf"(?i)(\d+(?:[.,]\d+)?)\s*({units})", value)
+        if not match or float(match.group(1).replace(",", ".")) <= 0:
+            return ""
+        unit = {"kg": "кг", "g": "г", "kw": "кВт", "квт": "кВт", "w": "Вт", "вт": "Вт"}.get(match.group(2).casefold(), match.group(2).casefold())
+        value = f"{match.group(1).replace(',', '.')} {unit}"
     if label == "Процессор":
         value = re.sub(r"(?i)^i([3579])", r"Intel Core i\1", value)
         value = re.sub(r"(?i)^core\s+", "Intel Core ", value)
@@ -363,8 +387,8 @@ def _canonicalize_value(label: str, value: str) -> str:
             if match and int(match.group(1)) in _VALID_RAM_GB:
                 suffix = f" {match.group(3).upper()}" if match.group(3) else ""
                 value = f"{int(match.group(1))} ГБ{suffix}"
-            elif not re.search(r"(?i)гб|gb", value):
-                value = ""  # drop unitless garbage like bare "28"
+            else:
+                value = ""  # invalid RAM sizes and truncated numeric suffixes are not specs
     if label == "Накопитель":
         match = re.fullmatch(r"(?i)(\d+)\s*(гб|gb|тб|tb)\s*(ssd|hdd|nvme)?", value)
         if match:
@@ -426,8 +450,6 @@ def _format_spec(label: str, value: str) -> str:
     value = _canonicalize_value(label, value)
     if not value:
         return ""
-    if label.casefold() in value.casefold():
-        return value
     return f"{label}: {value}"
 
 
@@ -469,17 +491,23 @@ def extract_structured_facts(
     votes: dict[str, list[str]] = {label: [] for label, _ in SPEC_EXTRACTORS}
     for item in sources:
         blob = f"{item.get('title', '')}. {item.get('snippet', '')}"
+        source_votes: dict[str, set[str]] = {}
         if not allowed or "ОЗУ" in allowed:
             for label, fact in _collect_phone_combo_facts(blob, text):
-                votes.setdefault(label, []).append(fact)
+                source_votes.setdefault(label, set()).add(fact)
             for label, fact in _collect_mb_ram_facts(blob, text):
-                votes.setdefault(label, []).append(fact)
+                source_votes.setdefault(label, set()).add(fact)
         for label, pattern in SPEC_EXTRACTORS:
             if allowed is not None and label not in allowed:
                 continue
             if label == "Мощность" and kind in SKIP_POWER_KINDS:
                 continue
             for match in pattern.finditer(blob):
+                if label == "Масса" and re.search(
+                    r"(?i)(?:упаков\w*|брутто|gross|shipping|комплект\w*)\s*[:\-]?\s*$",
+                    blob[max(0, match.start() - 40):match.start()],
+                ):
+                    continue
                 value = next((g for g in match.groups() if g), None)
                 if not value:
                     continue
@@ -489,7 +517,12 @@ def extract_structured_facts(
                 # Bare N ГБ after phone combo already covered; skip tiny RAM false positives.
                 if label == "ОЗУ" and re.fullmatch(r"(?i)озу:\s*[123]\s*гб", fact) and kind == "ноутбук":
                     continue
-                votes.setdefault(label, []).append(fact)
+                source_votes.setdefault(label, set()).add(fact)
+        for label, candidates in source_votes.items():
+            # A single page mentioning conflicting values is not consensus.
+            unique = {_fact_key(fact): fact for fact in candidates}
+            if len(unique) == 1:
+                votes.setdefault(label, []).append(next(iter(unique.values())))
 
     facts: list[str] = []
     seen_labels: set[str] = set()
@@ -504,10 +537,9 @@ def extract_structured_facts(
         best, count = Counter(_fact_key(c) for c in candidates).most_common(1)[0]
         # Prefer the first original casing that matches the winning key.
         winner = next(c for c in candidates if _fact_key(c) == best)
-        # Require at least some agreement when sources disagree heavily.
-        if len(candidates) >= 3 and count == 1 and label == "Процессор":
-            # Still take the top-ranked source's first hit (candidates preserve source order).
-            winner = candidates[0]
+        # Disagreement without a strict majority is not a reliable product spec.
+        if len(set(_fact_key(candidate) for candidate in candidates)) > 1 and count <= len(candidates) / 2:
+            continue
         facts.append(winner)
         seen_labels.add(label)
         if len(facts) >= limit:
@@ -523,44 +555,9 @@ def extract_facts(
     limit: int = 6,
     kind: str = "",
 ) -> list[str]:
-    structured = extract_structured_facts(text, sources, limit=limit, kind=kind)
-    if len(structured) >= 2:
-        return structured[:limit]
-    # Tool pages are noisy (bits, brushes, packaging) — never fall back to free clauses.
-    if kind in {"дрель", "шуруповёрт"}:
-        return structured[:limit]
-
-    names = [
-        re.sub(r"\s+", " ", name).strip().casefold().replace("ё", "е")
-        for name in characteristic_names or []
-        if name.strip()
-    ]
-    name_roots = [name[: max(4, len(name) // 2)] for name in names if len(name) >= 4]
-    scored: list[tuple[int, str]] = []
-    seen: set[str] = set()
-    for source in sources:
-        blob = f"{source.get('title', '')}. {source.get('snippet', '')}"
-        for raw in CLAUSE_SPLIT_RE.split(blob):
-            clause = _normalize_fact(raw)
-            if _is_weak_fact(clause):
-                continue
-            lowered = clause.casefold().replace("ё", "е")
-            measures = MEASURE_RE.findall(clause)
-            has_measure = bool(measures)
-            has_name = any(root in lowered for root in name_roots)
-            if not has_measure and not has_name:
-                continue
-            if _already_present(clause, text):
-                continue
-            key = lowered
-            if key in seen:
-                continue
-            seen.add(key)
-            score = len(measures) * 4 + (1 if has_name else 0) - (1 if len(clause) > 90 else 0)
-            scored.append((score, clause))
-    scored.sort(key=lambda item: (-item[0], len(item[1])))
-    merged = list(dict.fromkeys([*structured, *[clause for _, clause in scored]]))
-    return merged[:limit]
+    # Search snippets are fragments, not facts: never expose raw clauses or infer
+    # a property from a bare measurement. Every extractor supplies a canonical key.
+    return extract_structured_facts(text, sources, limit=limit, kind=kind)
 
 
 def build_enrichment(
@@ -569,7 +566,16 @@ def build_enrichment(
     sources: list[dict[str, str]],
     facts: list[str],
 ) -> dict[str, Any] | None:
-    facts = [fact for fact in facts if not _is_weak_fact(fact)]
+    normalized: dict[str, str] = {}
+    labels = {label for label, _ in SPEC_EXTRACTORS}
+    for fact in facts:
+        label, separator, value = fact.partition(":")
+        if not separator or label.strip() not in labels or not value.strip():
+            continue
+        formatted = _format_spec(label.strip(), value.strip())
+        if formatted and not _is_weak_fact(formatted):
+            normalized.setdefault(_fact_key(formatted), formatted)
+    facts = list(normalized.values())
     if not facts:
         return None
     brand = identity.get("brand", "")
@@ -680,7 +686,9 @@ async def _enrich_from_web_uncapped(
             continue
         if not sources:
             continue
-        sources = _rank_sources(sources, identity)
+        sources = _rank_sources([source for source in sources if _source_matches_identity(source, identity)], identity)
+        if not sources:
+            continue
         facts = extract_facts(
             text, sources, characteristic_names, kind=identity.get("kind", ""),
         )

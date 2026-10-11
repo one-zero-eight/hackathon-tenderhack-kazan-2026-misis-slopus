@@ -20,8 +20,9 @@ export function appendWebCharacteristics(
     if (!fact || seen.has(normName(fact))) continue;
     seen.add(normName(fact));
     const separator = fact.indexOf(":");
-    const name = separator > 0 ? fact.slice(0, separator).trim() : "Сведения о товаре";
-    const value = separator > 0 ? fact.slice(separator + 1).trim() : fact;
+    if (separator <= 0) continue;
+    const name = fact.slice(0, separator).trim();
+    const value = fact.slice(separator + 1).trim();
     if (!name || !value) continue;
     added.push({
       id: `web:${encodeURIComponent(normName(fact))}`, name, value, unit: "",

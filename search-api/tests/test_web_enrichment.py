@@ -45,6 +45,81 @@ def test_extract_facts_skips_values_already_in_description():
     assert not any("550 Вт" in fact and "мощность" in fact.casefold() for fact in facts)
 
 
+def test_search_fragments_are_not_characteristics():
+    sources = [{
+        "title": "Товар AB-123 характеристики", "url": "https://example.com/ab123",
+        "snippet": "Масса: 6.3 кг; Вес 16.5 см x 28.5 см x 9.1 см; 2.5 Вт; вес 6.3 к",
+    }]
+    assert enrich.extract_facts("Товар AB-123", sources, ["Масса", "Вес"]) == ["Масса: 6.3 кг"]
+
+
+def test_measurements_require_matching_labels_and_complete_units():
+    sources = [{
+        "title": "Характеристики", "url": "https://example.com",
+        "snippet": "Вес 16.5 см x 28.5 см x 9.1 см; вес 6.3 к; масса 3 кг/м²; 2.5 Вт; 6.3 кг; мощность 12 Втч",
+    }]
+    assert enrich.extract_facts("Товар", sources) == []
+    sources[0]["snippet"] = "Мощность: 2.5 кВт; Масса: 630 г; Габариты: 16.5 см x 28.5 см x 9.1 см"
+    assert enrich.extract_facts("Товар", sources) == [
+        "Масса: 630 г", "Мощность: 2.5 кВт", "Габариты: 16.5 см x 28.5 см x 9.1 см",
+    ]
+
+
+def test_enrichment_rejects_unlabeled_or_dimensionally_invalid_facts():
+    result = enrich.build_enrichment("Товар AB-123", {"brand": "Brand", "model": "AB-123"}, [], [
+        "2.5 Вт", "вес 6.3 к", "Вес: 16.5 см x 28.5 см x 9.1 см", "Масса: 16.5 см",
+        "Масса: 6.3 кг", "Масса: 6,3 kg", "Мощность:",
+    ])
+    assert result is not None
+    assert result["facts"] == ["Масса: 6.3 кг"]
+
+
+def test_shipping_weight_is_not_product_mass():
+    sources = [{
+        "title": "Характеристики товара", "url": "https://example.com",
+        "snippet": "Shipping weight: 6.3 kg; Вес упаковки: 6.3 кг; Масса брутто: 6.3 кг; Масса: 2.4 кг",
+    }]
+    assert enrich.extract_facts("Товар", sources) == ["Масса: 2.4 кг"]
+
+
+def test_conflicting_specs_without_majority_are_omitted():
+    sources = [
+        {"title": "Страница 1", "url": "https://example.com/1", "snippet": "Масса: 6.3 кг"},
+        {"title": "Страница 2", "url": "https://example.com/2", "snippet": "Масса: 1.8 кг"},
+    ]
+    assert enrich.extract_facts("Товар", sources) == []
+    sources.append({"title": "Страница 3", "url": "https://example.com/3", "snippet": "Масса: 1.8 кг"})
+    assert enrich.extract_facts("Товар", sources) == ["Масса: 1.8 кг"]
+
+
+def test_repeated_snippet_values_do_not_count_as_independent_votes():
+    sources = [
+        {"title": "Страница 1", "url": "https://example.com/1", "snippet": "Масса: 6.3 кг; Масса: 6.3 кг; Масса: 6.3 кг"},
+        {"title": "Страница 2", "url": "https://example.com/2", "snippet": "Масса: 1.8 кг"},
+    ]
+    assert enrich.extract_facts("Товар", sources) == []
+
+
+def test_source_filter_requires_exact_brand_and_model_and_excludes_accessories():
+    identity = {"brand": "Makita", "model": "HR2450", "kind": ""}
+    assert enrich._source_matches_identity({"title": "Makita HR2450", "snippet": "Масса: 2.4 кг"}, identity)
+    assert not enrich._source_matches_identity({"title": "Makita HR2450FT", "snippet": "Масса: 2.4 кг"}, identity)
+    assert not enrich._source_matches_identity({"title": "Bosch HR2450", "snippet": "Масса: 2.4 кг"}, identity)
+    assert not enrich._source_matches_identity({"title": "Запчасть Makita HR2450", "snippet": "Масса: 6.3 кг"}, identity)
+    assert enrich._source_matches_identity({"title": "Bosch GSB-550", "snippet": ""}, {"brand": "Bosch", "model": "GSB 550"})
+
+
+def test_enrichment_ignores_wrong_model_values(monkeypatch):
+    monkeypatch.setattr(enrich, "_search_ddgs", lambda query: [
+        {"title": "Makita HR2450FT", "url": "https://example.com/wrong", "snippet": "Масса: 6.3 кг"},
+        {"title": "Makita HR2450", "url": "https://example.com/right", "snippet": "Масса: 2.4 кг"},
+    ])
+    result = asyncio.run(enrich.enrich_from_web("Перфоратор Makita HR2450"))
+    assert result is not None
+    assert result["facts"] == ["Масса: 2.4 кг"]
+    assert [source["url"] for source in result["sources"]] == ["https://example.com/right"]
+
+
 def test_extract_structured_laptop_facts():
     sources = [{
         "title": 'Ноутбук Lenovo IdeaPad 320-15IKB 15.6", Intel Core i3 7100U',
