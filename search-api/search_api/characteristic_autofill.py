@@ -229,6 +229,54 @@ def convert_units(value: float, source_unit: str | None, target_unit: str | None
     return None, ["неизвестная единица: пересчёт невозможен"]
 
 
+OUT_OF_RANGE_ERROR = "значение вне допустимых диапазонов схемы"
+
+
+def scale_suggestion(field: AutofillCharacteristic, number: float, source_unit: str | None) -> dict[str, Any] | None:
+    """Подсказка при ошибке масштаба: «3 м» вне диапазона схемы, а «3 см» подходит.
+
+    Только подсказка для подтверждения человеком, значение не подставляется. Из единиц той же величины берётся
+    ближайшая по порядку величины, при которой число (после пересчёта в единицу схемы) попадает в диапазоны.
+    Формат совпадает с `AutofillDiagnostics["suggestion"]` фронтенда: value, unit, converted, reason."""
+    if not field.ranges or not field.unit or not source_unit or not math.isfinite(number) or number == 0:
+        return None
+    source, target = parse_unit(source_unit), parse_unit(field.unit)
+    if source is None or target is None or source[0] != target[0]:
+        return None
+
+    def fits(factor: float) -> float | None:
+        converted = number * factor / target[1]
+        return converted if math.isfinite(converted) and any(r.contains(converted) for r in field.ranges) else None
+
+    if fits(source[1]) is not None:
+        return None  # ошибка не в масштабе: число с этой единицей допустимо
+    options = []
+    for dimension, factor, aliases in UNIT_GROUPS:
+        if dimension == source[0] and factor != source[1] and (converted := fits(factor)) is not None:
+            options.append((abs(math.log10(factor / source[1])), factor, aliases[0], converted))
+    if not options:
+        return None
+    _, _, name, converted = min(options)
+    return {"value": number, "unit": name, "converted": converted,
+            "reason": f"возможно, имелось в виду {number:g} {name} вместо {number:g} {source_unit}; "
+                      f"требуется подтверждение"}
+
+
+def written_number(raw: Any) -> float | None:
+    """Число из значения LLM: JSON-число или строка вида «1,8» / «1600»; иначе None."""
+    if isinstance(raw, bool):
+        return None
+    if isinstance(raw, (int, float)):
+        return float(raw) if math.isfinite(raw) else None
+    if isinstance(raw, str):
+        try:
+            parsed = Decimal(raw.strip().replace(",", ".").replace("\u00a0", ""))
+        except InvalidOperation:
+            return None
+        return float(parsed) if parsed.is_finite() else None
+    return None
+
+
 def field_type(field: AutofillCharacteristic) -> Literal["number", "enum", "text"]:
     if field.numeric or field.ranges or (field.unit and not field.options):
         return "number"
@@ -295,6 +343,7 @@ async def llm_parse(client: httpx.AsyncClient, prompt: str, payload: dict[str, A
             f"{settings.openai_base_url.rstrip('/')}/chat/completions",
             headers={"User-Agent": "zakupki-search-api/0.1", "Content-Type": "application/json"},
             json={
+                **settings.openai_extra_body,
                 "model": settings.openai_model,
                 "temperature": 0,
                 "messages": [
@@ -430,6 +479,8 @@ def validate_value(field: AutofillCharacteristic, item: ExtractedValue | Additio
     value: Any = item.value
     kind = field_type(field) if isinstance(field, AutofillCharacteristic) else getattr(field, "type", "text")
     if kind == "number" or (isinstance(item, AdditionalValue) and item.type == "number"):
+        if isinstance(value, str) and (number := written_number(value)) is not None:  # модель без «размышлений»
+            value = number  # отдаёт число строкой: «1,8», «1600»; source_literal проверяется ниже
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
             return None, errors + ["требуется конечное JSON-число"], None
         literal = item.source_literal
@@ -454,7 +505,7 @@ def validate_value(field: AutofillCharacteristic, item: ExtractedValue | Additio
                 }
             value = converted
         if field.ranges and isinstance(value, (int, float)) and not any(item.contains(float(value)) for item in field.ranges):
-            errors.append("значение вне допустимых диапазонов схемы")
+            errors.append(OUT_OF_RANGE_ERROR)
     else:
         if not isinstance(value, str):
             errors.append("требуется строка")
@@ -674,6 +725,9 @@ async def autofill_characteristics(body: AutofillRequest) -> dict[str, Any]:
             previous = accepted_values.get(field.id, [])
             if any(existing[0] == value and not errors for existing in previous):
                 errors.append("повтор значения в ответе LLM")
+        suggestion = None
+        if field is not None and OUT_OF_RANGE_ERROR in errors and (number := written_number(item.value)) is not None:
+            suggestion = scale_suggestion(field, number, item.source_unit)
         row = {
             "id": item.field_id,
             "name": field.name if field else item.field_id,
@@ -685,7 +739,7 @@ async def autofill_characteristics(body: AutofillRequest) -> dict[str, Any]:
             "errors": errors,
             "source": "llm_jev",
             "conversion": conversion,
-            "suggestion": None,
+            "suggestion": suggestion,
             "evidence": make_evidence(
                 body.text, item.quote, source="llm",
                 literal=item.source_literal, conversion=conversion,
@@ -695,7 +749,7 @@ async def autofill_characteristics(body: AutofillRequest) -> dict[str, Any]:
             if field.ranges:
                 row["rangeOption"] = next((entry.option for entry in field.ranges if entry.contains(float(value))), "")
             row["value"] = format_number(float(value)) if field.unit or field.ranges else (
-                format_number(float(value)) if not item.source_unit else f"{format_number(float(item.value))} {item.source_unit}".strip()
+                format_number(float(value)) if not item.source_unit else f"{format_number(float(value))} {item.source_unit}".strip()
             )
             # Unitless schema numbers must not silently keep a physical unit as "accepted bare".
             if not field.unit and item.source_unit and parse_unit(item.source_unit):

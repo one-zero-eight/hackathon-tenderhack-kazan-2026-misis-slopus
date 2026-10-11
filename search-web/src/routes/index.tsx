@@ -340,6 +340,11 @@ function AutofillRejected(props: { item: DraftCharacteristic }) {
     <div class="create-char-rejected" title={diagnostics()!.errors?.join("; ") || "Отклонено"}>
       Отклонено{diagnostics()?.confidence != null ? ` · ${Math.round(diagnostics()!.confidence! * 100)}%` : ""}
       <Show when={diagnostics()?.errors?.[0]}><span>: {diagnostics()!.errors![0]}</span></Show>
+      <Show when={diagnostics()?.suggestion}>{(hint) =>
+        <p class="create-char-scale-hint" role="note" title={`${hint().value} ${hint().unit} → ${hint().converted} в единицах схемы`}>
+          Подсказка: {hint().reason}
+        </p>
+      }</Show>
     </div>
   </Show>;
 }

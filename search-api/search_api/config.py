@@ -1,5 +1,7 @@
 from pathlib import Path
 
+from typing import Any
+
 from pydantic import AliasChoices, Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -63,6 +65,10 @@ class Settings(BaseSettings):
     openai_base_url: str = "https://api.innohassle.ru/llama/v1"
     openai_model: str = "ggml-org/gemma-4-E4B-it-GGUF:Q8_0"
     openai_timeout: float = Field(default=120, gt=0)
+    # Дополнительные поля тела /chat/completions. По умолчанию выключаем «размышления» модели на llama.cpp:
+    # блок reasoning_content занимал ~2/3 токенов и 20 с из 25 в автозаполнении. `OPENAI_EXTRA_BODY='{}'` — без добавок
+    # (нужно для серверов, которые отвергают неизвестные поля, например api.openai.com).
+    openai_extra_body: dict[str, Any] = Field(default_factory=lambda: {"chat_template_kwargs": {"enable_thinking": False}})
     jev_rerank_enabled: bool = True
     jev_rerank_limit: int = Field(default=25, ge=1, le=250)
     query_quality_enabled: bool = Field(

@@ -371,3 +371,126 @@ def test_range_boundaries():
     bucket = autofill.CharacteristicRange(option="bucket", min=0.5, max=1, maxInclusive=False)
     assert bucket.contains(0.5)
     assert not bucket.contains(1)
+
+
+# --- подсказка по единицам ---------------------------------------------------------------------------------------------
+
+def numeric_field(unit, low, high):
+    return autofill.AutofillCharacteristic(
+        id="size", name="Размер", unit=unit, numeric=True, options=[f"{low}–{high}"],
+        ranges=[autofill.CharacteristicRange(option=f"{low}–{high}", min=low, max=high)])
+
+
+def test_scale_suggestion_points_to_the_nearest_unit_that_fits():
+    hint = autofill.scale_suggestion(numeric_field("см", 1, 5), 3, "м")  # 3 м = 300 см вне 1–5, а 3 см подходит
+    assert hint["value"] == 3 and hint["unit"] == "см" and hint["converted"] == 3
+    assert "3 см вместо 3 м" in hint["reason"] and "подтверждение" in hint["reason"]
+    assert autofill.scale_suggestion(numeric_field("кг", 0.1, 2), 1, "т")["unit"] == "кг"
+    assert set(hint) == {"value", "unit", "converted", "reason"}  # формат AutofillDiagnostics["suggestion"] фронтенда
+
+
+@pytest.mark.parametrize("field, number, unit", [
+    (numeric_field("см", 1, 5), 3, "см"),     # число уже допустимо: ошибка не в масштабе
+    (numeric_field("кг", 0.1, 2), 10, "т"),   # ни одна единица той же величины не подходит
+    (numeric_field("кг", 0.1, 2), 3, "м"),    # другая величина
+    (numeric_field("см", 1, 5), 0, "м"),      # ноль: масштаб ни на что не влияет
+    (numeric_field("см", 1, 5), 3, "штук"),   # неизвестная единица
+    (numeric_field("", 1, 5), 3, "м"),        # у схемы нет единицы
+])
+def test_scale_suggestion_is_absent_when_scale_is_not_the_problem(field, number, unit):
+    assert autofill.scale_suggestion(field, number, unit) is None
+
+
+def test_scale_suggestion_needs_ranges():
+    field = autofill.AutofillCharacteristic(id="size", name="Размер", unit="см", numeric=True)
+    assert autofill.scale_suggestion(field, 3, "м") is None
+
+
+def llm_value_handler(value, unit, literal, quote):
+    def handler(req):
+        body = json.loads(req.content)
+        if "три необязательных реквизита" in body["messages"][0]["content"]:
+            content = {"model": None, "manufacturer": None, "article": None}
+        else:
+            content = {"fields": [{"field_id": "size", "value": value, "source_unit": unit,
+                                   "source_literal": literal, "quote": quote}], "additional": []}
+        return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(content, ensure_ascii=False)}}]})
+    return handler
+
+
+def test_autofill_returns_scale_hint_for_rejected_value_but_never_fills_it(monkeypatch):
+    mock_providers(monkeypatch, llm_handler=llm_value_handler(3, "м", "3", "Длина 3 м"))
+    body = request(text="Длина 3 м", characteristics=[{
+        "id": "size", "name": "Размер", "unit": "см", "numeric": True,
+        "options": ["1–5"], "ranges": [{"option": "1–5", "min": 1, "max": 5}]}])
+    row = asyncio.run(autofill.autofill_characteristics(body))["characteristics"][0]
+    assert row["status"] == "rejected" and row["value"] is None  # значение не подставляется
+    assert any("диапазон" in error for error in row["errors"])
+    assert row["suggestion"]["unit"] == "см" and row["suggestion"]["converted"] == 3
+
+
+def test_autofill_has_no_hint_when_nothing_fits(monkeypatch):
+    mock_providers(monkeypatch, llm_handler=llm_value_handler(10, "т", "10", "Масса 10 т"))
+    body = request(text="Масса 10 т", characteristics=[{
+        "id": "size", "name": "Масса", "unit": "кг", "numeric": True,
+        "options": ["0.1–2"], "ranges": [{"option": "0.1–2", "min": 0.1, "max": 2}]}])
+    row = asyncio.run(autofill.autofill_characteristics(body))["characteristics"][0]
+    assert row["status"] == "rejected" and row["suggestion"] is None
+
+
+# --- модель без «размышлений»: числа строкой, дополнительные поля запроса ----------------------------------------------
+
+def test_written_number_parses_strings_and_rejects_the_rest():
+    assert autofill.written_number("1,8") == 1.8
+    assert autofill.written_number(" 1 600 ".replace(" ", "")) == 1600
+    assert autofill.written_number(2) == 2.0 and autofill.written_number(True) is None
+    assert autofill.written_number("до 2") is None and autofill.written_number("nan") is None
+    assert autofill.written_number(None) is None
+
+
+@pytest.mark.parametrize("raw, literal, text, accepted", [
+    ("1,8", "1,8", "Длина 1,8 м", True),      # число строкой с запятой
+    ("1600", "1600", "Длина 1600 м", True),
+    ("2,5", "1,8", "Длина 1,8 м", False),     # не совпадает с source_literal: проверка остаётся
+    ("до 2", "2", "Длина до 2 м", False),     # не число
+])
+def test_numeric_value_returned_as_string_is_validated_not_trusted(monkeypatch, raw, literal, text, accepted):
+    mock_providers(monkeypatch, llm_handler=llm_value_handler(raw, "м", literal, text))
+    body = request(text=text, characteristics=[{
+        "id": "size", "name": "Размер", "unit": "м", "numeric": True,
+        "options": ["1–2000"], "ranges": [{"option": "1–2000", "min": 1, "max": 2000}]}])
+    row = asyncio.run(autofill.autofill_characteristics(body))["characteristics"][0]
+    assert (row["status"] == "accepted") is accepted
+    if accepted:
+        assert row["value"] == autofill.format_number(autofill.written_number(raw)) and row["errors"] == []
+
+
+def captured_llm_bodies(monkeypatch):
+    seen = []
+
+    def handler(req):
+        body = json.loads(req.content)
+        seen.append(body)
+        content = {"model": None, "manufacturer": None, "article": None} \
+            if "три необязательных реквизита" in body["messages"][0]["content"] else {"fields": [], "additional": []}
+        return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(content)}}]})
+
+    mock_providers(monkeypatch, llm_handler=handler)
+    return seen
+
+
+def test_thinking_is_disabled_for_the_llm_by_default(monkeypatch):
+    seen = captured_llm_bodies(monkeypatch)
+    asyncio.run(autofill.autofill_characteristics(request()))
+    assert seen and all(body["chat_template_kwargs"] == {"enable_thinking": False} for body in seen)
+
+
+def test_extra_body_is_configurable_and_cannot_override_the_request(monkeypatch):
+    seen = captured_llm_bodies(monkeypatch)
+    monkeypatch.setattr(settings, "openai_extra_body", {})
+    asyncio.run(autofill.autofill_characteristics(request()))
+    assert seen and all("chat_template_kwargs" not in body for body in seen)
+    seen.clear()
+    monkeypatch.setattr(settings, "openai_extra_body", {"model": "чужая", "temperature": 1, "top_k": 20})
+    asyncio.run(autofill.autofill_characteristics(request()))
+    assert all(body["model"] == settings.openai_model and body["temperature"] == 0 and body["top_k"] == 20 for body in seen)
