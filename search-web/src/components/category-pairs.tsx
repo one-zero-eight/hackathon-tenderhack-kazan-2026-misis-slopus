@@ -54,7 +54,7 @@ function VoteRow(props: {
   }</Show>;
 }
 
-function PairChoices(props: {
+export function PairChoices(props: {
   decision?: CategoryPairDecision | null;
   parent: "okpd2" | "kpgz";
   child: "ktru" | "spgz";

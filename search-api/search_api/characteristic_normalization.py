@@ -64,8 +64,9 @@ def _decimal(match: re.Match[str]) -> str:
     return sign + integer + ("." + fraction if fraction else "")
 
 
-def _normalize(value: object) -> str:
-    parts = re.split(f"({_CASED_UNITS.pattern})", display_text(value))
+@lru_cache(maxsize=32_768)
+def _normalize_text(text: str) -> str:
+    parts = re.split(f"({_CASED_UNITS.pattern})", text)
     text = "".join(part if index % 2 else part.casefold().replace("ё", "е") for index, part in enumerate(parts))
     text = text.translate(str.maketrans({"−": "-", "–": "-", "—": "-"}))
     text = _NUMBER.sub(_decimal, text)
@@ -79,11 +80,11 @@ def _normalize(value: object) -> str:
 
 
 def normalize_key(value: object) -> str:
-    return _normalize(value)
+    return _normalize_text(display_text(value))
 
 
 def normalize_value(value: object) -> str:
-    return _normalize(value)
+    return _normalize_text(display_text(value))
 
 
 def normalize_unit(value: object) -> str:

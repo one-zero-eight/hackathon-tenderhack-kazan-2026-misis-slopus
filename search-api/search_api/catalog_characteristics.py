@@ -3,9 +3,11 @@ from __future__ import annotations
 import fcntl
 import hashlib
 import json
+import logging
 import math
 import tempfile
 import threading
+import time
 from collections import Counter
 from pathlib import Path
 
@@ -36,10 +38,14 @@ _METADATA_NAMES = {
     "производитель", "страна происхождения", "модель", "наименование", "описание",
 }
 _lock = threading.Lock()
+logger = logging.getLogger("uvicorn.error")
 
 
 def _build(destination: Path, fingerprint: str) -> None:
     """Persist normalized counts and display votes in bounded streaming batches."""
+    started = time.perf_counter()
+    processed = 0
+    logger.info("Catalog characteristics snapshot build started path=%s", destination)
     with tempfile.NamedTemporaryFile(dir=destination.parent, prefix=destination.name, suffix=".tmp") as file:
         temporary = Path(file.name)
     conn = sqlite3.connect(temporary)

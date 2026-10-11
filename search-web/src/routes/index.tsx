@@ -2,6 +2,7 @@ import { Meta, Title } from "@solidjs/meta";
 import { A } from "@solidjs/router";
 import * as Tooltip from "@kobalte/core/tooltip";
 import CircleAlert from "lucide-solid/icons/circle-alert";
+import ClipboardList from "lucide-solid/icons/clipboard-list";
 import Check from "lucide-solid/icons/check";
 import LoaderCircle from "lucide-solid/icons/loader-circle";
 import FileText from "lucide-solid/icons/file-text";
@@ -18,7 +19,7 @@ import Tags from "lucide-solid/icons/tags";
 import X from "lucide-solid/icons/x";
 import { batch, createEffect, createMemo, createSignal, For, Index, on, onCleanup, onMount, Show } from "solid-js";
 import { directoryHref, ProductCard } from "~/components/catalog";
-import { CategoryPairs } from "~/components/category-pairs";
+import { CategoryPairs, PairChoices } from "~/components/category-pairs";
 import { CatalogCharacteristicInput } from "~/components/catalog-characteristic-input";
 import { QueryDropdown } from "~/components/query-dropdown";
 import { KtruPickerActions, KtruPickerBody } from "~/components/ktru-picker";
@@ -142,7 +143,7 @@ import {
   formatEvidenceConversion,
   highlightDescription,
 } from "~/lib/evidence-highlight";
-import type { AutofillEvidence, CatalogSpecialization, CategoryPairCandidate, DirTreeNode, DraftCharacteristic, KtruTreeNode, VotedCode } from "~/lib/types";
+import type { AutofillEvidence, CatalogSpecialization, CategoryPairCandidate, CategoryPairDecision, DirTreeNode, DraftCharacteristic, KtruTreeNode, VotedCode } from "~/lib/types";
 import { checkSpelling, spellerErrorLabel, type SpellerError } from "~/lib/yandex-speller";
 import { Badge, Button, Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle, Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, Select, SelectContent, SelectItem, SelectTrigger, SelectValue, Skeleton, TextField, TextFieldInput, TextFieldLabel, TextFieldTextarea } from "~/ui-kit";
 import type { WebEnrichmentSuggestion } from "~/lib/types";
@@ -848,6 +849,11 @@ export default function NewProduct() {
     displayCharacteristics().find((row) => row.id === id)?.linkedIds ?? [id];
   const hasDraft = () => !!(description().trim() || name().trim() || selected() || similar().length || photos().length);
   const hasCategory = () => !!(okpd2() || ktruVote() || kpgz() || spgz());
+  // Схемы нет, пока не выбрана позиция КТРУ/СПГЗ: тогда «Характеристики разобраны» было бы неверным, а варианты
+  // выбора показываем прямо в блоке характеристик.
+  // Только варианты с самой позицией: пара «ОКПД2 / без КТРУ» схемы характеристик не даёт.
+  const leafChoices = (decision: CategoryPairDecision | null | undefined, leaf: "ktru" | "spgz"): CategoryPairDecision | null =>
+    decision?.needsChoice ? { ...decision, alternatives: (decision.alternatives ?? []).filter((pair) => !!pair[leaf]) } : null;
   const reportCategoryError = (error: unknown) => {
     if (mounted) setSuggestError(error instanceof Error ? error.message : "Не удалось применить выбранную категорию.");
   };
@@ -857,11 +863,13 @@ export default function NewProduct() {
         ? await applyCatalogPositions({ ktruCode: pair.ktru.code, ktruLocked: true, discriminatorValues: null })
         : pair.okpd2 ? await applyOkpd(pair.okpd2.code, true) : false;
       if (!applied) return;
+      const rerun = autofillCompleted() && displayCharacteristics().length === 0;
       batch(() => {
         setOkpd2(pair.okpd2);
         setKtruVote(pair.ktru);
       });
       saveActiveQueryDraft();
+      if (rerun) requestAutofill();  // разбор уже был без схемы — повторяем, когда поля появились
     })().catch(reportCategoryError);
   };
   const pickKpgzSpgzAlternative = (pair: CategoryPairCandidate) => {
@@ -870,11 +878,13 @@ export default function NewProduct() {
         ? await applyCatalogPositions({ spgzCode: pair.spgz.code, kpgzCode: pair.kpgz?.code ?? null, spgzLocked: true, discriminatorValues: null })
         : pair.kpgz ? await applyKpgz(pair.kpgz.code, true) : false;
       if (!applied) return;
+      const rerun = autofillCompleted() && displayCharacteristics().length === 0;
       batch(() => {
         setKpgz(pair.kpgz);
         setSpgz(pair.spgz);
       });
       saveActiveQueryDraft();
+      if (rerun) requestAutofill();
     })().catch(reportCategoryError);
   };
   const hasKtruPosition = () => !!(ktruVote()?.code || selected()?.kind === "ktru");
@@ -2473,9 +2483,9 @@ export default function NewProduct() {
               onClick={requestAutofill}
             >
               <Show when={autofillBusy()} fallback={
-                <Show when={autofillCompleted()} fallback={<Sparkles size={16} />}><Check size={16} /></Show>
+                <Show when={autofillCompleted() && displayCharacteristics().length > 0} fallback={<Sparkles size={16} />}><Check size={16} /></Show>
               }><LoaderCircle size={16} class="create-autofill-spinner" /></Show>
-              {autofillBusy() ? "Разбираем характеристики…" : autofillCompleted() ? (autofillNeedsReview() ? "Требует проверки" : "Характеристики разобраны") : "Разобрать характеристики"}
+              {autofillBusy() ? "Разбираем характеристики…" : autofillCompleted() && !displayCharacteristics().length ? "Выберите КТРУ или СПГЗ" : autofillCompleted() ? (autofillNeedsReview() ? "Требует проверки" : "Характеристики разобраны") : "Разобрать характеристики"}
             </Button>
           </div>
         </div>
@@ -2501,7 +2511,27 @@ export default function NewProduct() {
             </>}</For>
           </p>
         </Show>
-        <Show when={displayCharacteristics().length} fallback={<p class="no-characteristics">Выберите КТРУ или СПГЗ — появятся поля из справочников.</p>}>
+        <Show when={displayCharacteristics().length} fallback={
+          <div class="create-char-empty">
+            <p class="no-characteristics">Выберите КТРУ или СПГЗ — появятся поля из справочников.</p>
+            <Show when={leafChoices(okpdKtruDecision(), "ktru")?.alternatives.length} fallback={
+              <Button type="button" variant="outline" size="sm" class="create-char-empty-pick" onClick={openKtruPicker}>
+                <ClipboardList size={14} />Выбрать КТРУ из справочника
+              </Button>
+            }>
+              <p class="create-char-empty-label">Возможные позиции КТРУ:</p>
+              <PairChoices decision={leafChoices(okpdKtruDecision(), "ktru")} parent="okpd2" child="ktru" onPick={pickOkpdKtruAlternative} />
+            </Show>
+            <Show when={leafChoices(kpgzSpgzDecision(), "spgz")?.alternatives.length} fallback={
+              <Button type="button" variant="outline" size="sm" class="create-char-empty-pick" onClick={openSpgzPicker}>
+                <ClipboardList size={14} />Выбрать СПГЗ из справочника
+              </Button>
+            }>
+              <p class="create-char-empty-label">Возможные позиции СПГЗ:</p>
+              <PairChoices decision={leafChoices(kpgzSpgzDecision(), "spgz")} parent="kpgz" child="spgz" onPick={pickKpgzSpgzAlternative} />
+            </Show>
+          </div>
+        }>
           <dl class="characteristics-table create-char-fields dir-characteristics-table"><Index each={displayCharacteristics()}>{item =>
             <CreateCharRow
               item={item}
