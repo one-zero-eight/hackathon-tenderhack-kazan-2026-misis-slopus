@@ -405,11 +405,8 @@ class ClassifierCatalog:
         if not row["is_template"] and row["parent_code"]:
             spec = self.get_ktru_specialization(code)
             if spec and spec.get("currentValues"):
-                candidate = _option_label(spec["characteristics"], spec["currentValues"])
-                display = _fold(row["name"])
-                value_words = re.findall(r"[0-9a-zа-яё]+", _fold(" ".join(spec["currentValues"].values())), re.I)
-                if candidate and value_words and not all(word in display for word in value_words):
-                    label = candidate
+                # Always surface discriminating characteristics in the tree.
+                label = _option_label(spec["characteristics"], spec["currentValues"]) or None
         return {"id": f"ktru:{code}", "code": code, "name": row["name"], "kind": "ktru",
                 "status": row["status"], "isTemplate": bool(row["is_template"]),
                 "childCount": count, "hasChildren": count > 0, "variantLabel": label}

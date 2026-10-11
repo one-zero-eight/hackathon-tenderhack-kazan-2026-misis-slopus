@@ -224,13 +224,9 @@ function variantLabelFor(code: string, data: Catalog, pageSpecializations?: Map<
   }
   const option = spec?.options.find(item => item.code === code);
   if (!spec || !option) return null;
-  const label = specializationOptionLabel(spec.characteristics, option.values);
-  if (!label) return null;
-  const displayWords = normalizeFilter(row.name).match(/[\p{L}\p{N}]+/gu) ?? [];
-  const optionWords = normalizeFilter(Object.values(option.values).join(" ")).match(/[\p{L}\p{N}]+/gu) ?? [];
-  // Compare complete lexical forms, not substrings (e.g. «медь» / «медный»).
-  if (optionWords.length && optionWords.every(word => displayWords.some(display => variantRoot(display) === variantRoot(word)))) return null;
-  return label;
+  // Always surface discriminating characteristics in the tree, even when the
+  // display name already contains the value (e.g. «Молоток слесарный»).
+  return specializationOptionLabel(spec.characteristics, option.values) || null;
 }
 
 function okpdNode(code: string, data: Catalog, childCount?: number): KtruTreeNode {
@@ -293,14 +289,6 @@ function tokenStem(token: string): string {
   if (!/^[а-я]+$/.test(token) || token.length < 5) return token;
   const stem = token.replace(/(?:иями|ами|ого|ему|ому|ыми|ими|ая|яя|ое|ее|ые|ие|ый|ий|ой|ую|юю|ов|ев|ам|ям|ах|ях|ом|ем|а|я|ы|и|у|ю|е|о|ь)$/u, "");
   return stem.length >= 4 ? stem : token;
-}
-
-function variantRoot(token: string): string {
-  const stem = tokenStem(token);
-  if (/^дерев(?:о|янн(?:ый|ая|ое|ые|ую|ой|ого|ых)?)$/.test(token)) return "дерево";
-  if (/^мед(?:ь|н(?:ый|ая|ое|ые|ую|ой|ого|ых)?)$/.test(token)) return "медь";
-  if (/^сталь$|^стальн(?:ый|ая|ое|ые|ую|ой|ого|ых)$/.test(token)) return "сталь";
-  return stem;
 }
 
 function oneEdit(left: string, right: string): boolean {

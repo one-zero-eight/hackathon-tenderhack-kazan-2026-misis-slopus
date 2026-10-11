@@ -83,6 +83,32 @@ for (const [index, child] of multiChildren.entries()) {
   });
 }
 
+const densityOkpd = "44.01";
+const densityTemplate = `${densityOkpd}-00000001`;
+const densityChild = `${densityOkpd}-00000002`;
+const densityChildExact = `${densityOkpd}-00000003`;
+rows.push({
+  ...rows[0], code: densityTemplate, name: "Наволочки", is_template: true,
+  okpd2: { code: densityOkpd, name: "Наволочки" }, parent: null,
+  characteristics: [
+    { name: "Плотность ткани, гр/кв.м", code: "density", required: true, kind: "2", values: [{ text: "≥160", concrete_values: [] as string[] }] },
+  ],
+});
+rows.push({
+  ...rows[0], code: densityChild, name: "Наволочка ХБ, плотность от 160 г/кв.м", is_template: false,
+  okpd2: { code: densityOkpd, name: "Наволочки" }, parent: { code: densityTemplate },
+  characteristics: [
+    { name: "Плотность ткани, гр/кв.м", code: "density", required: true, kind: "2", values: [{ text: "≥160", concrete_values: [] as string[] }] },
+  ],
+});
+rows.push({
+  ...rows[0], code: densityChildExact, name: "Наволочка ХБ ≥155 г/кв.м", is_template: false,
+  okpd2: { code: densityOkpd, name: "Наволочки" }, parent: { code: densityTemplate },
+  characteristics: [
+    { name: "Плотность ткани, гр/кв.м", code: "density", required: true, kind: "2", values: [{ text: "≥155", concrete_values: [] as string[] }] },
+  ],
+});
+
 before(() => {
   process.env.KTRU_PARQUET = join(directory, "fixture.parquet");
   process.env.KTRU_SQLITE = join(directory, "fixture.sqlite");
@@ -239,9 +265,15 @@ test("display, official names and authoritative payload remain separate", () => 
   assert.equal(getKtruRaw(template)?.name, "Шаблон Ёлочный 50%");
 });
 
-test("variant labels use lexical forms, not accidental substrings", () => {
-  assert.equal(getKtruNodeByCode(woodChild)?.variantLabel, null);
+test("variant labels always surface discriminating characteristics in the tree", () => {
+  assert.equal(getKtruNodeByCode(woodChild)?.variantLabel, "Материал: Дерево");
   assert.equal(getKtruNodeByCode(falseWoodChild)?.variantLabel, "Материал: Деревянный");
+  assert.equal(getKtruNodeByCode(densityChild)?.variantLabel, "Плотность ткани, гр/кв.м: ≥160");
+  assert.equal(getKtruNodeByCode(densityChildExact)?.variantLabel, "Плотность ткани, гр/кв.м: ≥155");
+  assert.equal(
+    listKtruChildren(`ktru:${densityTemplate}`).nodes.find(node => node.code === densityChild)?.variantLabel,
+    "Плотность ткани, гр/кв.м: ≥160",
+  );
 });
 
 test("multi-characteristic specialization partitions by value tuples", () => {

@@ -84,7 +84,7 @@ function nodeKindLabel(kind: string): string {
   }
 }
 
-function nodeCodeLabel(node: { kind: string; code: string }): string {
+export function nodeCodeLabel(node: { kind: string; code: string }): string {
   const kind = nodeKindLabel(node.kind);
   const code = node.code?.trim();
   if (!code || code === "—" || code.startsWith("s:") || code.startsWith("g:")) return kind;
@@ -216,17 +216,25 @@ function TreeNode(props: {
 }) {
   const filtering = () => props.filter.length >= 2;
   const [manualOpen, setManualOpen] = createSignal<boolean | null>(null);
-  const open = () => {
-    if (manualOpen() !== null) return manualOpen()!;
-    return props.expandIds.has(props.node.id) || (filtering() && props.node.hasChildren);
-  };
   const selected = () => props.selectedId === props.node.id;
   const matched = () => props.matchIds.has(props.node.id);
+  const open = () => {
+    if (manualOpen() !== null) return manualOpen()!;
+    // Selected nodes with children stay expanded (click, reveal path, ranked hit).
+    return props.expandIds.has(props.node.id)
+      || (selected() && props.node.hasChildren)
+      || (filtering() && props.node.hasChildren);
+  };
   createEffect(on(() => props.filter, () => setManualOpen(null)));
+  createEffect(on(selected, (isSelected) => {
+    // External selection (reveal / ranked hit) must expand children even if the
+    // node was previously collapsed by hand.
+    if (isSelected && props.node.hasChildren) setManualOpen(true);
+  }));
   createEffect(on(() => [selected(), props.node.id] as const, ([isSelected, id]) => {
     if (!isSelected || typeof document === "undefined") return;
     const frame = requestAnimationFrame(() => {
-      document.querySelector(`[data-node-id="${CSS.escape(id)}"]`)?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+      document.querySelector(`[data-node-id="${CSS.escape(id)}"]`)?.scrollIntoView({ block: "center", behavior: "smooth" });
     });
     onCleanup(() => cancelAnimationFrame(frame));
   }));
@@ -277,6 +285,29 @@ function TreeNode(props: {
       />
     </Show>
   </li>;
+}
+
+export function DirectoryTree(props: {
+  tab: DirectoryTab;
+  selectedId: string | null;
+  filter: string;
+  matchIds: Set<string>;
+  expandIds: Set<string>;
+  pathIds: string[];
+  onSelect: (node: DirTreeNode | KtruTreeNode) => void;
+}) {
+  return <div class="ktru-tree" role="tree">
+    <TreeBranch
+      tab={props.tab}
+      parentId={null}
+      selectedId={props.selectedId}
+      filter={props.filter}
+      matchIds={props.matchIds}
+      expandIds={props.expandIds}
+      pathIds={props.pathIds}
+      onSelect={props.onSelect}
+    />
+  </div>;
 }
 
 function LazyRawJson(props: { load: () => Promise<Record<string, unknown> | null>; label: string }) {
@@ -415,7 +446,7 @@ function ListBlock(props: {
   </div>;
 }
 
-function KtruDetail(props: { code: string }) {
+export function KtruDetail(props: { code: string }) {
   const record = createAsync(() => getKtruRecord(props.code));
   return <Show when={record()} fallback={<div class="ktru-empty">Запись не найдена</div>}>{data => {
     const okpd = data().okpd2;
@@ -473,7 +504,7 @@ function KtruProducts(props: { code: string; okpdCode: string }) {
   }</Show>;
 }
 
-function DirectoryDetail(props: { tab: DirectoryTab; code: string }) {
+export function DirectoryDetail(props: { tab: DirectoryTab; code: string }) {
   const record = createAsync(() => getDirectoryRecord(props.tab, props.code));
   const products = createAsync(() => getDirectoryProducts(props.tab, props.code));
   return <Show when={record()} fallback={<div class="ktru-empty">Запись не найдена</div>}>{data => <>
@@ -665,18 +696,15 @@ export default function DirectoriesPage() {
         </div>
         <label class="ktru-filter"><Search size={15} /><input type="search" value={draft()} placeholder="Код, название или синоним…" autocomplete="off" onInput={event => onFilterInput(event.currentTarget.value)} /></label>
         <Show when={searchError()}><p class="dir-search-error" role="alert">{searchError()}</p></Show>
-        <div class="ktru-tree" role="tree">
-          <TreeBranch
-            tab={sourceTab()}
-            parentId={null}
-            selectedId={selected()?.id ?? null}
-            filter={filter()}
-            matchIds={matchIds()}
-            expandIds={expandIds()}
-            pathIds={pathIds()}
-            onSelect={selectNode}
-          />
-        </div>
+        <DirectoryTree
+          tab={sourceTab()}
+          selectedId={selected()?.id ?? null}
+          filter={filter()}
+          matchIds={matchIds()}
+          expandIds={expandIds()}
+          pathIds={pathIds()}
+          onSelect={selectNode}
+        />
       </section>
       <DetailPanel tab={tab()} selected={selected()} />
     </div>
