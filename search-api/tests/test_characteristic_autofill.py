@@ -402,6 +402,52 @@ def test_ktru_additional_fields_are_allowed_unless_explicitly_forbidden(monkeypa
         assert result["additional_fields"][0]["status"] == "accepted"
 
 
+@pytest.mark.parametrize("color_in_schema", [False, True])
+def test_explicit_color_and_role_are_separate_fields_not_extra(monkeypatch, color_in_schema):
+    text = (
+        "Молоток слесарный 500 г, боёк стальной круглый, рукоятка деревянная. "
+        "Для слесарных и монтажных работ. Цвет: Красный. Роль: стальной."
+    )
+    calls = []
+
+    def llm(req):
+        payload = json.loads(json.loads(req.content)["messages"][1]["content"])
+        calls.append(payload)
+        assert payload["extra"] == 1
+        if "missing" in payload:
+            assert payload["already"]["additional"] == []
+            content = {"Роль": {"value": "стальной", "quote": "Роль: стальной"}}
+            if not color_in_schema:
+                content["Цвет"] = {"value": "Красный", "quote": "Цвет: Красный"}
+        else:
+            # A malformed control key must not become a product characteristic.
+            content = {"extra": {"value": "Красный", "quote": "Цвет: Красный"}}
+            if color_in_schema:
+                content["0"] = {"value": "Красный", "quote": "Цвет: Красный"}
+        return httpx.Response(200, json={
+            "choices": [{"message": {"content": json.dumps(content, ensure_ascii=False)}}],
+        })
+
+    mock_providers(monkeypatch, llm_handler=llm)
+    result = asyncio.run(autofill.autofill_characteristics(request(
+        text=text, additionalAllowed=True,
+        characteristics=[{"id": "color", "name": "Цвет", "source": "catalog"}] if color_in_schema else [],
+    )))
+    assert len(calls) == 2
+    rows = result["characteristics"] + result["additional_fields"]
+    assert {row["name"]: row["value"] for row in rows} == {"Цвет": "Красный", "Роль": "стальной"}
+    assert all(row["status"] == "accepted" for row in rows)
+
+
+@pytest.mark.parametrize("key", ["extra", "additional", "additional_fields", "schema", "text", "product", "missing", "already"])
+def test_extraction_control_keys_do_not_become_additional_fields(key):
+    extraction = autofill.map_to_extraction(
+        {key: {"value": "Красный", "quote": "Цвет: Красный"}},
+        [], "Молоток. Цвет: Красный", additional_allowed=True,
+    )
+    assert extraction.additional == []
+
+
 def test_combined_extraction_is_cancelled_on_disconnect(monkeypatch):
     mock_providers(monkeypatch)
     started = asyncio.Event()
