@@ -232,6 +232,19 @@ export function buildDisplayCharacteristics(items: DraftCharacteristic[]): Displ
   ].sort((left, right) => Number(right.required) - Number(left.required));
 }
 
+/** Refined positions can introduce fields that were absent from the extraction schema. */
+export function hasNewAutofillFields(
+  previous: DraftCharacteristic[], current: DraftCharacteristic[],
+): boolean {
+  const signature = (field: DraftCharacteristic) => JSON.stringify([
+    field.id, field.name, field.source, field.options, field.optionLabels,
+    field.ranges, field.unit, !!field.numeric, !!field.multiple, field.hint,
+  ]);
+  const known = new Set(previous.map(signature));
+  return current.some((field) => !field.custom && field.source !== "custom" && !field.webSource
+    && !field.value.trim() && !field.rangeOption.trim() && !known.has(signature(field)));
+}
+
 export function retainTemplateCharacteristics(
   position: DraftCharacteristic[],
   template: DraftCharacteristic[],

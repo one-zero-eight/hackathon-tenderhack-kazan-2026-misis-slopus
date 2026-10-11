@@ -47,6 +47,7 @@ import {
   catalogFrequencyLabel,
   catalogOptionPopularity,
   characteristicSourceLabel,
+  hasNewAutofillFields,
   mapValueToOptions,
   retainTemplateCharacteristics,
 } from "~/lib/merge-characteristics";
@@ -2044,12 +2045,14 @@ export default function NewProduct() {
     excludedNames: characteristics().filter((item) => !item.webSource && (item.custom || item.source === "custom")).map((item) => item.name),
   }));
 
+  let autofillRefinementPass = false;
   const requestAutofill = (webFacts: string[] = []) => {
     const text = description().trim();
     if (text.length < 12 || autofilling() || autofillRequestedText() !== null) return;
     if (suggestAcceptedQuery() !== normalizeQuery(text)) return;
     clearCategoryHighlight();
     setCategoriesBeforeAutofill({ ktru: ktruVote(), spgz: spgz() });
+    autofillRefinementPass = false;
     batch(() => {
       setLastAutofillKey("");
       setAutofillError("");
@@ -2109,6 +2112,7 @@ export default function NewProduct() {
       setAutofillRequestedText(null);
       return;
     }
+    const refinementPass = autofillRefinementPass;
     const snapshot = new Map(characteristics().map((item) => [item.id, item]));
     const productSnapshot = { name: name(), brand: brand(), sku: sku(), model: model() };
     const rows = displayCharacteristics();
@@ -2140,7 +2144,7 @@ export default function NewProduct() {
             const previousAuto = autofilledCharacteristicValues.get(characteristicEditKey(current));
             const isEmpty = !current.value.trim() && !current.rangeOption.trim();
             const isPreviousAuto = previousAuto?.value === current.value && previousAuto?.rangeOption === current.rangeOption;
-            if (!isEmpty && (input.webFacts?.length || !isPreviousAuto)) continue;
+            if (!isEmpty && (refinementPass || input.webFacts?.length || !isPreviousAuto)) continue;
             const accepted = answer?.status === "accepted" && answer.value != null && String(answer.value).trim();
             const value = accepted ? String(answer.value) : "";
             const rangeOption = accepted
@@ -2173,13 +2177,13 @@ export default function NewProduct() {
             autofilledCharacteristicValues.set(characteristicEditKey(current), { value, rangeOption });
           }
         }
-        if (!input.webFacts?.length) autofilledProductEvidence.clear();
+        if (!refinementPass && !input.webFacts?.length) autofilledProductEvidence.clear();
         const applyProduct = (
           keyName: "name" | "model" | "manufacturer" | "article",
           current: string,
           setter: (value: string) => void,
         ) => {
-          if (input.webFacts?.length) return;
+          if (refinementPass || input.webFacts?.length) return;
           const extracted = result.product?.[keyName];
           if (!extracted || extracted.status !== "accepted" || !extracted.value?.trim()) return;
           if (manuallyEditedProductFields.has(keyName)) return;
@@ -2232,6 +2236,19 @@ export default function NewProduct() {
         const filledRefine = characteristics().some((item) =>
           updates.has(item.id) && item.refinesKtru && item.applyPositionRefine !== false && item.value.trim());
         if (filledRefine) await refineFromDiscriminators();
+        if (isCurrent() && !refinementPass && !input.webFacts?.length
+          && hasNewAutofillFields(rows, displayCharacteristics())) {
+          // One follow-up for the refined schema; preserve filled values and manual edits.
+          autofillRefinementPass = true;
+          batch(() => {
+            setAutofillRequestedText(null);
+            setAutofilling(false);
+          });
+          queueMicrotask(() => {
+            if (isCurrent() && !autofillBusy()) setAutofillRequestedText(input.text);
+          });
+          return;
+        }
         if (isCurrent()) {
           batch(() => {
             setAutofillCompletedText(input.text);
