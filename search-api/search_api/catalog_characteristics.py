@@ -136,6 +136,14 @@ def _build(destination: Path, fingerprint: str) -> None:
                     INSERT INTO value_displays VALUES(?,?,?,?,?,?)
                     ON CONFLICT(category_id,name_key,unit,value_key,value) DO UPDATE SET count=count+excluded.count
                 """, ((*display, count) for display, count in displays.items()))
+            previous = processed
+            processed += len(batch)
+            if processed // 50_000 != previous // 50_000:
+                logger.info(
+                    "Catalog characteristics snapshot progress products=%s duration_ms=%s",
+                    processed, round((time.perf_counter() - started) * 1000),
+                )
+        conn.execute("PRAGMA synchronous=FULL")
         with conn:
             conn.executemany("INSERT INTO metadata VALUES(?,?)", [("schema", _SCHEMA), ("fingerprint", fingerprint)])
     except BaseException:
@@ -145,6 +153,10 @@ def _build(destination: Path, fingerprint: str) -> None:
     else:
         conn.close()
     temporary.replace(destination)
+    logger.info(
+        "Catalog characteristics snapshot built products=%s duration_ms=%s",
+        processed, round((time.perf_counter() - started) * 1000),
+    )
 
 
 def _database() -> sqlite3.Connection:

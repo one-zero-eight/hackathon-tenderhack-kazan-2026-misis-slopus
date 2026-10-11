@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 
 from search_api import catalog_characteristics as module
 from search_api.main import app
-from search_api.characteristic_normalization import normalize_key, normalize_unit, normalize_value
+from search_api.characteristic_normalization import _normalize_text, normalize_key, normalize_unit, normalize_value
 
 
 @pytest.fixture
@@ -56,6 +56,34 @@ def catalog(tmp_path, monkeypatch):
     monkeypatch.setattr(module.settings, "catalog_database", tmp_path / "catalog.sqlite")
     yield conn, products
     conn.close()
+
+
+def test_normalization_reuses_bounded_cache_for_repeated_text():
+    _normalize_text.cache_clear()
+    expected = normalize_key("Материалы рукояток")
+    before = _normalize_text.cache_info()
+    assert normalize_value("Материалы рукояток") == expected
+    after = _normalize_text.cache_info()
+    assert after.hits == before.hits + 1
+    assert after.misses == before.misses
+    assert after.maxsize == 32_768
+    assert normalize_value(["Сталь"]) == normalize_value(str(["Сталь"]))
+
+
+def test_interrupted_build_does_not_replace_published_snapshot(catalog, monkeypatch):
+    module.frequent_catalog_characteristics("01.16.01")
+    destination = module.settings.catalog_database.with_suffix(".characteristics.sqlite")
+    original = destination.read_bytes()
+
+    def interrupted():
+        yield catalog[1][:7]
+        raise RuntimeError("interrupted")
+
+    monkeypatch.setattr(module, "iterate_products", interrupted)
+    with pytest.raises(RuntimeError, match="interrupted"):
+        module._build(destination, "changed")
+    assert destination.read_bytes() == original
+    assert not list(destination.parent.glob(destination.name + "*.tmp"))
 
 
 def test_frequency_counts_products_and_prioritizes_own_category(catalog):

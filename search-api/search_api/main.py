@@ -79,10 +79,17 @@ def catalog_category_diagnostics():
 
 @app.get("/catalog/characteristics")
 def catalog_characteristics(kpgzCode: str = Query(min_length=1, max_length=100)):
+    started = time.perf_counter()
+    logger.info("Catalog characteristics started kpgz=%s", kpgzCode)
     try:
         return frequent_catalog_characteristics(kpgzCode)
     except FileNotFoundError as exc:
         raise HTTPException(503, str(exc)) from exc
+    finally:
+        logger.info(
+            "Catalog characteristics finished kpgz=%s duration_ms=%s",
+            kpgzCode, round((time.perf_counter() - started) * 1000),
+        )
 
 
 @app.post("/catalog/search")
