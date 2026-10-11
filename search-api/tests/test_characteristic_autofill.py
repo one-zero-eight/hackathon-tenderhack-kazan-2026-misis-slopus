@@ -494,3 +494,29 @@ def test_extra_body_is_configurable_and_cannot_override_the_request(monkeypatch)
     monkeypatch.setattr(settings, "openai_extra_body", {"model": "чужая", "temperature": 1, "top_k": 20})
     asyncio.run(autofill.autofill_characteristics(request()))
     assert all(body["model"] == settings.openai_model and body["temperature"] == 0 and body["top_k"] == 20 for body in seen)
+
+
+def test_canonical_option_matches_case_and_yo_but_only_unambiguously():
+    options = ["Черный", "Белый", "Серый"]
+    assert autofill.canonical_option(options, "Чёрный") == "Черный"
+    assert autofill.canonical_option(options, " белый ") == "Белый"
+    assert autofill.canonical_option(options, "Чёрная") == "Черный"  # другая форма слова из текста запроса
+    assert autofill.canonical_option(options, "Красный") is None
+    assert autofill.canonical_option(["Серый", "серый"], "СЕРЫЙ") is None  # два варианта подходят — не угадываем
+
+
+def test_enum_value_in_other_case_is_filled_with_the_schema_option(monkeypatch):
+    def handler(req):
+        body = json.loads(req.content)
+        if "три необязательных реквизита" in body["messages"][0]["content"]:
+            content = {"model": None, "manufacturer": None, "article": None}
+        else:
+            content = {"fields": [{"field_id": "color", "value": "Чёрный", "source_unit": None,
+                                   "source_literal": None, "quote": "чёрная"}], "additional": []}
+        return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(content, ensure_ascii=False)}}]})
+
+    mock_providers(monkeypatch, llm_handler=handler)
+    body = request(text="Мышь чёрная", characteristics=[{"id": "color", "name": "Цвет", "options": ["Черный", "Белый"]}])
+    row = asyncio.run(autofill.autofill_characteristics(body))["characteristics"][0]
+    assert row["status"] == "accepted" and row["value"] == "Черный" and row["errors"] == []
+    assert row["quote"] == "чёрная"  # доказательство — слова запроса, как написал пользователь

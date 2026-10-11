@@ -14,6 +14,7 @@ from typing import Any, Literal
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, StrictFloat, StrictInt, StrictStr, field_validator, model_validator
 
+from search_api.characteristic_normalization import normalize_value
 from search_api.config import ROOT, settings
 
 NONE = "не указано"
@@ -277,6 +278,15 @@ def written_number(raw: Any) -> float | None:
     return None
 
 
+def canonical_option(options: list[str], value: str) -> str | None:
+    """Вариант перечня схемы для написания модели: «Чёрный» / «Чёрная» → «Черный». Сравнение — той же нормализацией,
+    что у каталога (`normalize_value`: регистр, «ё/е», леммы прилагательных). Значением становится вариант из схемы,
+    а не слова модели; неоднозначное совпадение — None."""
+    wanted = normalize_value(value)
+    matches = [option for option in options if normalize_value(option) == wanted]
+    return matches[0] if wanted and len(matches) == 1 else None
+
+
 def field_type(field: AutofillCharacteristic) -> Literal["number", "enum", "text"]:
     if field.numeric or field.ranges or (field.unit and not field.options):
         return "number"
@@ -510,7 +520,10 @@ def validate_value(field: AutofillCharacteristic, item: ExtractedValue | Additio
         if not isinstance(value, str):
             errors.append("требуется строка")
         elif field.options and value not in field.options:
-            errors.append("значение отсутствует в перечне схемы")
+            if (option := canonical_option(field.options, value)) is not None:
+                value = option
+            else:
+                errors.append("значение отсутствует в перечне схемы")
     return value, errors, conversion
 
 
