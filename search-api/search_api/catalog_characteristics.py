@@ -50,7 +50,11 @@ def _build(destination: Path, fingerprint: str) -> None:
         temporary = Path(file.name)
     conn = sqlite3.connect(temporary)
     try:
-        conn.execute("PRAGMA cache_size=-2048")
+        # Unpublished temporary snapshot: no per-batch fsync is needed. Publish only
+        # after a durable final commit; an interrupted build never replaces the index.
+        conn.execute("PRAGMA synchronous=OFF")
+        conn.execute("PRAGMA journal_mode=MEMORY")
+        conn.execute("PRAGMA cache_size=-32768")
         conn.execute("PRAGMA temp_store=FILE")
         conn.execute(f"PRAGMA mmap_size={settings.catalog_mmap_size}")
         conn.executescript("""
@@ -99,8 +103,10 @@ def _build(destination: Path, fingerprint: str) -> None:
                     if not name or not value or len(name) > 500 or len(unit) > 200 or len(value) > 2000:
                         continue
                     key = normalize_key(name)
+                    if not key or key in metadata_names:
+                        continue
                     value_key = normalize_value(value)
-                    if not key or key in metadata_names or not value_key:
+                    if not value_key:
                         continue
                     field = (key, unit)
                     seen.setdefault(field, {}).setdefault(value_key, set()).add(value)
