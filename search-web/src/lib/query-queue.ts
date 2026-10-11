@@ -70,6 +70,22 @@ export class QueryQueue<T> {
     if (changed) this.changed(this.entries);
   }
 
+  /** Restore a finished request from history without reprocessing. */
+  hydrate(text: string, result: T): QueuedQuery<T> {
+    const existing = this.find(text);
+    if (existing) {
+      this.controllers.get(existing.id)?.abort();
+      this.requests.delete(existing.id);
+      this.update(existing.id, {
+        status: "done", result, error: undefined, progress: undefined, durationMs: existing.durationMs,
+      });
+      return this.entries.find((entry) => entry.id === existing.id)!;
+    }
+    const added = this.add([text])[0]!;
+    this.update(added.id, { status: "done", result });
+    return this.entries.find((entry) => entry.id === added.id)!;
+  }
+
   /** Abort every in-flight request (e.g. suggest effect cleanup). */
   abortInFlight(): void {
     for (const controller of this.controllers.values()) controller.abort();
@@ -146,22 +162,91 @@ export class QueryQueue<T> {
   }
 }
 
-export type QueryHistoryItem = { text: string; requestedAt: number };
-export const QUERY_HISTORY_KEY = "zakupki.query-history.v1";
+export type QueryHistorySnapshot = {
+  draft: unknown;
+  autofillCompletedText: string | null;
+  autofillDurationMs: number | null;
+  autofillStatus?: "accepted" | "needs_review" | "no_match" | null;
+  webEnrichment?: unknown;
+  queryQuality?: unknown;
+};
+
+export type QueryHistoryItem = {
+  text: string;
+  requestedAt: number;
+  snapshot?: QueryHistorySnapshot;
+};
+
+export const QUERY_HISTORY_KEY = "zakupki.query-history.v2";
+export const QUERY_HISTORY_KEY_LEGACY = "zakupki.query-history.v1";
 export const QUERY_HISTORY_LIMIT = 200;
+
+function isHistorySnapshot(value: unknown): value is QueryHistorySnapshot {
+  if (typeof value !== "object" || value === null) return false;
+  const item = value as QueryHistorySnapshot;
+  return "draft" in item
+    && (item.autofillCompletedText === null || typeof item.autofillCompletedText === "string")
+    && (item.autofillDurationMs === null || (typeof item.autofillDurationMs === "number" && Number.isFinite(item.autofillDurationMs)));
+}
 
 export function parseQueryHistory(value: string | null): QueryHistoryItem[] {
   if (!value) return [];
   const parsed: unknown = JSON.parse(value);
   if (!Array.isArray(parsed)) throw new Error("Некорректная история запросов");
-  return parsed.filter((item): item is QueryHistoryItem =>
-    typeof item === "object" && item !== null && typeof item.text === "string"
-    && !!item.text.trim() && typeof item.requestedAt === "number" && Number.isFinite(item.requestedAt),
-  ).slice(0, QUERY_HISTORY_LIMIT);
+  return parsed.flatMap((item): QueryHistoryItem[] => {
+    if (typeof item !== "object" || item === null) return [];
+    const row = item as { text?: unknown; requestedAt?: unknown; snapshot?: unknown };
+    if (typeof row.text !== "string" || !row.text.trim()) return [];
+    if (typeof row.requestedAt !== "number" || !Number.isFinite(row.requestedAt)) return [];
+    return [{
+      text: row.text,
+      requestedAt: row.requestedAt,
+      ...(isHistorySnapshot(row.snapshot) ? { snapshot: row.snapshot } : {}),
+    }];
+  }).slice(0, QUERY_HISTORY_LIMIT);
 }
 
-export function rememberQuery(history: QueryHistoryItem[], text: string, requestedAt = Date.now()): QueryHistoryItem[] {
+export function rememberQuery(
+  history: QueryHistoryItem[],
+  text: string,
+  requestedAt = Date.now(),
+  snapshot?: QueryHistorySnapshot,
+): QueryHistoryItem[] {
   const query = normalizeQuery(text);
-  return [{ text: text.trim(), requestedAt }, ...history.filter((item) => normalizeQuery(item.text) !== query)]
+  const entry: QueryHistoryItem = { text: text.trim(), requestedAt };
+  if (snapshot) entry.snapshot = snapshot;
+  return [entry, ...history.filter((item) => normalizeQuery(item.text) !== query)]
     .slice(0, QUERY_HISTORY_LIMIT);
+}
+
+/** Persist the latest editable results for an existing history entry (or create one). */
+export function updateHistorySnapshot(
+  history: QueryHistoryItem[],
+  text: string,
+  snapshot: QueryHistorySnapshot,
+): QueryHistoryItem[] {
+  const query = normalizeQuery(text);
+  let found = false;
+  const next = history.map((item) => {
+    if (normalizeQuery(item.text) !== query) return item;
+    found = true;
+    return { ...item, snapshot };
+  });
+  return found ? next : rememberQuery(history, text, Date.now(), snapshot);
+}
+
+/** Drop heavy neighbor lists from oldest snapshots when localStorage is full. */
+export function compactHistorySnapshots(history: QueryHistoryItem[]): QueryHistoryItem[] {
+  return history.map((item, index) => {
+    if (!item.snapshot || index < 20) return item;
+    const draft = item.snapshot.draft;
+    if (typeof draft !== "object" || draft === null || !("similar" in draft)) return item;
+    return {
+      ...item,
+      snapshot: {
+        ...item.snapshot,
+        draft: { ...draft, similar: [] },
+      },
+    };
+  });
 }

@@ -1,6 +1,14 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { parseQueryFile, parseQueryHistory, QueryQueue, rememberQuery, QUERY_HISTORY_LIMIT } from "../src/lib/query-queue";
+import {
+  compactHistorySnapshots,
+  parseQueryFile,
+  parseQueryHistory,
+  QueryQueue,
+  rememberQuery,
+  updateHistorySnapshot,
+  QUERY_HISTORY_LIMIT,
+} from "../src/lib/query-queue";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -142,4 +150,37 @@ test("history is normalized, deduplicated, newest first, limited and round-trips
   assert.throws(() => parseQueryHistory("{}"));
   const full = Array.from({ length: QUERY_HISTORY_LIMIT }, (_, i) => ({ text: `Запрос ${i}`, requestedAt: i }));
   assert.equal(rememberQuery(full, "Новый запрос").length, QUERY_HISTORY_LIMIT);
+});
+
+test("history snapshots survive storage and are cleared when the query is requested again", () => {
+  const snapshot = {
+    draft: { lastSuggestQuery: "Молоток", name: "Молоток", similar: [{ id: "1" }] },
+    autofillCompletedText: "Молоток",
+    autofillDurationMs: 12,
+    autofillStatus: "accepted" as const,
+    queryQuality: { verdict: "ok", reasons: [] },
+  };
+  const withSnapshot = updateHistorySnapshot([], "Молоток", snapshot);
+  assert.deepEqual(withSnapshot[0]?.snapshot, snapshot);
+  assert.deepEqual(parseQueryHistory(JSON.stringify(withSnapshot)), withSnapshot);
+  assert.equal(rememberQuery(withSnapshot, "Молоток", 9)[0]?.snapshot, undefined);
+  const compacted = compactHistorySnapshots(Array.from({ length: 25 }, (_, i) => ({
+    text: `Запрос ${i}`,
+    requestedAt: i,
+    snapshot: { draft: { similar: [i] }, autofillCompletedText: null, autofillDurationMs: null },
+  })));
+  assert.deepEqual((compacted[0]!.snapshot!.draft as { similar: number[] }).similar, [0]);
+  assert.deepEqual((compacted[24]!.snapshot!.draft as { similar: unknown[] }).similar, []);
+});
+
+test("hydrate marks a history query done without reprocessing", async () => {
+  let calls = 0;
+  const queue = new QueryQueue(async () => {
+    calls++;
+    return { ok: true };
+  }, () => {});
+  const item = queue.hydrate("Молоток", { ok: true });
+  assert.equal(item.status, "done");
+  assert.deepEqual(await queue.run(item.id), { ok: true });
+  assert.equal(calls, 0);
 });

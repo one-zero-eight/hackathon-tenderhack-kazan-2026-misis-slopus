@@ -60,6 +60,7 @@ import {
   autofilledProductValues,
   captureQueryDraft,
   restoreQueryDraft,
+  type QueryDraft,
   clearCategoryDecisions,
   manuallyEditedProductFields,
   okpdKtruDecision,
@@ -141,7 +142,7 @@ import {
   suggesting,
 } from "~/lib/create-product-state";
 import { draftFromSpgzCharacteristic } from "~/lib/spgz-characteristics";
-import { normalizeQuery, parseQueryFile, parseQueryHistory, QUERY_HISTORY_KEY, QueryQueue, rememberQuery, type QueuedQuery, type QueryHistoryItem, type QueryStatus } from "~/lib/query-queue";
+import { normalizeQuery, parseQueryFile, parseQueryHistory, QUERY_HISTORY_KEY, QUERY_HISTORY_KEY_LEGACY, QueryQueue, rememberQuery, updateHistorySnapshot, compactHistorySnapshots, type QueuedQuery, type QueryHistoryItem, type QueryHistorySnapshot, type QueryStatus } from "~/lib/query-queue";
 import {
   collectEvidenceSpans,
   evidenceFromField,
@@ -153,6 +154,7 @@ import type { AutofillEvidence, CatalogSpecialization, CategoryPairCandidate, Ca
 import { checkSpelling, spellerErrorLabel, type SpellerError } from "~/lib/yandex-speller";
 import { Badge, Button, Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle, Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, Select, SelectContent, SelectItem, SelectTrigger, SelectValue, Skeleton, TextField, TextFieldInput, TextFieldLabel, TextFieldTextarea } from "~/ui-kit";
 import type { WebEnrichmentSuggestion } from "~/lib/types";
+import type { QueryQuality } from "~/lib/server/neighbor-suggest";
 import "./create-product.css";
 import "./directories.css";
 import "./ktru.css";
@@ -710,23 +712,93 @@ export default function NewProduct() {
   const [forceSuggestQuery, setForceSuggestQuery] = createSignal<string | null>(null);
   const [suggestAcceptedQuery, setSuggestAcceptedQuery] = createSignal("");
   const [readingQueries, setReadingQueries] = createSignal(false);
-  const queryDrafts = new Map<string, {
-    draft: ReturnType<typeof captureQueryDraft>;
+  type SavedQueryState = {
+    draft: QueryDraft;
     autofillCompletedText: string | null;
     autofillDurationMs: number | null;
-  }>();
+    autofillStatus: "accepted" | "needs_review" | "no_match" | null;
+    webEnrichment: WebEnrichmentSuggestion | null;
+    queryQuality: QueryQuality | null;
+  };
+  const queryDrafts = new Map<string, SavedQueryState>();
   let queryFileInput: HTMLInputElement | undefined;
   let mounted = true;
-  const saveHistory = (text: string) => {
-    if (!mounted) return;
-    const next = rememberQuery(queryHistory(), text);
+  let historyPersistTimer: ReturnType<typeof setTimeout> | undefined;
+  const persistHistory = (next: QueryHistoryItem[]) => {
     setQueryHistory(next);
     try {
       localStorage.setItem(QUERY_HISTORY_KEY, JSON.stringify(next));
       setHistoryError("");
+      return;
     } catch {
-      setHistoryError("Не удалось сохранить историю: localStorage недоступен или переполнен.");
+      const compact = compactHistorySnapshots(next);
+      try {
+        localStorage.setItem(QUERY_HISTORY_KEY, JSON.stringify(compact));
+        setQueryHistory(compact);
+        setHistoryError("");
+        return;
+      } catch {
+        const textOnly = next.map(({ text, requestedAt }) => ({ text, requestedAt }));
+        try {
+          localStorage.setItem(QUERY_HISTORY_KEY, JSON.stringify(textOnly));
+          setQueryHistory(textOnly);
+        } catch { /* ignore */ }
+        setHistoryError("Не удалось сохранить историю: localStorage недоступен или переполнен.");
+      }
     }
+  };
+  const saveHistory = (text: string) => {
+    if (!mounted) return;
+    persistHistory(rememberQuery(queryHistory(), text));
+  };
+  const emptyPairDecision = (): CategoryPairDecision => ({ needsChoice: false, reason: null, alternatives: [] });
+  const suggestionFromSaved = (saved: SavedQueryState): Suggestion => {
+    const draft = saved.draft;
+    return {
+      neighbors: draft.similar,
+      neighborsDurationMs: draft.similarDurationMs ?? undefined,
+      okpd2: draft.okpd2,
+      kpgz: draft.kpgz,
+      spgz: draft.spgz,
+      ktru: draft.ktruVote,
+      ktruStatus: null,
+      characteristics: draft.characteristics,
+      standards: draft.charStandards,
+      noNewFeatures: draft.noNewFeatures,
+      noNewFeaturesReason: draft.noNewFeaturesReason,
+      productName: draft.name,
+      specialization: draft.catalogSpecialization,
+      ktruNode: draft.selected,
+      templateCharacteristics: null,
+      okpdKtruDecision: draft.okpdKtruDecision ?? emptyPairDecision(),
+      kpgzSpgzDecision: draft.kpgzSpgzDecision ?? emptyPairDecision(),
+      needsChoice: !!(draft.okpdKtruDecision?.needsChoice || draft.kpgzSpgzDecision?.needsChoice),
+      choiceReason: (draft.okpdKtruDecision?.reason ?? draft.kpgzSpgzDecision?.reason ?? null) as Suggestion["choiceReason"],
+      classifierError: null,
+      neighborError: null,
+      queryQuality: saved.queryQuality,
+    };
+  };
+  const snapshotFromSaved = (saved: SavedQueryState): QueryHistorySnapshot => ({
+    draft: saved.draft,
+    autofillCompletedText: saved.autofillCompletedText,
+    autofillDurationMs: saved.autofillDurationMs,
+    autofillStatus: saved.autofillStatus,
+    webEnrichment: saved.webEnrichment,
+    queryQuality: saved.queryQuality,
+  });
+  const savedFromSnapshot = (snapshot: QueryHistorySnapshot): SavedQueryState | null => {
+    if (typeof snapshot.draft !== "object" || snapshot.draft === null) return null;
+    const draft = snapshot.draft as QueryDraft;
+    if (typeof draft.lastSuggestQuery !== "string") return null;
+    return {
+      draft,
+      autofillCompletedText: snapshot.autofillCompletedText,
+      autofillDurationMs: snapshot.autofillDurationMs,
+      autofillStatus: snapshot.autofillStatus ?? null,
+      webEnrichment: (snapshot.webEnrichment as WebEnrichmentSuggestion | null | undefined) ?? null,
+      queryQuality: (snapshot.queryQuality as QueryQuality | null | undefined) ?? null,
+    };
   };
   const queryQueue = new QueryQueue<Suggestion>(async (text, signal, reportProgress) => {
     const query = normalizeQuery(text);
@@ -749,10 +821,19 @@ export default function NewProduct() {
     });
   });
   onMount(() => {
-    try { setQueryHistory(parseQueryHistory(localStorage.getItem(QUERY_HISTORY_KEY))); }
-    catch { setHistoryError("Не удалось прочитать историю запросов."); }
+    try {
+      const raw = localStorage.getItem(QUERY_HISTORY_KEY) ?? localStorage.getItem(QUERY_HISTORY_KEY_LEGACY);
+      setQueryHistory(parseQueryHistory(raw));
+    } catch { setHistoryError("Не удалось прочитать историю запросов."); }
+    const flushHistory = () => saveActiveQueryDraft({ immediate: true });
+    window.addEventListener("pagehide", flushHistory);
+    onCleanup(() => window.removeEventListener("pagehide", flushHistory));
   });
-  onCleanup(() => { mounted = false; queryQueue.stop(); });
+  onCleanup(() => {
+    mounted = false;
+    clearTimeout(historyPersistTimer);
+    queryQueue.stop();
+  });
   const batchQueries = createMemo(() => {
     const ids = new Set(batchIds());
     return queuedQueries().filter((item) => ids.has(item.id));
@@ -761,7 +842,8 @@ export default function NewProduct() {
   const historyQueries = createMemo(() => queryHistory().map((item) => {
     const query = queuedQueries().find((entry) => normalizeQuery(entry.text) === normalizeQuery(item.text));
     return {
-      id: item.text, text: item.text, status: query?.status ?? "pending" as QueryStatus,
+      id: item.text, text: item.text,
+      status: query?.status ?? (item.snapshot ? "done" as QueryStatus : "pending" as QueryStatus),
       detail: new Date(item.requestedAt).toLocaleString("ru-RU"),
     };
   }));
@@ -1410,37 +1492,67 @@ export default function NewProduct() {
     });
   };
 
-  const saveActiveQueryDraft = () => {
+  const saveActiveQueryDraft = (opts?: { immediate?: boolean }) => {
     const id = activeQueryId();
     const item = queryQueue.items.find((entry) => entry.id === id);
     if (!id || !item || suggesting() || lastSuggestQuery() !== normalizeQuery(item.text)) return;
-    queryDrafts.set(id, {
+    const saved: SavedQueryState = {
       draft: captureQueryDraft(),
       autofillCompletedText: autofillCompletedText(),
       autofillDurationMs: autofillDurationMs(),
-    });
+      autofillStatus: autofillStatus(),
+      webEnrichment: webEnrichment(),
+      queryQuality: queryQuality(),
+    };
+    queryDrafts.set(id, saved);
+    const persist = () => {
+      if (!mounted) return;
+      persistHistory(updateHistorySnapshot(queryHistory(), item.text, snapshotFromSaved(saved)));
+    };
+    if (opts?.immediate) {
+      clearTimeout(historyPersistTimer);
+      persist();
+      return;
+    }
+    clearTimeout(historyPersistTimer);
+    historyPersistTimer = setTimeout(persist, 400);
+  };
+
+  const applySavedQueryState = (saved: SavedQueryState) => {
+    restoreQueryDraft(saved.draft);
+    setAutofillCompletedText(saved.autofillCompletedText);
+    setAutofillDurationMs(saved.autofillDurationMs);
+    setAutofillStatus(saved.autofillStatus);
+    setWebEnrichment(saved.webEnrichment);
+    setQueryQuality(saved.queryQuality);
+    setProductEvidenceVersion((version) => version + 1);
   };
 
   const selectQuery = (id: string) => {
     const item = queryQueue.items.find((entry) => entry.id === id);
     if (!item) return;
-    saveActiveQueryDraft();
+    saveActiveQueryDraft({ immediate: true });
     const saved = queryDrafts.get(id);
     batch(() => {
       reset();
       setActiveQueryId(id);
       setDescription(item.text);
       setQuerySelectionSeq((seq) => seq + 1);
-      if (saved && item.status === "done") {
-        restoreQueryDraft(saved.draft);
-        setAutofillCompletedText(saved.autofillCompletedText);
-        setAutofillDurationMs(saved.autofillDurationMs);
-        setProductEvidenceVersion((version) => version + 1);
+      if (saved && (item.status === "done" || saved.draft.lastSuggestQuery === normalizeQuery(item.text))) {
+        applySavedQueryState(saved);
       }
     });
   };
 
   const selectHistoryQuery = (text: string) => {
+    const historyItem = queryHistory().find((item) => normalizeQuery(item.text) === normalizeQuery(text));
+    const saved = historyItem?.snapshot ? savedFromSnapshot(historyItem.snapshot) : null;
+    if (saved) {
+      const item = queryQueue.hydrate(text, suggestionFromSaved(saved));
+      queryDrafts.set(item.id, saved);
+      selectQuery(item.id);
+      return;
+    }
     const item = queryQueue.find(text) ?? queryQueue.add([text])[0]!;
     selectQuery(item.id);
   };
@@ -2140,6 +2252,7 @@ export default function NewProduct() {
     }));
     markCharacteristicEdited(ids);
     setCharacteristics((items) => items.filter((item) => !item.templateKtruCode || item.value.trim() || item.rangeOption.trim()));
+    saveActiveQueryDraft();
     if (target?.refinesKtru && target.applyPositionRefine !== false) {
       refineFromDiscriminators({ name: target.name, value: next });
     }
@@ -2205,11 +2318,13 @@ export default function NewProduct() {
     }));
     markCharacteristicEdited(ids);
     setCharacteristics((items) => items.filter((item) => !item.templateKtruCode || item.value.trim() || item.rangeOption.trim()));
+    saveActiveQueryDraft();
   };
 
   const removeCharacteristic = (id: string) => {
     const ids = new Set(linkedIdsFor(id));
     setCharacteristics((items) => items.filter((item) => !ids.has(item.id)));
+    saveActiveQueryDraft();
   };
 
   const addCustomCharacteristic = () => {
@@ -2675,7 +2790,7 @@ export default function NewProduct() {
         <div class="detail-summary create-summary">
           <div class="detail-category">{selected()?.name || ktruVote()?.name || spgz()?.name || "Категория не выбрана"}</div>
           <div class="create-name-wrap">
-            <TextField class="create-name-field" name="product-name" value={name()} onChange={(value) => { manuallyEditedProductFields.add("name"); autofilledProductEvidence.delete("name"); setProductEvidenceVersion((v) => v + 1); setName(value); }} required>
+            <TextField class="create-name-field" name="product-name" value={name()} onChange={(value) => { manuallyEditedProductFields.add("name"); autofilledProductEvidence.delete("name"); setProductEvidenceVersion((v) => v + 1); setName(value); saveActiveQueryDraft(); }} required>
               <TextFieldLabel class="sr-only">Наименование</TextFieldLabel>
               <TextFieldTextarea id="product-name" required placeholder="Наименование товара" rows={2} />
             </TextField>
@@ -2693,7 +2808,7 @@ export default function NewProduct() {
                   onLocate={() => locateEvidence("product:manufacturer")}
                 />
               </dt>
-              <dd><TextField class="create-inline-field" name="product-brand" value={brand()} onChange={(value) => { manuallyEditedProductFields.add("manufacturer"); autofilledProductEvidence.delete("manufacturer"); setProductEvidenceVersion((v) => v + 1); setBrand(value); }}><TextFieldLabel class="sr-only">Производитель</TextFieldLabel><TextFieldInput id="product-brand" placeholder="Производитель или бренд" maxlength={120} /></TextField></dd>
+              <dd><TextField class="create-inline-field" name="product-brand" value={brand()} onChange={(value) => { manuallyEditedProductFields.add("manufacturer"); autofilledProductEvidence.delete("manufacturer"); setProductEvidenceVersion((v) => v + 1); setBrand(value); saveActiveQueryDraft(); }}><TextFieldLabel class="sr-only">Производитель</TextFieldLabel><TextFieldInput id="product-brand" placeholder="Производитель или бренд" maxlength={120} /></TextField></dd>
             </div>
             <div>
               <dt>
@@ -2704,7 +2819,7 @@ export default function NewProduct() {
                   onLocate={() => locateEvidence("product:article")}
                 />
               </dt>
-              <dd><TextField class="create-inline-field" name="product-sku" value={sku()} onChange={(value) => { manuallyEditedProductFields.add("article"); autofilledProductEvidence.delete("article"); setProductEvidenceVersion((v) => v + 1); setSku(value); }} required><TextFieldLabel class="sr-only">Артикул</TextFieldLabel><TextFieldInput id="product-sku" required placeholder="Ваш код" maxlength={80} /></TextField></dd>
+              <dd><TextField class="create-inline-field" name="product-sku" value={sku()} onChange={(value) => { manuallyEditedProductFields.add("article"); autofilledProductEvidence.delete("article"); setProductEvidenceVersion((v) => v + 1); setSku(value); saveActiveQueryDraft(); }} required><TextFieldLabel class="sr-only">Артикул</TextFieldLabel><TextFieldInput id="product-sku" required placeholder="Ваш код" maxlength={80} /></TextField></dd>
             </div>
             <div>
               <dt>
@@ -2715,7 +2830,7 @@ export default function NewProduct() {
                   onLocate={() => locateEvidence("product:model")}
                 />
               </dt>
-              <dd><TextField class="create-inline-field" name="product-model" value={model()} onChange={(value) => { manuallyEditedProductFields.add("model"); autofilledProductEvidence.delete("model"); setProductEvidenceVersion((v) => v + 1); setModel(value); }}><TextFieldLabel class="sr-only">Модель</TextFieldLabel><TextFieldInput id="product-model" placeholder="Необязательно" maxlength={120} /></TextField></dd>
+              <dd><TextField class="create-inline-field" name="product-model" value={model()} onChange={(value) => { manuallyEditedProductFields.add("model"); autofilledProductEvidence.delete("model"); setProductEvidenceVersion((v) => v + 1); setModel(value); saveActiveQueryDraft(); }}><TextFieldLabel class="sr-only">Модель</TextFieldLabel><TextFieldInput id="product-model" placeholder="Необязательно" maxlength={120} /></TextField></dd>
             </div>
           </dl>
           <input type="hidden" name="product-category" value={selected()?.code ?? ""} />
