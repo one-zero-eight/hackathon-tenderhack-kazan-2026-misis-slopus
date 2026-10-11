@@ -268,6 +268,11 @@ def test_extraction_uses_json_object_once_with_short_keys(monkeypatch):
     def llm_handler(req):
         body = json.loads(req.content)
         calls.append(body["response_format"]["type"])
+        prompt = body["messages"][0]["content"]
+        assert '"k":' not in prompt
+        assert '"0":"500 г"' in prompt
+        assert '"1":"деревянная"' in prompt
+        assert '"product":{"name":' in prompt
         payload = json.loads(body["messages"][1]["content"])
         assert "schema" in payload and "text" in payload
         assert set(payload["schema"]) == {"0", "1"}
